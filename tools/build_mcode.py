@@ -16,6 +16,7 @@ CLANG = pathlib.Path(r"F:\Tech\LLVM\bin\clang.exe")
 SCANNER_C = ROOT / "lib" / "mcode" / "scanner.c"
 EXPORT_SCANNER_C = ROOT / "lib" / "mcode" / "export_scanner.c"
 INPROC_EVAL_C = ROOT / "lib" / "mcode" / "inproc_eval.c"
+INTERNAL_LOCATOR_C = ROOT / "lib" / "mcode" / "internal_locator.c"
 AHK_OUT = ROOT / "ahk_hack_single.ahk"
 
 
@@ -121,11 +122,13 @@ def main(argv=None):
     code = build_blob(SCANNER_C)
     export_code = build_blob(EXPORT_SCANNER_C)
     eval_code = build_blob(INPROC_EVAL_C)
+    locator_code = build_blob(INTERNAL_LOCATOR_C)
     if args.embed_only:
         text = args.out.read_text(encoding="utf-8")
         text = replace_marker(text, 'MC_BIF_SCANNER_X64 := "', code)
         text = replace_marker(text, 'MC_PE_EXPORT_SCANNER_X64 := "', export_code)
         text = replace_marker(text, 'MC_INPROC_EVAL_X64 := "', eval_code)
+        text = replace_marker(text, 'MC_INTERNAL_LOCATOR_X64 := "', locator_code)
         args.out.write_text(text, encoding="utf-8")
     else:
         # The placeholder file is generated once by ahk_mcode.ahk's author;
@@ -136,6 +139,7 @@ def main(argv=None):
     print("bif scanner size: %d bytes" % len(code))
     print("export scanner size: %d bytes" % len(export_code))
     print("inproc eval size: %d bytes" % len(eval_code))
+    print("internal locator size: %d bytes" % len(locator_code))
     print("embedded into: %s" % args.out)
     return 0
 

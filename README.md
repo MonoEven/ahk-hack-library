@@ -66,6 +66,7 @@ relocation escapes the blob.
 | --- | --- | --- |
 | Interpreter scanner | `lib/mcode/scanner.c` | Locates `g_BIF`, `sMdFunc`, `g_BIV_A` |
 | Export scanner | `lib/mcode/export_scanner.c` | Generic PE export-table scan |
+| Internal locator | `lib/mcode/internal_locator.c` | Dynamically locates EvalNative internals (`g_script`, `FinalizeExpression`, `FindOrAddVar`, CRT free, `SYM_INVALID`) |
 The AHK entry point is `lib/init.ahk`, which loads only the scanning core.
 The cnumpy integration lives in `lib/cnumpy/` and is optional.
 
@@ -204,8 +205,8 @@ Key risks:
 - `EvalNative` builds a temporary `Line`/`ArgStruct` inside the interpreter.
   Variable/function derefs are resolved through the interpreter's own var
   table; unsupported syntax fails loudly instead of degrading silently.
-  The version table also carries per-build enum deltas such as
-  `SYM_INVALID` (73 on 2.0.x, 75 on 2.1-alpha.30).
+  Internal addresses and enum deltas such as `SYM_INVALID` are discovered
+  at runtime by the embedded locator, not hardcoded per version.
 - Never use `CnpView` after its owner reference is released.
 - Do not substitute external `Buffer` memory for the internal `mItem` of an
   `Array()`; it causes a double free.

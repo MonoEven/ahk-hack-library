@@ -15,6 +15,7 @@ try {
         . "finalize=0x" Format("{:X}", AhkMagic.finalizeExpr) "`n"
         . "findvar=0x" Format("{:X}", AhkMagic.findOrAddVar) "`n"
         . "free=0x" Format("{:X}", AhkMagic.crtFree) "`n"
+        . "symInvalid=" AhkMagic.symInvalid "`n"
         , outFile
     ExitApp 0
 } catch as e {
