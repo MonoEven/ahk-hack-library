@@ -139,6 +139,31 @@ MsgBox AhkMagic.EvalScript(classScript)     ; 1, class loaded and used in-proces
 
 [c]Multi-version compatibility:[/c] the four-version matrix runs the same blob on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30. Stable [c]Line[/c]/[c]ArgStruct[/c]/token offsets have not changed in those builds; everything that changed is discovered at runtime. An unrecognized layout makes the probe throw instead of guessing, which keeps failures explicit and isolated.
 
+[codebox=text file=source-snippets]
+// source/script.h (AutoHotkey v2.1-alpha.30)
+ResultType ExpressionToPostfix(ArgStruct &aArg);
+LPTSTR ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *aResultToken,
+    LPTSTR &aTarget, LPTSTR &aDerefBuf, size_t &aDerefBufSize,
+    LPTSTR aArgDeref[], size_t aExtraSize);
+
+Line *mLastLine;
+FuncList mFuncs;
+Line *mLineParent = nullptr;
+Line *mPendingRelatedLine;
+int mExprFuncIndex = INT_MAX;
+bool mBackCompatMode = true;
+int mClassObjectCount;
+
+// source/TextIO.h
+class TextMem : public TextStream {
+public:
+    struct Buffer { LPVOID mBuffer; DWORD mLength; bool mOwned; };
+private:
+    Buffer mData;
+    LPBYTE mDataPos;
+};
+[/codebox]
+
 [color=#BF4000][b]4.4 Rebuilding the machine code[/b][/color]
 
 Requires LLVM clang (locally at [c]F:\Tech\LLVM\bin\clang.exe[/c]):

@@ -139,6 +139,31 @@ MsgBox AhkMagic.EvalScript(classScript)     ; 1，类定义并实例化
 
 [c]多版本兼容：[/c]四版本矩阵用同一份 blob 跑 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30。稳定偏移在这些构建中没有变化；变化的都改为运行时发现。无法识别的布局会让探针抛错，而不是猜一个偏移继续，失败因此是显式且隔离的。
 
+[codebox=text file=source-snippets]
+// source/script.h (AutoHotkey v2.1-alpha.30)
+ResultType ExpressionToPostfix(ArgStruct &aArg);
+LPTSTR ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *aResultToken,
+    LPTSTR &aTarget, LPTSTR &aDerefBuf, size_t &aDerefBufSize,
+    LPTSTR aArgDeref[], size_t aExtraSize);
+
+Line *mLastLine;
+FuncList mFuncs;
+Line *mLineParent = nullptr;
+Line *mPendingRelatedLine;
+int mExprFuncIndex = INT_MAX;
+bool mBackCompatMode = true;
+int mClassObjectCount;
+
+// source/TextIO.h
+class TextMem : public TextStream {
+public:
+    struct Buffer { LPVOID mBuffer; DWORD mLength; bool mOwned; };
+private:
+    Buffer mData;
+    LPBYTE mDataPos;
+};
+[/codebox]
+
 [color=#BF4000][b]4.4 重新构建机器码[/b][/color]
 
 需要 LLVM clang（本机在[c]F:\Tech\LLVM\bin\clang.exe[/c]）：

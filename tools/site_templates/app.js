@@ -75,12 +75,21 @@
     "Static", "StrGet", "StrLen", "StrPut", "SubStr", "Throw", "Try",
     "While", "false", "true", "this"
   ]);
+  const CPP_KEYWORDS = new Set([
+    "Buffer", "DWORD", "FAIL", "FuncList", "INT_MAX", "Line", "LineBuffer",
+    "LPBYTE", "LPCTSTR", "LPTSTR", "LPVOID", "ResultType", "ScriptModule",
+    "TextMem", "TextStream", "UserFunc", "auto", "bool", "class", "false",
+    "if", "int", "nullptr", "private", "public", "return", "size_t",
+    "struct", "true", "virtual", "while"
+  ]);
 
   const escapeHtml = (s) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
   const langOf = (pre) => {
     const raw = pre.textContent.trimStart();
+    if (/ResultType|class TextMem|struct Buffer|class UserFunc|Script::LoadIncludedFile/.test(raw))
+      return "cpp";
     if (/^(python |& )/.test(raw) || /^D:\\\\/.test(raw)) return "ps";
     if (/^(;|#Include|MsgBox|class |[A-Za-z_][\w]*\(|\.Ptr\b)/m.test(raw) && raw.includes("MCode"))
       return "ahk";
@@ -93,12 +102,15 @@
     if (!code || pre.dataset.highlighted) return;
     const raw = code.textContent;
     const lang = langOf(pre);
+    const kw = lang === "cpp" ? CPP_KEYWORDS : AHK_KEYWORDS;
     const isIdent = (c) => /[A-Za-z0-9_]/.test(c);
     let html = "";
     let i = 0;
     while (i < raw.length) {
       const ch = raw[i];
-      if ((lang === "ahk" && ch === ";") || (lang === "ps" && ch === "#")) {
+      if ((lang === "ahk" && ch === ";")
+          || (lang === "ps" && ch === "#")
+          || (lang === "cpp" && ch === "/" && raw[i + 1] === "/")) {
         const start = i;
         while (i < raw.length && raw[i] !== "\n") i++;
         html += '<span class="tok-cmt">' + escapeHtml(raw.slice(start, i)) + "</span>";
@@ -138,7 +150,7 @@
         const start = i;
         while (i < raw.length && isIdent(raw[i])) i++;
         const word = raw.slice(start, i);
-        if (AHK_KEYWORDS.has(word)) {
+        if (kw.has(word)) {
           html += '<span class="tok-kw">' + escapeHtml(word) + "</span>";
         } else if (raw[i] === "(") {
           html += '<span class="tok-fn">' + escapeHtml(word) + "</span>";
