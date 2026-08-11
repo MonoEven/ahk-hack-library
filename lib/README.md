@@ -47,6 +47,8 @@ ahk := CnpBridge.ToAhkNative(arr)   ; N-D deep copy, filled by machine code
 view := CnpBridge.View(arr)         ; zero-copy read/write view
 ```
 
+cnumpy repository: https://github.com/MonoEven/cnumpy
+
 Ownership rules are documented in `docs/lifecycle-and-ownership.md`.
 
 ## Rebuilding the machine code

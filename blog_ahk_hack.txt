@@ -1,6 +1,7 @@
 [b]AutoHotkey 运行时扫描库（ahk-hack）：不“破解”exe，而是读懂它[/b]
 
 仓库地址：[url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
+cnumpy 实践集成仓库：[url=https://github.com/MonoEven/cnumpy]https://github.com/MonoEven/cnumpy[/url]
 
 这个项目最早的目标听起来像“破解 autohotkey.exe”，但做下来真正有价值的东西不是爆破，而是一套可以在运行时自动读懂 AutoHotkey 可执行文件的扫描库。它把机器码直接嵌进一个 AHK v2 文件里，让脚本在运行时定位解释器内部结构，并在这些结构之上做一些“魔法操作”。cnumpy 数组转换只是用来验证这套扫描能力的实践成果，不是核心。
 
@@ -116,7 +117,7 @@ MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
 
 [color=#BF4000][b]4.4 可选 cnumpy 集成[/b][/color]
 
-先设置 DLL 路径，再引入集成入口：
+实践集成基于 [url=https://github.com/MonoEven/cnumpy]cnumpy[/url]。先设置 DLL 路径，再引入集成入口：
 
 [codebox=autohotkey file=lib\cnumpy\init.ahk]
 ; Optional cnumpy integration for the ahk-hack library.

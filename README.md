@@ -1,6 +1,7 @@
 # ahk-hack library
 
 GitHub: [https://github.com/MonoEven/ahk-hack-library](https://github.com/MonoEven/ahk-hack-library)
+cnumpy (practice integration): [https://github.com/MonoEven/cnumpy](https://github.com/MonoEven/cnumpy)
 
 The core of this project is **runtime structure scanning** of AutoHotkey
 executables and arbitrary PE modules, implemented as embedded x64 machine

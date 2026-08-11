@@ -1,6 +1,7 @@
 [b]AutoHotkey Runtime Scanner (ahk-hack): Don't "crack" the exe, understand it[/b]
 
 Repository: [url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
+cnumpy (practice integration): [url=https://github.com/MonoEven/cnumpy]https://github.com/MonoEven/cnumpy[/url]
 
 The original goal of this project sounded like "crack autohotkey.exe", but what turned out to be valuable was not patching the binary: it is a runtime scanner that can read the internal structure of an AutoHotkey executable on the fly. Machine code is embedded directly into an AHK v2 file, so a script can locate interpreter internals at runtime and perform "magic operations" on top of them. cnumpy array conversion is only a practice integration used to validate the scanner; it is not the core.
 
@@ -114,6 +115,7 @@ MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
 
 [color=#BF4000][b]4.4 Optional cnumpy integration[/b][/color]
 
+The practice integration is built on [url=https://github.com/MonoEven/cnumpy]cnumpy[/url].
 Set the DLL path first, then include the integration entry:
 
 [codebox=autohotkey file=lib\cnumpy\init.ahk]
@@ -244,3 +246,4 @@ Project source:
 - [c]tests/[/c] and [c]fork/cnumpy-ahk-bridge/benchmarks/[/c]: tests and benchmarks.
 
 GitHub: [url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
+cnumpy: [url=https://github.com/MonoEven/cnumpy]https://github.com/MonoEven/cnumpy[/url]
