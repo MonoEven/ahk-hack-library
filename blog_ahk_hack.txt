@@ -131,21 +131,7 @@ Point(1, 2).x
 MsgBox AhkMagic.EvalScript(classScript)     ; 1，类定义并实例化
 [/codebox]
 
-[c]EvalNative[/c] 会构造临时 [c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的
-[c]ExpressionToPostfix[/c] 和 [c]ExpandExpression[/c]。已验证的四个版本上都支持
-字面量、运算符、全局变量与函数调用；不支持的语法会直接报错而不是悄悄降级。
-[c]Eval[/c] 会先走同进程管线，遇到暂不支持的表达式再使用 [c]EvalSubprocess[/c]。
-[c]EvalScript[/c] 不再写临时 [c].ahk[/c] 文件：文本编码成 UTF-16 后，
-在 scratch 缓冲区里构造一个 [c]TextMem[/c] 兼容的 [c]TextStream[/c]，
-直接交给解释器自己的 [c]LoadIncludedFile(TextStream*)[/c] 加载，因此函数
-定义和类定义都能直接生效。[c]OpenIncludedFile[/c] 现在只作为定位
-[c]LoadIncludedFile[/c] 的指纹。管线的全部入口和全局量
-（[c]PreparseExpressions[/c]、[c]PreprocessLocalVars[/c]、
-[c]OpenIncludedFile[/c]、[c]LoadIncludedFile(TextStream*)[/c]、[c]g[/c]、
-[c]Line::sSourceFileCount[/c]）都在运行时定位；[c]Script[/c]/
-[c]UserFunc[/c]/[c]TextStream[/c] 的布局偏移也由一次性探针在运行时发现，
-不再有按版本维护的表。
-2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10 四个版本均已验证。
+[c]EvalNative[/c] 会构造临时 [c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的 [c]ExpressionToPostfix[/c] 和 [c]ExpandExpression[/c]。已验证的四个版本上都支持 字面量、运算符、全局变量与函数调用；不支持的语法会直接报错而不是悄悄降级。 [c]Eval[/c] 会先走同进程管线，遇到暂不支持的表达式再使用 [c]EvalSubprocess[/c]。 [c]EvalScript[/c] 不再写临时 [c].ahk[/c] 文件：文本编码成 UTF-16 后， 在 scratch 缓冲区里构造一个 [c]TextMem[/c] 兼容的 [c]TextStream[/c]， 直接交给解释器自己的 [c]LoadIncludedFile(TextStream*)[/c] 加载，因此函数 定义和类定义都能直接生效。[c]OpenIncludedFile[/c] 现在只作为定位 [c]LoadIncludedFile[/c] 的指纹。管线的全部入口和全局量 （[c]PreparseExpressions[/c]、[c]PreprocessLocalVars[/c]、 [c]OpenIncludedFile[/c]、[c]LoadIncludedFile(TextStream*)[/c]、[c]g[/c]、 [c]Line::sSourceFileCount[/c]）都在运行时定位；[c]Script[/c]/ [c]UserFunc[/c]/[c]TextStream[/c] 的布局偏移也由一次性探针在运行时发现， 不再有按版本维护的表。 2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10 四个版本均已验证。
 
 [color=#BF4000][b]4.4 重新构建机器码[/b][/color]
 

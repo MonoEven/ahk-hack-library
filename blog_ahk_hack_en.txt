@@ -93,9 +93,7 @@ AhkMagic.RestoreBifObject(Abs, state)
 AhkMagic.RestoreBif("Abs", old)
 [/codebox]
 
-The table patch affects future dynamic lookups. The deep patch rewrites the
-already-resolved function object's C function pointer, so a direct `Abs(1)`
-in source also returns `sin(1)`, and is restored to 1 afterwards.
+The table patch affects future dynamic lookups. The deep patch rewrites the already-resolved function object's C function pointer, so a direct `Abs(1)` in source also returns `sin(1)`, and is restored to 1 afterwards.
 
 [color=#BF4000][b]4.3 Expression Eval[/b][/color]
 
@@ -133,26 +131,7 @@ Point(1, 2).x
 MsgBox AhkMagic.EvalScript(classScript)     ; 1, class loaded and used in-process
 [/codebox]
 
-[c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls
-the running interpreter's own [c]ExpressionToPostfix[/c] and
-[c]ExpandExpression[/c] functions directly in this process. It currently
-covers literals, operators, global variables, and function calls on all
-verified builds. Unsupported syntax fails loudly instead of degrading
-silently. [c]Eval[/c] tries the in-process pipeline first and uses
-[c]EvalSubprocess[/c] for expressions it cannot evaluate yet.
-[c]EvalScript[/c] no longer writes a temp [c].ahk[/c] file: the text is
-encoded as UTF-16, a [c]TextMem[/c]-compatible [c]TextStream[/c] is built in
-a scratch buffer, and it is passed directly to the interpreter's own
-[c]LoadIncludedFile(TextStream*)[/c], so function definitions and class
-definitions work in-process. [c]OpenIncludedFile[/c] now serves only as a
-fingerprint for locating [c]LoadIncludedFile[/c]. Every entry point and
-global used by the pipeline is located at runtime: [c]PreparseExpressions[/c],
-[c]PreprocessLocalVars[/c], [c]OpenIncludedFile[/c],
-[c]LoadIncludedFile(TextStream*)[/c], [c]g[/c], and
-[c]Line::sSourceFileCount[/c]. There is no per-version table: the
-[c]Script[/c]/[c]UserFunc[/c]/[c]TextStream[/c] layout offsets are discovered
-at runtime by a one-time probe. Verified on 2.1-alpha.30, 2.0.26, 2.0.0, and
-2.0-beta.10.
+[c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls the running interpreter's own [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c] functions directly in this process. It currently covers literals, operators, global variables, and function calls on all verified builds. Unsupported syntax fails loudly instead of degrading silently. [c]Eval[/c] tries the in-process pipeline first and uses [c]EvalSubprocess[/c] for expressions it cannot evaluate yet. [c]EvalScript[/c] no longer writes a temp [c].ahk[/c] file: the text is encoded as UTF-16, a [c]TextMem[/c]-compatible [c]TextStream[/c] is built in a scratch buffer, and it is passed directly to the interpreter's own [c]LoadIncludedFile(TextStream*)[/c], so function definitions and class definitions work in-process. [c]OpenIncludedFile[/c] now serves only as a fingerprint for locating [c]LoadIncludedFile[/c]. Every entry point and global used by the pipeline is located at runtime: [c]PreparseExpressions[/c], [c]PreprocessLocalVars[/c], [c]OpenIncludedFile[/c], [c]LoadIncludedFile(TextStream*)[/c], [c]g[/c], and [c]Line::sSourceFileCount[/c]. There is no per-version table: the [c]Script[/c]/[c]UserFunc[/c]/[c]TextStream[/c] layout offsets are discovered at runtime by a one-time probe. Verified on 2.1-alpha.30, 2.0.26, 2.0.0, and 2.0-beta.10.
 
 [color=#BF4000][b]4.4 Rebuilding the machine code[/b][/color]
 
@@ -186,7 +165,7 @@ Operations fall into three categories:
 - Read-only: [c]Init / Summary / BifRva / BifAddr / ScanExports[/c]. These do not modify process state; the main risk is compatibility;
 - Mutating: [c]PatchBif / RestoreBif[/c]. These directly modify internal tables and can crash the interpreter if misused. During development this project hit [c]0xC0000374[/c] (heap corruption);
 - Executing: [c]Eval[/c] and [c]EvalNative[/c]. This is equivalent to running
-  arbitrary scripts.
+arbitrary scripts.
 
 Risks to keep in mind:
 
@@ -205,8 +184,7 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 
 - The scanning core was distilled into [c]ahk_hack_single.ahk[/c], with a runnable [c]ahk_hack_demo.ahk[/c];
 - Added [c]EvalNative[/c], an in-process expression evaluator built on the
-  interpreter's own [c]ExpressionToPostfix[/c]/[c]ExpandExpression[/c]
-  pipeline;
+interpreter's own [c]ExpressionToPostfix[/c]/[c]ExpandExpression[/c] pipeline;
 - Fixed hardcoded structural offsets in the optional integration layer by switching to runtime layout discovery and native fill interfaces.
 
 
@@ -214,9 +192,7 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 
 - The machine-code blocks are x64 only;
 - [c]EvalNative()[/c] runs the interpreter's in-process expression pipeline
-  for literals, operators, global variables, and function calls on all
-  verified builds. [c]Eval()[/c] remains the subprocess fallback for
-  arbitrary expressions;
+for literals, operators, global variables, and function calls on all verified builds. [c]Eval()[/c] remains the subprocess fallback for arbitrary expressions;
 - [c]PatchBif()[/c] does not retroactively affect already-cached function objects;
 - native construction relies on source-derived or runtime-discovered layout, so cross-version verification is mandatory.
 
