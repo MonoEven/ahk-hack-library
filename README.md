@@ -116,6 +116,22 @@ ahk := CnpBridge.ToAhkNative(arr)   ; N-D deep copy, runtime-discovered layout
 view := CnpBridge.View(arr)         ; zero-copy read/write view
 ```
 
+## Examples
+
+- `ahk_hack_demo.ahk` - runnable self-test: interpreter table inventory,
+  distinct built-in C functions, kernel32 export scan, built-in redirection,
+  and Eval.
+- `examples/ahk_hack_export_inventory.ahk` - dumps a module's exports to CSV,
+  with an optional name filter.
+- `examples/ahk_hack_builtin_probe.ahk` - prints RVA, absolute address, and
+  parameter counts for built-in functions by name.
+
+```powershell
+& D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
+& D:\...\AutoHotkey64.exe examples\ahk_hack_export_inventory.ahk kernel32.dll Virtual
+& D:\...\AutoHotkey64.exe examples\ahk_hack_builtin_probe.ahk Abs StrLen
+```
+
 ## API Reference
 
 ### AhkMagic
@@ -222,6 +238,7 @@ tools/
   build_mcode.py            compiles and embeds the machine code
   ahk_inspect.py            Python/PE cross-check analyzer
 tests/                      core, export, and eval tests
+examples/                   export inventory and built-in probe demos
 fork/cnumpy-ahk-bridge/     cnumpy integration tests and benchmarks
 blog_ahk_hack.txt           blog post (ZH)
 blog_ahk_hack_en.txt        blog post (EN)

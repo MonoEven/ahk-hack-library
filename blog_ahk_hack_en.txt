@@ -234,9 +234,9 @@ class AhkMagic {
             p := out.Ptr + bifBase + (A_Index - 1) * bifStride
             namePtr := NumGet(p, 0, "Ptr")
             fnPtr := NumGet(p, 8, "Ptr")
-            min := NumGet(p, 16, "UChar")
-            max := NumGet(p, 17, "UChar")
-            fid := NumGet(p, 18, "UChar")
+            min := NumGet(p, 16, "UInt")
+            max := NumGet(p, 20, "UInt")
+            fid := NumGet(p, 24, "UInt")
             name := StrGet(namePtr, "UTF-16")
             AhkMagic.bif[name] := Map(
                 "index", A_Index - 1,
