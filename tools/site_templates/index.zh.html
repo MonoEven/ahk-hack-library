@@ -137,6 +137,10 @@ secTable := base + peOff + 24 + optSize</code></pre>
               <td><code>internal_locator.c</code></td>
               <td>EvalNative 内部符号的运行时发现</td>
             </tr>
+            <tr>
+              <td><code>mem_script.c</code></td>
+              <td>EvalScript 使用的内存 <code>TextStream</code></td>
+            </tr>
           </tbody>
         </table>
         <h3>4.1 编译成 freestanding COFF</h3>
@@ -149,7 +153,7 @@ secTable := base + peOff + 24 + optSize</code></pre>
         <p>原因和运行时放置有关。<code>MCode()</code> 把十六进制字符串解码成 AHK <code>Buffer</code>，改成可执行保护后交给 <code>DllCall</code> 使用。这个 blob 不能有绝对地址、导入或 <code>.rdata</code> 引用，所以能在任意地址运行。一旦有逃出 <code>.text</code> 的重定位，复制后的字节就会指向原目标文件里的地址，而不是当前进程。</p>
         <h3>4.3 嵌入与验证</h3>
         <pre><code>python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk</code></pre>
-        <p>脚本替换四个 <code>MC_*_X64</code> 常量并打印大小。当前从 <code>lib/mcode/</code> 重新生成可以得到与仓库内完全一致的常量。各 blob 大小为：解释器扫描器 <code>2559</code> 字节、导出扫描器 <code>297</code> 字节、进程内求值器 <code>1784</code> 字节、内部定位器 <code>1537</code> 字节。</p>
+        <p>脚本替换五个 <code>MC_*_X64</code> 常量并打印大小。当前从 <code>lib/mcode/</code> 重新生成可以得到与仓库内完全一致的常量。各 blob 大小为：解释器扫描器 <code>2559</code> 字节、导出扫描器 <code>297</code> 字节、进程内求值器 <code>1784</code> 字节、内部定位器 <code>1537</code> 字节、内存脚本加载器 <code>1016</code> 字节。</p>
         <p>重建之后要跑四个解释器上的完整测试矩阵。十六进制本身不适合肉眼审查，测试通过才是有效验证。</p>
       </section>
 
@@ -181,17 +185,17 @@ MsgBox AhkMagic.EvalNative("myVar + 1")          ; 43</code></pre>
 
       <section id="evalscript">
         <h2>6. EvalScript：长文本、函数与类</h2>
-        <p>表达式求值本身无法定义函数或类。<code>EvalScript()</code> 改走解释器的 include 流程：把文本写入临时文件，调用 <code>OpenIncludedFile</code>，用 <code>LoadIncludedFile(TextStream*)</code> 加载，对新行执行 <code>PreparseExpressions</code>，对每个新函数执行 <code>PreprocessLocalVars</code>，最后用 <code>EvalNative()</code> 求值最后一个非声明行。</p>
+        <p>表达式求值本身无法定义函数或类。<code>EvalScript()</code> 改走解释器的 include 流程，但直接从内存加载：文本编码为 UTF-16，在 scratch 缓冲区里构造一个最小的 <code>TextMem</code> 兼容 <code>TextStream</code>，直接交给 <code>LoadIncludedFile(TextStream*)</code>，不创建临时 <code>.ahk</code> 文件。新行随后执行 <code>PreparseExpressions</code>，新函数执行 <code>PreprocessLocalVars</code>，最后用 <code>EvalNative()</code> 求值最后一个非声明行。</p>
         <p>这些入口都在运行时定位：</p>
         <ul>
           <li><code>PreparseExpressions</code>：通过 <code>ExpressionToPostfix</code> 的调用者加 <code>cmp byte ptr [rbx], 3/4</code> 模式定位。</li>
           <li><code>PreprocessLocalVars</code>：用 <code>movzx</code> 加 <code>cmp byte ptr [rax+0x23], 2</code> 签名定位。</li>
-          <li><code>OpenIncludedFile</code>：用分别覆盖 2.0 系列和 2.1 的两段 prologue 特征定位。</li>
+          <li><code>OpenIncludedFile</code>：作为 <code>LoadIncludedFile(TextStream*)</code> 的定位指纹，用分别覆盖 2.0 系列和 2.1 的两段 prologue 特征定位。</li>
           <li><code>LoadIncludedFile(TextStream*)</code>：在 <code>OpenIncludedFile</code> 调用者的 <code>cmp eax,3</code> 附近定位。</li>
           <li><code>Line::sSourceFileCount</code>：向前回溯找取值合理的小整数的 RIP 相对 load。</li>
           <li><code>g</code> 全局：在 <code>PreparseExpressions</code> 调用者里找 <code>mov rax,[rip+disp]</code> 后接偏移 <code>0x28</code> 的 store。</li>
         </ul>
-        <p>加载前保存脚本状态，并在 <code>finally</code> 中恢复：pending 父/关联行、pending 参数初始化、当前模块、表达式函数状态和类计数。临时解析器状态不会泄漏给调用者。</p>
+        <p>内存 <code>TextStream</code> 的布局按版本不同：2.0.26 之前 <code>mData</code> 在 <code>0x40</code>，2.0.26 起在 <code>0x50</code>，所以加载器把偏移作为参数传入，不假设固定布局。加载前保存脚本状态，并在 <code>finally</code> 中恢复：pending 父/关联行、pending 参数初始化、当前模块、表达式函数状态和类计数。临时解析器状态不会泄漏给调用者。</p>
         <pre><code>script := "
 (
 add(a, b) {
@@ -384,6 +388,7 @@ try {
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
 & D:\...\AutoHotkey64.exe tests\version_probe.ahk</code></pre>
       </section>
 

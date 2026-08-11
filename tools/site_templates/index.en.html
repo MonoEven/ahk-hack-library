@@ -137,6 +137,10 @@ secTable := base + peOff + 24 + optSize</code></pre>
               <td><code>internal_locator.c</code></td>
               <td>runtime discovery of EvalNative internals</td>
             </tr>
+            <tr>
+              <td><code>mem_script.c</code></td>
+              <td>in-memory <code>TextStream</code> for EvalScript</td>
+            </tr>
           </tbody>
         </table>
         <h3>4.1 Compile to a freestanding COFF object</h3>
@@ -149,7 +153,7 @@ secTable := base + peOff + 24 + optSize</code></pre>
         <p>The reason is runtime placement. <code>MCode()</code> decodes the hex string into an AHK <code>Buffer</code>, changes its protection to executable, and returns it for <code>DllCall</code>. The blob has no absolute addresses, imports, or <code>.rdata</code> references, so it can run at any address. A relocation that escapes <code>.text</code> would make the copied bytes point back into the original object file instead of the current process.</p>
         <h3>4.3 Embed and verify</h3>
         <pre><code>python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk</code></pre>
-        <p>The script replaces the four <code>MC_*_X64</code> constants and prints the blob sizes. Regenerating from <code>lib/mcode/</code> currently reproduces the checked-in constants exactly. The sizes are <code>2559</code> bytes for the interpreter scanner, <code>297</code> for the export scanner, <code>1784</code> for the in-process evaluator, and <code>1537</code> for the internal locator.</p>
+        <p>The script replaces the five <code>MC_*_X64</code> constants and prints the blob sizes. Regenerating from <code>lib/mcode/</code> currently reproduces the checked-in constants exactly. The sizes are <code>2559</code> bytes for the interpreter scanner, <code>297</code> for the export scanner, <code>1784</code> for the in-process evaluator, <code>1537</code> for the internal locator, and <code>1016</code> for the memory-script loader.</p>
         <p>After a rebuild, run the test suite across the four interpreters. That is the actual verification; the hex strings themselves are not meant to be reviewed by eye.</p>
       </section>
 
@@ -181,17 +185,17 @@ MsgBox AhkMagic.EvalNative("myVar + 1")          ; 43</code></pre>
 
       <section id="evalscript">
         <h2>6. EvalScript: long text, functions, and classes</h2>
-        <p>Expression evaluation cannot define functions or classes. <code>EvalScript()</code> uses the interpreter's include machinery instead: write the text to a temp file, call <code>OpenIncludedFile</code>, load it with <code>LoadIncludedFile(TextStream*)</code>, run <code>PreparseExpressions</code> on the new lines, and call <code>PreprocessLocalVars</code> for each new function. The last non-declaration line is then evaluated with <code>EvalNative()</code>.</p>
+        <p>Expression evaluation cannot define functions or classes. <code>EvalScript()</code> uses the interpreter's include machinery directly from memory: the text is encoded as UTF-16, a minimal <code>TextMem</code>-compatible <code>TextStream</code> is built in a scratch buffer, and it is passed straight to <code>LoadIncludedFile(TextStream*)</code>. No temporary <code>.ahk</code> file is created. New lines run through <code>PreparseExpressions</code>, new functions through <code>PreprocessLocalVars</code>, and the last non-declaration line is evaluated with <code>EvalNative()</code>.</p>
         <p>Each entry point is located at runtime:</p>
         <ul>
           <li><code>PreparseExpressions</code> is found through callers of <code>ExpressionToPostfix</code> combined with <code>cmp byte ptr [rbx], 3/4</code> patterns.</li>
           <li><code>PreprocessLocalVars</code> uses its <code>movzx</code> plus <code>cmp byte ptr [rax+0x23], 2</code> signature.</li>
-          <li><code>OpenIncludedFile</code> uses two prologue needles covering the 2.0 line and 2.1.</li>
+          <li><code>OpenIncludedFile</code> is located as a fingerprint for <code>LoadIncludedFile(TextStream*)</code>, using two prologue needles covering the 2.0 line and 2.1.</li>
           <li><code>LoadIncludedFile(TextStream*)</code> is found through a <code>cmp eax,3</code> site in the callers of <code>OpenIncludedFile</code>.</li>
           <li><code>Line::sSourceFileCount</code> is discovered from a backward RIP-relative load with a plausible small count.</li>
           <li>The <code>g</code> global is discovered inside callers of <code>PreparseExpressions</code> via a <code>mov rax,[rip+disp]</code> followed by a store into offset <code>0x28</code>.</li>
         </ul>
-        <p>The script state is saved before loading and restored in a <code>finally</code> block: pending parent/related lines, pending parameter initializers, current module, expression-function state, and class count. This keeps temporary parser state out of the caller.</p>
+        <p>The in-memory <code>TextStream</code> layout is version-dependent: <code>mData</code> sits at <code>0x40</code> before 2.0.26 and at <code>0x50</code> from 2.0.26 onward, so the loader receives the offset as a parameter instead of assuming a fixed layout. The script state is saved before loading and restored in a <code>finally</code> block: pending parent/related lines, pending parameter initializers, current module, expression-function state, and class count. This keeps temporary parser state out of the caller.</p>
         <pre><code>script := "
 (
 add(a, b) {
@@ -384,6 +388,7 @@ try {
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
 & D:\...\AutoHotkey64.exe tests\version_probe.ahk</code></pre>
       </section>
 

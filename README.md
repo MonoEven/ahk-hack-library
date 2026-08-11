@@ -50,8 +50,8 @@ Bilingual field notes: [https://monoeven.github.io/ahk-hack-library/](https://mo
   expression pipeline first and falls back to `EvalSubprocess()` for
   expressions it cannot evaluate yet. `EvalNative()` is the in-process core.
   `EvalScript()` loads multi-line script text through the interpreter's own
-  `LoadIncludedFile`, so function definitions and class definitions work
-  in-process.
+  `LoadIncludedFile` from an in-memory `TextStream`, so function definitions
+  and class definitions work in-process without a temp `.ahk` file.
 - **Optional cnumpy bridge.** `CnpBridge` converts `CnpArray` to native AHK
   values, supports zero-copy views, and is validated by 1D/2D/3D tests.
 - **Self-contained at runtime.** No Python, no external scanner, no
@@ -279,7 +279,9 @@ the 100M measurement is the real figure.
 global used by the pipeline is located at runtime, including
 `LoadIncludedFile(TextStream*)` and `Line::sSourceFileCount`. A small
 per-version table covers only the C++ struct layout differences
-(`Script`/`ScriptModule`/`UserFunc`) between 2.1 and the 2.0 line.
+(`Script`/`ScriptModule`/`UserFunc`) between 2.1 and the 2.0 line, plus the
+`TextStream::mData` offset used by the in-memory script loader
+(`0x40` before 2.0.26, `0x50` from 2.0.26 onward).
 
 ## Project Layout
 
@@ -355,6 +357,9 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 # In-process class definition and instantiation
 & D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
+
+# Repeated in-memory loads in one process
+& D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
 
 # Per-version internal address probe
 & D:\...\AutoHotkey64.exe tests\version_probe.ahk

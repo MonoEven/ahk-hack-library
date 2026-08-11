@@ -17,6 +17,7 @@ SCANNER_C = ROOT / "lib" / "mcode" / "scanner.c"
 EXPORT_SCANNER_C = ROOT / "lib" / "mcode" / "export_scanner.c"
 INPROC_EVAL_C = ROOT / "lib" / "mcode" / "inproc_eval.c"
 INTERNAL_LOCATOR_C = ROOT / "lib" / "mcode" / "internal_locator.c"
+MEM_SCRIPT_C = ROOT / "lib" / "mcode" / "mem_script.c"
 AHK_OUT = ROOT / "ahk_hack_single.ahk"
 
 
@@ -123,12 +124,14 @@ def main(argv=None):
     export_code = build_blob(EXPORT_SCANNER_C)
     eval_code = build_blob(INPROC_EVAL_C)
     locator_code = build_blob(INTERNAL_LOCATOR_C)
+    mem_script_code = build_blob(MEM_SCRIPT_C)
     if args.embed_only:
         text = args.out.read_text(encoding="utf-8")
         text = replace_marker(text, 'MC_BIF_SCANNER_X64 := "', code)
         text = replace_marker(text, 'MC_PE_EXPORT_SCANNER_X64 := "', export_code)
         text = replace_marker(text, 'MC_INPROC_EVAL_X64 := "', eval_code)
         text = replace_marker(text, 'MC_INTERNAL_LOCATOR_X64 := "', locator_code)
+        text = replace_marker(text, 'MC_MEM_SCRIPT_X64 := "', mem_script_code)
         args.out.write_text(text, encoding="utf-8")
     else:
         # The placeholder file is generated once by ahk_mcode.ahk's author;
@@ -140,6 +143,7 @@ def main(argv=None):
     print("export scanner size: %d bytes" % len(export_code))
     print("inproc eval size: %d bytes" % len(eval_code))
     print("internal locator size: %d bytes" % len(locator_code))
+    print("mem script loader size: %d bytes" % len(mem_script_code))
     print("embedded into: %s" % args.out)
     return 0
 
