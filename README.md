@@ -204,6 +204,8 @@ Key risks:
 - `EvalNative` builds a temporary `Line`/`ArgStruct` inside the interpreter.
   Variable/function derefs are resolved through the interpreter's own var
   table; unsupported syntax fails loudly instead of degrading silently.
+  The version table also carries per-build enum deltas such as
+  `SYM_INVALID` (73 on 2.0.x, 75 on 2.1-alpha.30).
 - Never use `CnpView` after its owner reference is released.
 - Do not substitute external `Buffer` memory for the internal `mItem` of an
   `Array()`; it causes a double free.
@@ -235,9 +237,8 @@ the 100M measurement is the real figure.
 - AutoHotkey 2.0.0 (64-bit)
 - AutoHotkey 2.0-beta.10 (64-bit)
 
-`EvalNative` is verified on AutoHotkey 2.0-beta.10, 2.0.0, and 2.0.26 x64.
-2.1-alpha.30 is supported by the scanner but not yet by `EvalNative`; it
-raises an explicit "version table missing" error instead of crashing.
+`EvalNative` is verified on AutoHotkey 2.1-alpha.30, 2.0.26, 2.0.0, and
+2.0-beta.10 (all x64).
 
 ## Project Layout
 

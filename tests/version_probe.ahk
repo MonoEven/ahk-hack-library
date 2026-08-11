@@ -18,7 +18,7 @@ try {
         , outFile
     ExitApp 0
 } catch as e {
-    FileAppend "version=" A_AhkVersion " unsupported: " e.Message "`n"
+    FileAppend "FAIL version=" A_AhkVersion " " e.Message "`n"
         , outFile
-    ExitApp 0
+    ExitApp 1
 }

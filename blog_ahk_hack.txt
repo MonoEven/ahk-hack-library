@@ -103,7 +103,7 @@ MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5，同进程
 [/codebox]
 
 [c]EvalNative[/c] 会构造临时 [c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的
-[c]ExpressionToPostfix[/c] 和 [c]ExpandExpression[/c]。稳定的 2.0.x 版本上支持
+[c]ExpressionToPostfix[/c] 和 [c]ExpandExpression[/c]。已验证的四个版本上都支持
 字面量、运算符、全局变量与函数调用；不支持的语法会直接报错而不是悄悄降级。
 [c]Eval[/c] 仍保留为通用兜底。
 
@@ -124,8 +124,7 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 [/codebox]
 
-扫描层已验证：2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10（均为 64 位）。
-[c]EvalNative[/c] 已验证：2.0.26、2.0.0、2.0-beta.10。
+已验证：2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10（均为 64 位）。
 
 
 [b]5. 安全性[/b]
@@ -161,14 +160,14 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 [b]7. 已知限制[/b]
 
 - 机器码块只支持 x64；
-- [c]EvalNative()[/c] 通过解释器内部的同进程表达式管线执行，稳定的 2.0.x 版本上支持字面量、运算符、全局变量与函数调用；2.1-alpha.30 会显式报“不支持版本”。[c]Eval()[/c] 仍是任意表达式的子进程兜底；
+- [c]EvalNative()[/c] 通过解释器内部的同进程表达式管线执行，已验证的四个版本上支持字面量、运算符、全局变量与函数调用。[c]Eval()[/c] 仍是任意表达式的子进程兜底；
 - [c]PatchBif()[/c] 对已经缓存的函数对象不追溯生效；
 - 原生构造依赖源码布局或运行时布局发现，跨版本使用前要验证。
 
 
 [b]8. 写在后面[/b]
 
-项目最后落在扫描上：把 exe 当作程序自身可以读取的结构化文档，先扫描出内部地图，再在地图上做实验。同进程 eval 目前已在稳定的 2.0.x 上支持字面量、运算符、全局变量与函数调用；后续想做的方向包括稳定 2.1-alpha.30 的 [c]EvalNative[/c]、自动生成 DLL 绑定，以及把更多解释器内部结构加进扫描范围。
+项目最后落在扫描上：把 exe 当作程序自身可以读取的结构化文档，先扫描出内部地图，再在地图上做实验。同进程 eval 目前已在包括 2.1-alpha.30 在内的已验证版本上支持字面量、运算符、全局变量与函数调用；后续想做的方向包括自动生成 DLL 绑定，以及把更多解释器内部结构加进扫描范围。
 
 
 

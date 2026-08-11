@@ -57,7 +57,6 @@ typedef int i32;
 #define ARG_TYPE_NORMAL 0
 #define RESULT_OK 1
 #define SYM_VAR 4
-#define SYM_INVALID 73
 
 typedef int (*PostfixFn)(u64 line, u64 arg, u64 *infix);
 typedef int (*FinalizeFn)(u64 line, u64 arg);
@@ -82,7 +81,7 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
                      u64 scratch, u64 expr_ptr, u64 out, u64 stage,
                      u64 line_override, u64 arg_override,
                      u64 g_script, u64 finalize_fn,
-                     u64 find_var_fn, u64 free_fn, u64 free_infix)
+                     u64 find_var_fn, u64 free_fn, u64 sym_invalid)
 {
     u64 line;
     u64 arg;
@@ -207,7 +206,7 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
     *(u64 *)curr_line_slot = line;
 
     status = ((PostfixFn)postfix_fn)(line, arg, &infix);
-    if (free_infix && infix)
+    if (infix)
         ((FreeFn)free_fn)(infix);
     if (status != RESULT_OK)
     {
@@ -215,7 +214,6 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
         *(u32 *)(out + 0) = 2; /* postfix failed */
         return 0;
     }
-
     if (stage == 0)
     {
         *(u64 *)curr_line_slot = saved_line;
@@ -227,7 +225,7 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
     /* Resolve read variable/function references before FinalizeExpression,
      * which needs Var* pointers when validating function calls. */
     for (token = *(u64 *)(arg + ARG_POSTFIX_OFF);
-         *(u32 *)(token + TOKEN_SYMBOL_OFF) != SYM_INVALID; token += 24)
+         *(u32 *)(token + TOKEN_SYMBOL_OFF) != (u32)sym_invalid; token += 24)
     {
         if (*(u32 *)(token + TOKEN_SYMBOL_OFF) != SYM_VAR)
             continue;
