@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inside AutoHotkey64.exe - ahk-hack field notes</title>
+  <meta name="description" content="A technical walkthrough of runtime PE scanning, machine-code rebuilding, and in-process expression evaluation inside AutoHotkey v2.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+  <header class="site-header">
+    <div class="wrap">
+      <div class="brand">
+        <strong>ahk-hack</strong>
+        <span>runtime field notes for AutoHotkey v2</span>
+      </div>
+      <nav class="lang-switch" aria-label="Language">
+        <a class="active" href="index.html" lang="en">EN</a>
+        <a href="index.zh.html" lang="zh">中文</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <div class="kicker">Field notes · 2026-08-12</div>
+      <h1>Inside AutoHotkey64.exe: Runtime Scanning, Machine Code, and In-Process Eval</h1>
+      <p class="lede">
+        How an AutoHotkey v2 script reads the interpreter that is running it,
+        rebuilds its embedded machine code, and evaluates expressions without
+        spawning a child process.
+      </p>
+      <p class="meta">
+        Repository: <a href="https://github.com/MonoEven/ahk-hack-library">MonoEven/ahk-hack-library</a>
+        · Practice integration: <a href="https://github.com/MonoEven/cnumpy">cnumpy</a>
+      </p>
+      <div class="links">
+        <a href="https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk">Single-file core</a>
+        <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode">Machine-code sources</a>
+        <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/tests">Tests</a>
+      </div>
+    </section>
+
+    <article>
+      <nav class="toc" aria-label="Table of contents">
+        <h2>Contents</h2>
+        <ol>
+          <li><a href="#why">Why read the running executable</a></li>
+          <li><a href="#pe">The PE map</a></li>
+          <li><a href="#tables">The three interpreter tables</a></li>
+          <li><a href="#rebuild">Rebuilding the machine code</a></li>
+          <li><a href="#evalnative">EvalNative: in-process expression evaluation</a></li>
+          <li><a href="#evalscript">EvalScript: long text, functions, and classes</a></li>
+          <li><a href="#boundary">Runtime discovery versus layout constants</a></li>
+          <li><a href="#examples">Complete examples</a></li>
+          <li><a href="#verification">Verification matrix</a></li>
+          <li><a href="#debugging">Debugging and failure modes</a></li>
+          <li><a href="#security">Security and usage rules</a></li>
+          <li><a href="#learning">Learning path</a></li>
+          <li><a href="#appendix">Appendix: single-file source</a></li>
+        </ol>
+      </nav>
+
+      <section id="why">
+        <h2>1. Why read the running executable</h2>
+        <p>
+          AutoHotkey v2 exposes the script-facing surface through built-ins and
+          system variables such as <code>A_AhkPath</code>, but it does not
+          publish a stable C API for its internals. The interesting structures
+          - the built-in function table, the typed native-function table, and
+          the <code>A_*</code> variable table - live inside
+          <code>AutoHotkey64.exe</code> itself.
+        </p>
+        <p>
+          The executable is a PE image. A script already running inside the
+          interpreter can obtain the module base, parse the image headers, and
+          treat the interpreter's own sections as data. That is the core idea:
+          scan first, mutate only when a deliberate operation asks for it, and
+          fail loudly when a scan cannot prove what it found.
+        </p>
+      </section>
+
+      <section id="pe">
+        <h2>2. The PE map</h2>
+        <p>
+          Every 64-bit AutoHotkey v2 executable starts with the same fixed
+          landmarks: the <code>MZ</code> DOS header, the PE signature
+          <code>PE\0\0</code> at the offset stored in <code>e_lfanew</code>,
+          and a PE32+ optional header with magic <code>0x20B</code>. The
+          section table follows the optional header. Each section contributes
+          a name, virtual size, virtual address, raw size, and characteristics.
+        </p>
+        <pre><code>peOff := NumGet(base, 0x3C, "UInt")
+numSections := NumGet(base + peOff + 6, "UShort")
+optSize := NumGet(base + peOff + 20, "UShort")
+secTable := base + peOff + 24 + optSize</code></pre>
+        <p>
+          The library wraps this in <code>AhkMagic._ModuleSections()</code>,
+          returning a map from section name to <code>{rva, size, ptr}</code>.
+          Three sections matter most:
+        </p>
+        <ul>
+          <li><code>.text</code>: executable code, where function pointers must land;</li>
+          <li><code>.rdata</code>: read-only data, where UTF-16 names usually live;</li>
+          <li><code>.data</code>: read-write data, where the interpreter tables are built.</li>
+        </ul>
+      </section>
+
+      <section id="tables">
+        <h2>3. The three interpreter tables</h2>
+        <p>
+          The scanner targets three tables with stable record shapes on x64:
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Table</th>
+              <th>Contents</th>
+              <th>Record stride</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>g_BIF</code></td>
+              <td>script-visible built-ins such as <code>Abs</code> and <code>Sin</code></td>
+              <td><code>0x20</code> bytes</td>
+            </tr>
+            <tr>
+              <td><code>sMdFunc</code></td>
+              <td>typed native functions such as <code>MsgBox</code> and <code>WinActivate</code></td>
+              <td><code>0x28</code> bytes</td>
+            </tr>
+            <tr>
+              <td><code>g_BIV_A</code></td>
+              <td>built-in variables beginning with <code>A_</code></td>
+              <td><code>0x18</code> bytes</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          A candidate record must satisfy three invariants: its name pointer
+          resolves to a printable UTF-16 string in <code>.rdata</code> or
+          <code>.data</code>, its function pointer resolves into
+          <code>.text</code>, and its neighbors in the table stay sorted by
+          name. The scanner walks pointer-aligned slots, anchors on known
+          entries (<code>Abs</code>, <code>BlockInput</code>,
+          <code>AhkPath</code>), and keeps the longest run that satisfies the
+          invariants. The result is a table address plus one entry of metadata
+          per record: RVA, parameter count, and ID.
+        </p>
+        <p>
+          This is deliberately a signature scan rather than an RVA table. The
+          same machine-code blob has run on 2.0-beta.10, 2.0.0, 2.0.26, and
+          2.1-alpha.30 without a single per-version address.
+        </p>
+      </section>
+
+      <section id="rebuild">
+        <h2>4. Rebuilding the machine code</h2>
+        <p>
+          "Rebuilding the machine code" is the reproducible process that turns
+          C sources into the hex constants embedded in
+          <code>ahk_hack_single.ahk</code>. The blobs are not handwritten
+          assembly. They are compiled, checked, and embedded by
+          <code>tools/build_mcode.py</code>.
+        </p>
+        <p>The sources under <code>lib/mcode/</code> are:</p>
+        <table>
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>scanner.c</code></td>
+              <td>locates <code>g_BIF</code>, <code>sMdFunc</code>, and <code>g_BIV_A</code></td>
+            </tr>
+            <tr>
+              <td><code>export_scanner.c</code></td>
+              <td>generic PE export-table scan for any loaded module</td>
+            </tr>
+            <tr>
+              <td><code>inproc_eval.c</code></td>
+              <td>in-process expression evaluator over a temporary <code>Line</code></td>
+            </tr>
+            <tr>
+              <td><code>internal_locator.c</code></td>
+              <td>runtime discovery of EvalNative internals</td>
+            </tr>
+          </tbody>
+        </table>
+        <h3>4.1 Compile to a freestanding COFF object</h3>
+        <pre><code>clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
+  -fno-builtin -fno-stack-protector -fno-unwind-tables \
+  -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c</code></pre>
+        <p>
+          <code>-ffreestanding</code> means no CRT entry, no standard-library
+          dependency, and no assumptions about startup state. The
+          <code>-fno-*</code> flags keep the output small and free of stack
+          cookies, unwind metadata, and compiler-generated jump tables.
+        </p>
+        <h3>4.2 Extract <code>.text</code> and resolve relocations</h3>
+        <p>
+          The build script parses the COFF object: it reads the section table,
+          extracts the raw <code>.text</code> bytes, and walks every
+          relocation. It accepts only <code>IMAGE_REL_AMD64_REL32</code>
+          (type 4), and only when the target symbol resolves back into
+          <code>.text</code>. Anything else raises an error and refuses to
+          embed.
+        </p>
+        <p>
+          The reason is the runtime contract. <code>MCode()</code> decodes the
+          hex string into an AHK <code>Buffer</code>, changes its protection
+          to executable, and returns it. The blob must be position-independent:
+          no absolute data addresses, no external imports, no references to
+          its own <code>.rdata</code>. If an escaping relocation slipped
+          through, the copied bytes would dereference an address that belongs
+          to the original object file, not to the running process.
+        </p>
+        <h3>4.3 Embed and verify</h3>
+        <pre><code>python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk</code></pre>
+        <p>
+          The script replaces the four <code>MC_*_X64</code> constants and
+          prints the blob sizes. On the current tree the build is reproducible:
+          regenerating from <code>lib/mcode/</code> reproduces the exact
+          constants already checked in. Current sizes are
+          <code>2559</code> bytes for the interpreter scanner,
+          <code>297</code> bytes for the export scanner,
+          <code>1784</code> bytes for the in-process evaluator, and
+          <code>1537</code> bytes for the internal locator.
+        </p>
+        <p>
+          After any rebuild, the correct check is not "does it look like
+          assembly" but "does the full matrix still pass". That includes the
+          Python tests, the demo, and the four-interpreter AHK probes.
+        </p>
+      </section>
+
+      <section id="evalnative">
+        <h2>5. EvalNative: in-process expression evaluation</h2>
+        <p>
+          <code>EvalNative()</code> builds a temporary <code>Line</code> and
+          <code>ArgStruct</code> in a scratch buffer, then calls the running
+          interpreter's own expression functions. No child process is started,
+          so the expression sees the same global variable table and the same
+          module state as the caller.
+        </p>
+        <p>
+          The first problem is finding the functions. The library searches
+          <code>.text</code> for RIP-relative references to two stable error
+          strings, <code>"Missing operand."</code> and
+          <code>"Error evaluating expression."</code>, then walks back to the
+          enclosing function starts. Those become
+          <code>ExpressionToPostfix</code> and <code>ExpandExpression</code>.
+        </p>
+        <p>
+          A second machine-code locator then discovers the supporting
+          addresses by structural signatures:
+        </p>
+        <ul>
+          <li><code>gScript</code>: the most frequent <code>lea rcx,[rip+disp]</code> target inside <code>ExpressionToPostfix</code>;</li>
+          <li><code>FindVar</code>/<code>FindOrAddVar</code>: a six-argument prologue plus a null-name comparison pattern;</li>
+          <li><code>FinalizeExpression</code>: the standard <code>ArgStruct</code> prologue between the two main functions;</li>
+          <li>CRT <code>free</code>: the call reached immediately after the direct caller of <code>ExpressionToPostfix</code>;</li>
+          <li><code>SYM_INVALID</code>: the postfix terminator immediate found inside <code>ExpandExpression</code>.</li>
+        </ul>
+        <p>
+          Before calling the compiler, the evaluator runs a lightweight deref
+          scan over the UTF-16 expression. It skips quoted strings, records
+          identifier starts and lengths, and - importantly - skips identifiers
+          that follow a <code>.</code>, so member expressions such as
+          <code>Point(1,2).x</code> are not mistaken for variables. The
+          interpreter's own pipeline then does the real work:
+          <code>ExpressionToPostfix</code>, variable/function resolution via
+          <code>FindOrAddVar</code>, optional <code>FinalizeExpression</code>,
+          and finally <code>ExpandExpression</code>.
+        </p>
+        <pre><code>#Include ahk_hack_single.ahk
+AhkMagic.Init()
+
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")          ; 7
+MsgBox AhkMagic.EvalNative("2 * 3.5")            ; 7.0
+MsgBox AhkMagic.EvalNative("Abs(-5)")            ; 5
+MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)") ; "bc"
+
+myVar := 42
+MsgBox AhkMagic.EvalNative("myVar + 1")          ; 43</code></pre>
+        <p>
+          The current surface is literals, operators, global variables, and
+          function calls on all four verified builds. Unsupported syntax
+          throws an error with the pipeline status instead of returning a
+          guessed result.
+        </p>
+      </section>
+
+      <section id="evalscript">
+        <h2>6. EvalScript: long text, functions, and classes</h2>
+        <p>
+          An expression evaluator cannot define functions or classes by
+          itself. <code>EvalScript()</code> therefore walks a different
+          pipeline: it writes the text to a temporary <code>.ahk</code> file,
+          asks the interpreter to open it through
+          <code>OpenIncludedFile</code>, loads it through
+          <code>LoadIncludedFile(TextStream*)</code>, prepares the newly added
+          lines with <code>PreparseExpressions</code>, and runs
+          <code>PreprocessLocalVars</code> for each new function. The last
+          non-declaration line is then evaluated in-process with
+          <code>EvalNative()</code>.
+        </p>
+        <p>
+          All of those entry points are located at runtime:
+        </p>
+        <ul>
+          <li><code>PreparseExpressions</code> is found through callers of <code>ExpressionToPostfix</code> combined with <code>cmp byte ptr [rbx], 3/4</code> patterns;</li>
+          <li><code>PreprocessLocalVars</code> uses its unique <code>movzx</code> plus <code>cmp byte ptr [rax+0x23], 2</code> signature;</li>
+          <li><code>OpenIncludedFile</code> uses two build-dependent prologue needles covering the 2.0 line and 2.1;</li>
+          <li><code>LoadIncludedFile(TextStream*)</code> is found through a <code>cmp eax,3</code> site in the callers of <code>OpenIncludedFile</code>;</li>
+          <li><code>Line::sSourceFileCount</code> is discovered from a backward RIP-relative load with a plausible small count;</li>
+          <li>the <code>g</code> global is discovered inside callers of <code>PreparseExpressions</code> via its <code>mov rax,[rip+disp]</code> followed by a store into offset <code>0x28</code>.</li>
+        </ul>
+        <p>
+          The script state is saved before loading and restored in a
+          <code>finally</code> block: pending parent/related lines, pending
+          parameter initializers, current module, expression-function state,
+          and class count. That is what makes multi-line definitions and
+          classes work without leaking temporary parser state into the caller.
+        </p>
+        <pre><code>script := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
+MsgBox AhkMagic.EvalScript(script)               ; 3
+
+classScript := "
+(
+class Point {
+    x := 0
+    y := 0
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
+}
+Point(1, 2).x
+)"
+MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
+      </section>
+
+      <section id="boundary">
+        <h2>7. Runtime discovery versus layout constants</h2>
+        <p>
+          "Hardcoded" can mean two different things, and the distinction is
+          worth stating precisely.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Axis</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Table addresses (<code>g_BIF</code>, <code>sMdFunc</code>, <code>g_BIV_A</code>)</td>
+              <td>Runtime-discovered by PE + signature scan</td>
+            </tr>
+            <tr>
+              <td>Function entry points (EvalNative and EvalScript pipelines)</td>
+              <td>Runtime-discovered, no RVA table</td>
+            </tr>
+            <tr>
+              <td>Globals (<code>g</code>, <code>gScript</code>, current-line slot, <code>sSourceFileCount</code>)</td>
+              <td>Runtime-discovered</td>
+            </tr>
+            <tr>
+              <td>Enum values such as <code>SYM_INVALID</code></td>
+              <td>Runtime-discovered by the internal locator</td>
+            </tr>
+            <tr>
+              <td>C++ struct field offsets (<code>Script</code>, <code>ScriptModule</code>, <code>UserFunc</code>, <code>Line</code>, <code>ArgStruct</code>, tokens)</td>
+              <td>Per-version layout constants, validated by the test matrix</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          So the answer at the address level is yes: no function RVA, no
+          global address, and no table pointer is read from a per-version
+          list. The remaining constants describe how fields sit inside C++
+          objects. They are a smaller and more stable surface, and every entry
+          is exercised by the four-build matrix. If a target build differs in
+          layout, the probes fail with an explicit error rather than guessing.
+        </p>
+        <p>
+          The optional cnumpy bridge takes the same philosophy one step
+          further for AHK <code>Array</code> objects: <code>AhkLayout</code>
+          discovers <code>mItem</code>, <code>mLength</code>,
+          <code>mCapacity</code>, and the <code>Variant</code> layout by
+          mutation diffing on live objects, then cross-validates with a second
+          independent probe set.
+        </p>
+      </section>
+
+      <section id="examples">
+        <h2>8. Complete examples</h2>
+        <h3>8.1 Table inventory</h3>
+        <pre><code>#Include ahk_hack_single.ahk
+AhkMagic.Init()
+
+MsgBox AhkMagic.Summary()
+for name, info in AhkMagic.bif {
+    if name = "Abs" or InStr(name, "Str")
+        MsgBox name " rva=0x" Format("{:X}", info["rva"])
+}</code></pre>
+        <h3>8.2 Generic export scan</h3>
+        <pre><code>hmod := DllCall("GetModuleHandle", "Str", "kernel32.dll", "Ptr")
+exports := AhkMagic.ScanExports(hmod)
+for name in ["VirtualAlloc", "CreateFileW", "ReadProcessMemory"] {
+    if exports.Has(name)
+        MsgBox name " rva=0x" Format("{:X}", exports[name]["rva"])
+}</code></pre>
+        <h3>8.3 Built-in redirection, table and object</h3>
+        <pre><code>old := AhkMagic.PatchBif("Abs", "Sin")
+name := "Abs"
+MsgBox %name%(1)              ; dynamic lookup now returns sin(1)
+AhkMagic.RestoreBif("Abs", old)
+
+state := AhkMagic.PatchBifObject(Abs, "Sin")
+MsgBox Abs(1)                 ; direct call now returns sin(1)
+AhkMagic.RestoreBifObject(Abs, state)</code></pre>
+        <p>
+          <code>PatchBif</code> changes the table slot used by future dynamic
+          lookups. <code>PatchBifObject</code> additionally rewrites the
+          already-resolved function object's C function pointer, so a direct
+          <code>Abs(1)</code> in source is redirected too. Both are restored
+          in the example above.
+        </p>
+        <h3>8.4 Expression eval</h3>
+        <pre><code>MsgBox AhkMagic.Eval("1 + 2 * 3")                  ; 7
+MsgBox AhkMagic.Eval("StrLen(`"hello`")")            ; 5
+MsgBox AhkMagic.EvalNative("Abs(-5)")                ; 5, in-process
+MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))")</code></pre>
+        <h3>8.5 Script text with functions and classes</h3>
+        <pre><code>text := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
+MsgBox AhkMagic.EvalScript(text)                     ; 3
+
+cls := "
+(
+class Point {
+    x := 0
+    y := 0
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
+}
+Point(1, 2).x + Point(1, 2).y
+)"
+MsgBox AhkMagic.EvalScript(cls)                      ; 3</code></pre>
+        <h3>8.6 Custom version probe</h3>
+        <pre><code>#Include ahk_hack_single.ahk
+try {
+    AhkMagic.Init()
+    AhkMagic._LocateInternalFunctions()
+    MsgBox "version=" A_AhkVersion "`n"
+        . "postfix=0x" Format("{:X}", AhkMagic.exprToPostfix) "`n"
+        . "expand=0x" Format("{:X}", AhkMagic.expandSingleArg) "`n"
+        . "gscript=0x" Format("{:X}", AhkMagic.gScript)
+} catch as e {
+    MsgBox "FAIL " e.Message
+}</code></pre>
+        <p>
+          On the current machine the probe reports addresses like these. They
+          are specific to these builds and are shown only as a shape check:
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Version</th>
+              <th><code>ExpressionToPostfix</code></th>
+              <th><code>ExpandExpression</code></th>
+              <th><code>gScript</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>2.1-alpha.30</td>
+              <td><code>0x14005A470</code></td>
+              <td><code>0x1400761C0</code></td>
+              <td><code>0x140136530</code></td>
+            </tr>
+            <tr>
+              <td>2.0.26</td>
+              <td><code>0x1400593A0</code></td>
+              <td><code>0x140074C60</code></td>
+              <td><code>0x140129FE0</code></td>
+            </tr>
+            <tr>
+              <td>2.0.0</td>
+              <td><code>0x140058A40</code></td>
+              <td><code>0x140073DA0</code></td>
+              <td><code>0x140127530</code></td>
+            </tr>
+            <tr>
+              <td>2.0-beta.10</td>
+              <td><code>0x140057910</code></td>
+              <td><code>0x140073950</code></td>
+              <td><code>0x1401294F0</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="verification">
+        <h2>9. Verification matrix</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Version</th>
+              <th>Table scan</th>
+              <th>Export scan</th>
+              <th>EvalNative</th>
+              <th>EvalScript functions</th>
+              <th>EvalScript classes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>2.1-alpha.30 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+            <tr><td>2.0.26 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+            <tr><td>2.0.0 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+            <tr><td>2.0-beta.10 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+          </tbody>
+        </table>
+        <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
+& D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
+& D:\...\AutoHotkey64.exe tests\version_probe.ahk</code></pre>
+      </section>
+
+      <section id="debugging">
+        <h2>10. Debugging and failure modes</h2>
+        <ul>
+          <li>
+            <code>0xC0000005</code> (access violation) usually means a wrong
+            pointer or struct offset. Isolate the probe, record the version,
+            and check every located address before dereferencing.
+          </li>
+          <li>
+            <code>0xC0000374</code> (heap corruption) is possible when parser
+            state is saved or restored in the wrong order. The project hit it
+            during development; the fix was to restore every touched
+            <code>Script</code> field in a <code>finally</code> block.
+          </li>
+          <li>
+            <code>"X not found"</code> errors mean a locator could not prove a
+            signature. They are intentional: an unsupported build fails
+            loudly instead of scanning with a guessed address.
+          </li>
+          <li>
+            Executable allocation plus internal calls can be flagged by
+            antivirus or EDR. Run experiments in a VM, use a disposable
+            interpreter, and keep the analyzed exe backed up.
+          </li>
+        </ul>
+      </section>
+
+      <section id="security">
+        <h2>11. Security and usage rules</h2>
+        <blockquote class="warn">
+          This library allocates executable memory, executes machine code, and
+          reads or writes interpreter internals directly. Treat it as a
+          reverse-engineering research tool.
+        </blockquote>
+        <p>Operations fall into three categories:</p>
+        <ul>
+          <li>
+            <strong>Read-only</strong>: <code>Init</code>, <code>Summary</code>,
+            <code>BifRva</code>, <code>BifAddr</code>, <code>ScanExports</code>.
+            These do not modify process state.
+          </li>
+          <li>
+            <strong>Mutating</strong>: <code>PatchBif</code> and
+            <code>RestoreBif</code>. Wrong usage can crash the interpreter.
+          </li>
+          <li>
+            <strong>Executing</strong>: <code>Eval</code>, <code>EvalNative</code>,
+            and <code>EvalScript</code>. This is arbitrary code execution in
+            the current process.
+          </li>
+        </ul>
+        <p>Rules that apply to every experiment:</p>
+        <ul>
+          <li>Never evaluate untrusted input.</li>
+          <li>Restore every <code>PatchBif</code>; do not leave redirection enabled.</li>
+          <li>Run the full test suite against the exact target exe before relying on a new build.</li>
+          <li>32-bit AutoHotkey is not supported and raises an explicit error.</li>
+          <li>Only analyze software you are authorized to research. This is not a tool for bypassing licensing, DRM, or access controls.</li>
+        </ul>
+      </section>
+
+      <section id="learning">
+        <h2>12. Learning path</h2>
+        <ol>
+          <li>
+            Read a PE primer and inspect a real exe with
+            <code>ahk_inspect.py</code> before touching the AHK side.
+          </li>
+          <li>
+            Trace <code>scanner.c</code>: sections, pointer invariants, sorted
+            runs, anchor names.
+          </li>
+          <li>
+            Rebuild the machine code and verify the diff is empty.
+          </li>
+          <li>
+            Study <code>inproc_eval.c</code> and the temporary
+            <code>Line</code>/<code>ArgStruct</code>/<code>ResultToken</code>
+            layout.
+          </li>
+          <li>
+            Study <code>EvalScript</code>: save, load, preparse, preprocess,
+            evaluate, restore.
+          </li>
+          <li>
+            Read the AHK v2 source structures that appear in the layout table
+            (<code>Script</code>, <code>ScriptModule</code>,
+            <code>UserFunc</code>) and correlate them with the test matrix.
+          </li>
+        </ol>
+        <div class="links">
+          <a href="https://github.com/MonoEven/ahk-hack-library">Repository</a>
+          <a href="https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk">Single-file core</a>
+          <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode">C sources</a>
+          <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/tools">Tools</a>
+          <a href="https://monoeven.github.io/cnumpy/">cnumpy tutorial</a>
+        </div>
+      </section>
+
+      <section id="appendix">
+        <h2>Appendix: single-file source</h2>
+        <p>
+          The complete core is one file: <code>ahk_hack_single.ahk</code>.
+          Copy it next to any script and <code>#Include</code> it, or download
+          it from the repository. The embedded copy below is generated from
+          the checked-in file at build time.
+        </p>
+        <details>
+          <summary>ahk_hack_single.ahk (full source)</summary>
+          <pre><code><!--AHK_SINGLE_FILE--></code></pre>
+        </details>
+      </section>
+    </article>
+  </main>
+
+  <footer class="wrap">
+    <div class="footer">
+      ahk-hack · runtime structure scanner for AutoHotkey v2 ·
+      <a href="https://github.com/MonoEven/ahk-hack-library">GitHub</a> ·
+      MIT License
+    </div>
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>

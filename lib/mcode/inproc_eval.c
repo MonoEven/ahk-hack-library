@@ -176,7 +176,11 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
                 u16 *start = cp16;
                 while (is_ident_char(*cp16))
                     ++cp16;
-                if (deref_count < 255)
+                /* Identifiers after '.' are member names handled directly by
+                 * ExpressionToPostfix; marking them as variables breaks
+                 * obj.method() / obj.prop expressions. */
+                if ((start == (u16 *)expr_ptr || start[-1] != '.')
+                    && deref_count < 255)
                 {
                     u64 e = final_deref + deref_count * DEREF_SIZE;
                     *(u64 *)(e + DEREF_MARKER_OFF) = (u64)start;

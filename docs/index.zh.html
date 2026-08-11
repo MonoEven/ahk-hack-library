@@ -1,0 +1,1754 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>深入 AutoHotkey64.exe - ahk-hack 技术笔记</title>
+  <meta name="description" content="AutoHotkey v2 运行时 PE 扫描、机器码重建与进程内表达式求值的完整技术剖析。">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="progress" aria-hidden="true"></div>
+  <header class="site-header">
+    <div class="wrap">
+      <div class="brand">
+        <strong>ahk-hack</strong>
+        <span>AutoHotkey v2 运行时技术笔记</span>
+      </div>
+      <nav class="lang-switch" aria-label="语言切换">
+        <a href="index.html" lang="en">EN</a>
+        <a class="active" href="index.zh.html" lang="zh">中文</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <div class="kicker">技术笔记 · 2026-08-12</div>
+      <h1>深入 AutoHotkey64.exe：运行时扫描、机器码重建与进程内 Eval</h1>
+      <p class="lede">
+        一个 AutoHotkey v2 脚本如何读取正在运行它的解释器、重建内嵌的 x64
+        机器码，并在不启动子进程的情况下直接使用解释器自己的表达式管线求值。
+      </p>
+      <p class="meta">
+        仓库：<a href="https://github.com/MonoEven/ahk-hack-library">MonoEven/ahk-hack-library</a>
+        · 实践项目：<a href="https://github.com/MonoEven/cnumpy">cnumpy</a>
+      </p>
+      <div class="links">
+        <a href="https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk">单文件核心</a>
+        <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode">机器码 C 源码</a>
+        <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/tests">测试</a>
+      </div>
+    </section>
+
+    <article>
+      <nav class="toc" aria-label="目录">
+        <h2>目录</h2>
+        <ol>
+          <li><a href="#why">为什么要读取正在运行的 exe</a></li>
+          <li><a href="#pe">PE 地图</a></li>
+          <li><a href="#tables">三张解释器内部表</a></li>
+          <li><a href="#rebuild">重新构建机器码</a></li>
+          <li><a href="#evalnative">EvalNative：进程内表达式求值</a></li>
+          <li><a href="#evalscript">EvalScript：长文本、函数与类</a></li>
+          <li><a href="#boundary">运行时发现与布局常量的边界</a></li>
+          <li><a href="#examples">完整示例</a></li>
+          <li><a href="#verification">验证矩阵</a></li>
+          <li><a href="#debugging">调试与故障</a></li>
+          <li><a href="#security">安全与使用规则</a></li>
+          <li><a href="#learning">学习路径</a></li>
+          <li><a href="#appendix">附录：单文件源码</a></li>
+        </ol>
+      </nav>
+
+      <section id="why">
+        <h2>1. 为什么要读取正在运行的 exe</h2>
+        <p>
+          AutoHotkey v2 通过内置函数和 <code>A_AhkPath</code> 这类系统变量暴露
+          脚本可见的表面，但不会公开稳定的 C API 给内部结构。真正有意思的部分
+          - 内置函数表、带类型签名的原生函数表、<code>A_*</code> 变量表 -
+          都放在 <code>AutoHotkey64.exe</code> 自己里面。
+        </p>
+        <p>
+          可执行文件是 PE 镜像。运行在解释器里的脚本本来就能拿到模块基址，
+          解析镜像头，然后把解释器自己的段当作数据来读。核心思路是：先扫描，
+          只有明确的操作才改写；扫描结果无法被证明时就直接报错，绝不猜测。
+        </p>
+      </section>
+
+      <section id="pe">
+        <h2>2. PE 地图</h2>
+        <p>
+          64 位 AutoHotkey v2 可执行文件的开头是固定的：<code>MZ</code>
+          DOS 头、由 <code>e_lfanew</code>（偏移 <code>0x3C</code>）指向的
+          <code>PE\0\0</code> 签名、魔数为 <code>0x20B</code> 的 PE32+
+          可选头，以及紧随其后的节表。每个节记录名称、虚拟大小、虚拟地址、
+          原始大小和属性。
+        </p>
+        <pre><code>peOff := NumGet(base, 0x3C, "UInt")
+numSections := NumGet(base + peOff + 6, "UShort")
+optSize := NumGet(base + peOff + 20, "UShort")
+secTable := base + peOff + 24 + optSize</code></pre>
+        <p>
+          库用 <code>AhkMagic._ModuleSections()</code> 把节表封装成
+          <code>名称 -> {rva, size, ptr}</code> 的 Map。最常用的是三节：
+        </p>
+        <ul>
+          <li><code>.text</code>：可执行代码，函数指针必须落在这里；</li>
+          <li><code>.rdata</code>：只读数据，UTF-16 名字通常在这里；</li>
+          <li><code>.data</code>：读写数据，解释器表在这里构建。</li>
+        </ul>
+      </section>
+
+      <section id="tables">
+        <h2>3. 三张解释器内部表</h2>
+        <p>扫描器在 x64 上定位三张记录结构稳定的表：</p>
+        <table>
+          <thead>
+            <tr>
+              <th>表</th>
+              <th>内容</th>
+              <th>记录步长</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>g_BIF</code></td>
+              <td><code>Abs</code>、<code>Sin</code> 等脚本内置函数</td>
+              <td><code>0x20</code> 字节</td>
+            </tr>
+            <tr>
+              <td><code>sMdFunc</code></td>
+              <td><code>MsgBox</code>、<code>WinActivate</code> 等带类型签名的原生函数</td>
+              <td><code>0x28</code> 字节</td>
+            </tr>
+            <tr>
+              <td><code>g_BIV_A</code></td>
+              <td>以 <code>A_</code> 开头的内置变量</td>
+              <td><code>0x18</code> 字节</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          候选记录必须同时满足三个不变量：名字指针指向
+          <code>.rdata</code>/<code>.data</code> 中可打印的 UTF-16 字符串，
+          函数指针落在 <code>.text</code>，并且相邻记录按名字排序。扫描器按
+          指针对齐的位置遍历，以 <code>Abs</code>、<code>BlockInput</code>、
+          <code>AhkPath</code> 为锚点，保留满足条件的最长连续区，然后为每条
+          记录读出 RVA、参数个数和 ID。
+        </p>
+        <p>
+          这是刻意的签名扫描，不是 RVA 表。同一段机器码已经在 2.0-beta.10、
+          2.0.0、2.0.26、2.1-alpha.30 上跑通，没有使用任何按版本写死的地址。
+        </p>
+      </section>
+
+      <section id="rebuild">
+        <h2>4. 重新构建机器码</h2>
+        <p>
+          “重新构建机器码”是把 C 源码变成 <code>ahk_hack_single.ahk</code>
+          内嵌十六进制常量的可复现过程。这些 blob 不是手写汇编，而是由
+          <code>tools/build_mcode.py</code> 编译、校验并嵌入的。
+        </p>
+        <p><code>lib/mcode/</code> 下的源码分别是：</p>
+        <table>
+          <thead>
+            <tr>
+              <th>源码</th>
+              <th>用途</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>scanner.c</code></td>
+              <td>定位 <code>g_BIF</code>、<code>sMdFunc</code>、<code>g_BIV_A</code></td>
+            </tr>
+            <tr>
+              <td><code>export_scanner.c</code></td>
+              <td>任意已加载模块的通用 PE 导出表扫描</td>
+            </tr>
+            <tr>
+              <td><code>inproc_eval.c</code></td>
+              <td>基于临时 <code>Line</code> 的进程内表达式求值</td>
+            </tr>
+            <tr>
+              <td><code>internal_locator.c</code></td>
+              <td>EvalNative 内部符号的运行时发现</td>
+            </tr>
+          </tbody>
+        </table>
+        <h3>4.1 编译成 freestanding COFF</h3>
+        <pre><code>clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
+  -fno-builtin -fno-stack-protector -fno-unwind-tables \
+  -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c</code></pre>
+        <p>
+          <code>-ffreestanding</code> 表示不依赖 CRT、不链接标准库，也不假设
+          任何启动状态。<code>-fno-*</code> 选项去掉栈保护、展开元数据和编译器
+          生成的跳转表，让输出保持小而确定。
+        </p>
+        <h3>4.2 提取 <code>.text</code> 并处理重定位</h3>
+        <p>
+          构建脚本解析 COFF 对象：读节表，取出原始 <code>.text</code>，再遍历
+          每条重定位记录。它只接受 <code>IMAGE_REL_AMD64_REL32</code>
+          （类型 4），并且要求目标符号仍然落在 <code>.text</code> 内。其他情况
+          直接抛错，拒绝嵌入。
+        </p>
+        <p>
+          原因来自运行时契约。<code>MCode()</code> 把十六进制解码成 AHK
+          <code>Buffer</code>，改成可执行保护后返回；这个 blob 必须是位置无关的：
+          不能有绝对数据地址、外部导入，也不能引用自己的 <code>.rdata</code>。
+          如果逃逸的重定位混进来，复制后的字节会去解引用原目标文件里的地址，
+          而不是当前进程的地址。
+        </p>
+        <h3>4.3 嵌入与验证</h3>
+        <pre><code>python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk</code></pre>
+        <p>
+          脚本替换四个 <code>MC_*_X64</code> 常量并打印大小。当前源码树完全可
+          复现：从 <code>lib/mcode/</code> 重新生成能得到与仓库内完全一致的
+          常量。目前解释器扫描器是 <code>2559</code> 字节，导出扫描器
+          <code>297</code> 字节，进程内求值器 <code>1784</code> 字节，内部定位器
+          <code>1537</code> 字节。
+        </p>
+        <p>
+          重建后正确的检查不是“看起来像汇编”，而是完整矩阵是否仍然通过，包括
+          Python 测试、演示脚本和四个解释器上的 AHK 探针。
+        </p>
+      </section>
+
+      <section id="evalnative">
+        <h2>5. EvalNative：进程内表达式求值</h2>
+        <p>
+          <code>EvalNative()</code> 在 scratch 缓冲区里构造临时
+          <code>Line</code> 和 <code>ArgStruct</code>，然后直接调用当前进程
+          解释器自己的表达式函数。没有子进程，所以表达式能看到调用者同一张全局
+          变量表和同一个模块状态。
+        </p>
+        <p>
+          第一步是找到这些函数。库在 <code>.text</code> 里搜索对两个稳定错误
+          字符串的 RIP 相对引用：<code>"Missing operand."</code> 和
+          <code>"Error evaluating expression."</code>，再回退到所在函数开头，
+          得到 <code>ExpressionToPostfix</code> 与 <code>ExpandExpression</code>。
+        </p>
+        <p>
+          第二个机器码定位器继续按结构签名发现支撑地址：
+        </p>
+        <ul>
+          <li><code>gScript</code>：<code>ExpressionToPostfix</code> 中出现次数最多的 <code>lea rcx,[rip+disp]</code> 目标；</li>
+          <li><code>FindVar</code>/<code>FindOrAddVar</code>：六参数 prologue 加空名比较模式；</li>
+          <li><code>FinalizeExpression</code>：两个主函数之间带标准 <code>ArgStruct</code> prologue 的函数；</li>
+          <li>CRT <code>free</code>：直接调用 <code>ExpressionToPostfix</code> 的调用点之后紧跟的调用；</li>
+          <li><code>SYM_INVALID</code>：<code>ExpandExpression</code> 内后缀终结立即数。</li>
+        </ul>
+        <p>
+          调用编译器之前，求值器会对 UTF-16 表达式做一次轻量 deref 扫描：跳过
+          引号字符串，记录标识符起始和长度，并且跳过 <code>.</code> 后面的标识符，
+          这样 <code>Point(1,2).x</code> 这类成员表达式不会被当成变量。真正的
+          工作仍由解释器自己的管线完成：<code>ExpressionToPostfix</code> ->
+          <code>FindOrAddVar</code> 解析变量/函数 -> 可选
+          <code>FinalizeExpression</code> -> <code>ExpandExpression</code>。
+        </p>
+        <pre><code>#Include ahk_hack_single.ahk
+AhkMagic.Init()
+
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")          ; 7
+MsgBox AhkMagic.EvalNative("2 * 3.5")            ; 7.0
+MsgBox AhkMagic.EvalNative("Abs(-5)")            ; 5
+MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)") ; "bc"
+
+myVar := 42
+MsgBox AhkMagic.EvalNative("myVar + 1")          ; 43</code></pre>
+        <p>
+          当前在四个已验证版本上支持字面量、运算符、全局变量和函数调用。不支持
+          的语法会带着管线状态抛出错误，而不是返回一个猜出来的结果。
+        </p>
+      </section>
+
+      <section id="evalscript">
+        <h2>6. EvalScript：长文本、函数与类</h2>
+        <p>
+          表达式求值器自己无法定义函数或类。<code>EvalScript()</code> 走另一条
+          管线：把文本写到临时 <code>.ahk</code>，用
+          <code>OpenIncludedFile</code> 打开，用
+          <code>LoadIncludedFile(TextStream*)</code> 加载，对新加入的行执行
+          <code>PreparseExpressions</code>，再对每个新函数执行
+          <code>PreprocessLocalVars</code>，最后用
+          <code>EvalNative()</code> 求值最后一个表达式。
+        </p>
+        <p>所有入口都在运行时定位：</p>
+        <ul>
+          <li><code>PreparseExpressions</code>：通过 <code>ExpressionToPostfix</code> 的调用者加 <code>cmp byte ptr [rbx], 3/4</code> 模式；</li>
+          <li><code>PreprocessLocalVars</code>：独特的 <code>movzx</code> 加 <code>cmp byte ptr [rax+0x23], 2</code> 签名；</li>
+          <li><code>OpenIncludedFile</code>：分别覆盖 2.0 系列和 2.1 的两段 prologue 特征；</li>
+          <li><code>LoadIncludedFile(TextStream*)</code>：在 <code>OpenIncludedFile</code> 调用者的 <code>cmp eax,3</code> 附近找标准 prologue 的 call；</li>
+          <li><code>Line::sSourceFileCount</code>：向前回溯找取值合理的小整数的 RIP 相对 load；</li>
+          <li><code>g</code> 全局：在 <code>PreparseExpressions</code> 调用者里找 <code>mov rax,[rip+disp]</code> 后接偏移 <code>0x28</code> 的 store。</li>
+        </ul>
+        <p>
+          加载前保存脚本状态，在 <code>finally</code> 里恢复：pending 父/关联行、
+          pending 参数初始化、当前模块、表达式函数状态、类计数。这样多行定义和
+          类能生效，又不会把临时解析器状态泄漏给调用者。
+        </p>
+        <pre><code>script := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
+MsgBox AhkMagic.EvalScript(script)               ; 3
+
+classScript := "
+(
+class Point {
+    x := 0
+    y := 0
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
+}
+Point(1, 2).x
+)"
+MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
+      </section>
+
+      <section id="boundary">
+        <h2>7. 运行时发现与布局常量的边界</h2>
+        <p>
+          “硬编码”有两种含义，这个区别值得说清楚。
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>维度</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>表地址（<code>g_BIF</code>、<code>sMdFunc</code>、<code>g_BIV_A</code>）</td>
+              <td>运行时通过 PE 与签名扫描发现</td>
+            </tr>
+            <tr>
+              <td>函数入口（EvalNative 与 EvalScript 管线）</td>
+              <td>运行时发现，无 RVA 表</td>
+            </tr>
+            <tr>
+              <td>全局量（<code>g</code>、<code>gScript</code>、当前行槽、<code>sSourceFileCount</code>）</td>
+              <td>运行时发现</td>
+            </tr>
+            <tr>
+              <td><code>SYM_INVALID</code> 等枚举值</td>
+              <td>运行时由内部定位器发现</td>
+            </tr>
+            <tr>
+              <td>C++ 结构体字段偏移（<code>Script</code>、<code>ScriptModule</code>、<code>UserFunc</code>、<code>Line</code>、<code>ArgStruct</code>、token）</td>
+              <td>按版本保留的布局常量，由测试矩阵验证</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          所以地址层面的答案是肯定的：没有任何函数 RVA、全局地址或表指针来自
+          按版本列表。剩下的常量描述字段在 C++ 对象里的位置，是更小也更稳定的
+          兼容面。四条构建的矩阵会逐一覆盖这些入口；如果目标构建的布局不同，
+          探针会显式失败，而不是猜一个结果。
+        </p>
+        <p>
+          可选 cnumpy 桥接把同一思路再推进一步：<code>AhkLayout</code> 通过对
+          存活对象做变更 diff 来发现 <code>Array</code> 的 <code>mItem</code>、
+          <code>mLength</code>、<code>mCapacity</code> 和 <code>Variant</code>
+          布局，再用第二组独立探针交叉验证。
+        </p>
+      </section>
+
+      <section id="examples">
+        <h2>8. 完整示例</h2>
+        <h3>8.1 表清单</h3>
+        <pre><code>#Include ahk_hack_single.ahk
+AhkMagic.Init()
+
+MsgBox AhkMagic.Summary()
+for name, info in AhkMagic.bif {
+    if name = "Abs" or InStr(name, "Str")
+        MsgBox name " rva=0x" Format("{:X}", info["rva"])
+}</code></pre>
+        <h3>8.2 通用导出扫描</h3>
+        <pre><code>hmod := DllCall("GetModuleHandle", "Str", "kernel32.dll", "Ptr")
+exports := AhkMagic.ScanExports(hmod)
+for name in ["VirtualAlloc", "CreateFileW", "ReadProcessMemory"] {
+    if exports.Has(name)
+        MsgBox name " rva=0x" Format("{:X}", exports[name]["rva"])
+}</code></pre>
+        <h3>8.3 内置函数重定向：表指针与对象深替换</h3>
+        <pre><code>old := AhkMagic.PatchBif("Abs", "Sin")
+name := "Abs"
+MsgBox %name%(1)              ; 后续动态查找返回 sin(1)
+AhkMagic.RestoreBif("Abs", old)
+
+state := AhkMagic.PatchBifObject(Abs, "Sin")
+MsgBox Abs(1)                 ; 源码里的直接调用也返回 sin(1)
+AhkMagic.RestoreBifObject(Abs, state)</code></pre>
+        <p>
+          <code>PatchBif</code> 改表槽，影响之后发生的动态查找。
+          <code>PatchBifObject</code> 还会改写已经解析的函数对象里的 C 函数指针，
+          所以源码里写死的 <code>Abs(1)</code> 也被重定向。上面的例子都会还原。
+        </p>
+        <h3>8.4 表达式求值</h3>
+        <pre><code>MsgBox AhkMagic.Eval("1 + 2 * 3")                  ; 7
+MsgBox AhkMagic.Eval("StrLen(`"hello`")")            ; 5
+MsgBox AhkMagic.EvalNative("Abs(-5)")                ; 5，进程内
+MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))")</code></pre>
+        <h3>8.5 函数与类脚本</h3>
+        <pre><code>text := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
+MsgBox AhkMagic.EvalScript(text)                     ; 3
+
+cls := "
+(
+class Point {
+    x := 0
+    y := 0
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
+}
+Point(1, 2).x + Point(1, 2).y
+)"
+MsgBox AhkMagic.EvalScript(cls)                      ; 3</code></pre>
+        <h3>8.6 自定义版本探针</h3>
+        <pre><code>#Include ahk_hack_single.ahk
+try {
+    AhkMagic.Init()
+    AhkMagic._LocateInternalFunctions()
+    MsgBox "version=" A_AhkVersion "`n"
+        . "postfix=0x" Format("{:X}", AhkMagic.exprToPostfix) "`n"
+        . "expand=0x" Format("{:X}", AhkMagic.expandSingleArg) "`n"
+        . "gscript=0x" Format("{:X}", AhkMagic.gScript)
+} catch as e {
+    MsgBox "FAIL " e.Message
+}</code></pre>
+        <p>
+          当前机器上探针输出类似下面的地址。这些值只属于具体构建，放在这里用于
+          展示形态，不是通用常量：
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>版本</th>
+              <th><code>ExpressionToPostfix</code></th>
+              <th><code>ExpandExpression</code></th>
+              <th><code>gScript</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>2.1-alpha.30</td>
+              <td><code>0x14005A470</code></td>
+              <td><code>0x1400761C0</code></td>
+              <td><code>0x140136530</code></td>
+            </tr>
+            <tr>
+              <td>2.0.26</td>
+              <td><code>0x1400593A0</code></td>
+              <td><code>0x140074C60</code></td>
+              <td><code>0x140129FE0</code></td>
+            </tr>
+            <tr>
+              <td>2.0.0</td>
+              <td><code>0x140058A40</code></td>
+              <td><code>0x140073DA0</code></td>
+              <td><code>0x140127530</code></td>
+            </tr>
+            <tr>
+              <td>2.0-beta.10</td>
+              <td><code>0x140057910</code></td>
+              <td><code>0x140073950</code></td>
+              <td><code>0x1401294F0</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="verification">
+        <h2>9. 验证矩阵</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>版本</th>
+              <th>表扫描</th>
+              <th>导出扫描</th>
+              <th>EvalNative</th>
+              <th>EvalScript 函数</th>
+              <th>EvalScript 类</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>2.1-alpha.30 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+            <tr><td>2.0.26 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+            <tr><td>2.0.0 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+            <tr><td>2.0-beta.10 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+          </tbody>
+        </table>
+        <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
+& D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
+& D:\...\AutoHotkey64.exe tests\version_probe.ahk</code></pre>
+      </section>
+
+      <section id="debugging">
+        <h2>10. 调试与故障</h2>
+        <ul>
+          <li>
+            <code>0xC0000005</code>（访问冲突）通常意味着指针或结构偏移错误。
+            隔离探针、记录版本，并在解引用前检查每个定位出来的地址。
+          </li>
+          <li>
+            <code>0xC0000374</code>（堆损坏）可能来自解析器状态的保存/恢复顺序
+            错误。开发中实际遇到过；修复方式是让所有被改写的
+            <code>Script</code> 字段都在 <code>finally</code> 中恢复。
+          </li>
+          <li>
+            <code>"X not found"</code> 表示定位器无法证明某个签名，这是故意的：
+            不支持的构建会显式失败，而不是用猜出来的地址继续。
+          </li>
+          <li>
+            可执行内存分配加内部调用可能被杀毒软件或 EDR 标记。在虚拟机里做实验、
+            使用一次性解释器，并备份被分析的 exe。
+          </li>
+        </ul>
+      </section>
+
+      <section id="security">
+        <h2>11. 安全与使用规则</h2>
+        <blockquote class="warn">
+          这个库会分配可执行内存、执行机器码，并直接读写解释器内部结构。
+          请按逆向工程研究工具的标准来使用。
+        </blockquote>
+        <p>操作分三类：</p>
+        <ul>
+          <li>
+            <strong>只读</strong>：<code>Init</code>、<code>Summary</code>、
+            <code>BifRva</code>、<code>BifAddr</code>、<code>ScanExports</code>。
+            不修改进程状态。
+          </li>
+          <li>
+            <strong>修改</strong>：<code>PatchBif</code> 和
+            <code>RestoreBif</code>。用错可能让解释器崩溃。
+          </li>
+          <li>
+            <strong>执行</strong>：<code>Eval</code>、<code>EvalNative</code>、
+            <code>EvalScript</code>。等于在当前进程执行任意代码。
+          </li>
+        </ul>
+        <p>每次实验都要遵守的规则：</p>
+        <ul>
+          <li>不要 eval 未受信任的输入。</li>
+          <li>每个 <code>PatchBif</code> 都必须还原，不要长期保留重定向。</li>
+          <li>在信任一个新构建之前，对目标 exe 跑完整测试矩阵。</li>
+          <li>32 位 AutoHotkey 不支持，会显式报错。</li>
+          <li>只研究你有权限分析的软件。这个库不用于绕过授权、DRM 或访问控制。</li>
+        </ul>
+      </section>
+
+      <section id="learning">
+        <h2>12. 学习路径</h2>
+        <ol>
+          <li>先读 PE 入门资料，并用 <code>ahk_inspect.py</code> 分析一个真实 exe。</li>
+          <li>跟读 <code>scanner.c</code>：节区、指针不变量、排序连续区、锚点。</li>
+          <li>重建机器码，确认 diff 为空。</li>
+          <li>研究 <code>inproc_eval.c</code> 和临时 <code>Line</code>/<code>ArgStruct</code>/<code>ResultToken</code> 布局。</li>
+          <li>研究 <code>EvalScript</code>：保存、加载、preparse、preprocess、求值、恢复。</li>
+          <li>对照布局表读 AHK v2 源码里的 <code>Script</code>、<code>ScriptModule</code>、<code>UserFunc</code>，并用测试矩阵验证。</li>
+        </ol>
+        <div class="links">
+          <a href="https://github.com/MonoEven/ahk-hack-library">仓库</a>
+          <a href="https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk">单文件核心</a>
+          <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode">C 源码</a>
+          <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/tools">工具</a>
+          <a href="https://monoeven.github.io/cnumpy/">cnumpy 教程</a>
+        </div>
+      </section>
+
+      <section id="appendix">
+        <h2>附录：单文件源码</h2>
+        <p>
+          完整核心就是一个文件：<code>ahk_hack_single.ahk</code>。把它复制到
+          脚本旁边并 <code>#Include</code>，或从仓库下载。下面内嵌的副本由构建
+          脚本根据仓库内文件生成。
+        </p>
+        <details>
+          <summary>ahk_hack_single.ahk（完整源码）</summary>
+          <pre><code>; ahk-hack standalone core.
+;
+; One-file AutoHotkey v2 scanner for AutoHotkey executables.  Copy this file
+; anywhere and #Include it, or run ahk_hack_demo.ahk for a self-test.
+; The x64 blob below is generated from lib/mcode/scanner.c by
+; tools/build_mcode.py; it locates g_BIF, sMdFunc and g_BIV_A inside the
+; running interpreter and copies entry metadata into a caller buffer.
+MC_PE_EXPORT_SCANNER_X64 := &quot;4157415641545657534885c90f94c04885d2410f94c04108c0b8010000000f85fb0000006681394d5a0f85f0000000448b413c41813c08504500000f85de0000006641817c08180b020f85d0000000418b8408880000004885c00f84ab0000004183bc088c000000000f849c0000004c8d0408448b4c08108b7c0818448b540820448b5c08248b74081c4c890248c7421000000000b80800000085ff747881ff0010000041b800100000440f42c74801ce4901ca4901cb4a8d3cc500000000488d3c7f31db66662e0f1f840000000000458b32450fb73b468b24be4901ce4c89741a184c89641a204501cf44897c1a28c7441a2c000000004983c2044983c3024883c3184839df75c7eb0e0f57c00f1102b8100000004531c04c89040231c05b5f5e415c415e415fc3&quot;
+MC_BIF_SCANNER_X64 := &quot;415741565657534881ecb00100004885c90f94c04885d2410f94c04108c0be010000000f850b0500006681394d5a0f85000500008b413c813c08504500000f85f004000066817c08180b020f85e3040000440fb74c0806664183f91041b810000000450f42c1664585c90f841d010000440fb74c0814410fb7f84801c84c01c84c8d442442448d0cfd000000004f8d0c894531d26666662e0f1f840000000000468b5c10204585db460f445c1028428b5c10244801cb498958ee4c01db498958f642807c10182e7537460fb65c10194180fb74753b42807c101a65756242807c101b78755a42807c101c74410f94c3eb516666666666662e0f1f8400000000006641c740fe0000eb440f1f800000000041c640fe004180fb72754b42807c101a64752342807c101b61751b42807c101c74751342807c101d61410f94c3eb0a4531db458858fe4531db458858ff4531db4588184983c2284983c0184d39d10f853cffffffeb2941c640ff004180fb6475dc42807c101a6175d442807c101b7475cc42807c101c61410f94c3ebc331ff488d420848894424284989d74889542420488d4c243041b92000000089fa4531c0e89b03000085c00f84770300004d8d7720498d47184c897424284889442420488d4c2430be0100000041b92800000089fa41b801000000e86403000085c00f8440030000498d5f38498d473048895c24284889442420488d4c243041b91800000089fa41b802000000e83203000085c00f840e0300004c89f849c747102000000049c747282800000049c747401800000049c7474800000000418b570885d27e65ffca4881faff010000b9ff010000480f42ca488b10c1e1054883c1204531c04e8b0c024e894c00504e8b4c02084e894c0058460fb64c021046894c0060460fb64c021146894c0064460fb64c021246894c006842c744006c000000004983c0204c39c175ba418b0e85c90f8ea5010000ffc94881f9ff010000baff010000480f42d1488b4818488d1492488d14d5280000004531c0662e0f1f8400000000004e8b0c014e898c00504000004e8b4c01084e898c0058400000460fb64c011046888c0060400000460fb64c011146888c0061400000460fb64c011246888c0062400000460fb64c011346888c0063400000460fb64c011446888c0064400000460fb64c011546888c0065400000460fb64c011646888c0066400000460fb64c011746888c0067400000460fb64c011846888c0068400000460fb64c011946888c0069400000460fb64c011a46888c006a400000460fb64c011b46888c006b400000460fb64c011c46888c006c400000460fb64c011d46888c006d400000460fb64c011e46888c006e400000460fb64c011f46888c006f400000460fb64c012046888c0070400000460fb64c012146888c0071400000460fb64c012246888c0072400000460fb64c012346888c0073400000460fb64c012446888c0074400000460fb64c012546888c0075400000460fb64c012646888c0076400000460fb64c012746888c00774000004983c0284c39c20f858afeffff448b034585c00f8e8c00000041ffc84181f8ff000000baff000000410f42d0488b4830ffc231f64585c074704189d14181e1fe0100004531d24531c04e8b1c114e899c10509000004e8b5c11084e899c10589000004e8b5c11104e899c10609000004e8b5c11184e899c10689000004e8b5c11204e899c10709000004e8b5c11284e899c10789000004983c0024983c2304d39c175a6eb0731f6eb324531c0f6c201742a48055090000049c1e0034b8d14404c8b04114c8904104c8b4411084c89441008488b4c111048894c101089f04881c4b00100005b5f5e415e415fc366662e0f1f8400000000004157415641554154565755534883ec3085d20f8e76040000488bac24a00000004c8b94249800000089d6488d04f500000000488d3c4031db48c74424200000000048c744242800000000eb100f1f400048ffc34839f30f8417040000488d145b488d04d1807cd1110075068078120074df4c8b384c8b7008498d47104c39f077cf4d8b27eb434c8b9424980000004c8b0c244c8b5c2408488b4424284939c3490f47c34889442428488b442420490f47c54889442420662e0f1f8400000000004983c5184d39f577874d89fd4c89e04983c7084d8b650831d2eb0e0f1f4400004883c2184839d774d7807c1111007507807c11120074e9483944110876e24839041177dc31d2662e0f1f840000000000440fb71c10664585db74254183c381664183fba1729a4c8d5a024883fa7e4c89da75ddeb8b66662e0f1f84000000000031d2eb196666662e0f1f8400000000004883c2184839d70f8463ffffff807c11100074ec4c3964110876e54c39241177df0fb7104183f8010f840f0200004585c00f857d0200006683fa410f852fffffff66837802620f8524ffffffba0600000066837804730f8514ffffff66833c02000f8509ffffff4b8d04294883c01041bb010000004c39f00f87c9feffff4b8d14294c89e84c890c244c895c240848894424184889d04c8b124c8b5a084531c9eb1b66666666662e0f1f8400000000004983c1184c39cf0f8479feffff42807c091100750842807c09120074e34e3954090876dc4e39140977d631d20f1f4000450fb70c12664585c974214183c181664183f9a10f823cfeffff4c8d4a024883fa7e4c89ca75d9e92afeffff31d2eb0d4883c2184839d70f8419feffff807c11100074ec4c395c110876e54c391c1177df4183f802488944241075406641833a590f85bf0000006641837a02590f85b30000006641837a04590f85a70000006641837a06590f859b0000006641837a08000f858f000000e98e010000488b542418488b1248895424184531db488b542418460fb70c1a430fb7141a664585c974476685d274428d42bf8d6a203c1a400fb6c50f43c2418d51bf418d692080fa1a400fb6d5410f43d138c275274983c3024981fb80000000488bac24a0000000488b44241075a6eb1e664139d17618e943fdffff488bac24a0000000488b4424100f8330fdffff4c8b5c240849ffc34c8b0c244a8d1408488b4424104c01c84883c0104c39f0488b4424104c8b9424980000000f8651feffffe90afdffff6683fa420f8529fdffff668378026c0f851efdffff668378046f0f8513fdffff66837806630f8508fdffff668378086b0f85fdfcffff6683780a490f85f2fcffff6683780c6e0f85e7fcffff6683780e700f85dcfcffff66837810750f85d1fcffffba1400000066837812740f85c1fcffffe9a8fdffff6683fa410f85b2fcffff66837802680f85a7fcffff668378046b0f859cfcffff66837806500f8591fcffff66837808610f8586fcffff6683780a740f857bfcffffba0e0000006683780c680f856bfcffffe952fdffff4c8b5c240849ffc34c8b9424980000004c8b0c24e924fcffff4c8b4424204d85c00f94c0488b5424284883fa0a0f92c108c1740431c0eb0c4d890248895500b8010000004883c4305b5d5f5e415c415d415e415fc3&quot;
+
+
+; Decode a raw hex machine-code blob and return an executable Buffer.
+MCode(hex) {
+    size := StrLen(hex) // 2
+    buf := Buffer(size)
+    loop size {
+        byte := Integer(&quot;0x&quot; SubStr(hex, 2 * A_Index - 1, 2))
+        NumPut(&quot;UChar&quot;, byte, buf, A_Index - 1)
+    }
+    oldProtect := 0
+    if !DllCall(&quot;VirtualProtect&quot;, &quot;Ptr&quot;, buf.Ptr, &quot;UPtr&quot;, size, &quot;UInt&quot;, 0x40, &quot;UInt*&quot;, oldProtect)
+        throw Error(&quot;VirtualProtect failed&quot;, -1)
+    return buf
+}
+
+
+class AhkMagic {
+    static scanner := 0
+    static exportScanner := 0
+    static inprocEval := 0
+    static internalLocator := 0
+    static internalLocated := false
+    static evalScriptLocated := false
+    static evalPreparse := 0
+    static evalPreprocess := 0
+    static evalOpenInclude := 0
+    static evalLoadTs := 0
+    static evalSrcCount := 0
+    static evalGptr := 0
+    static exprToPostfix := 0
+    static expandSingleArg := 0
+    static currLineSlot := 0
+    static crtFree := 0
+    static gScript := 0
+    static finalizeExpr := 0
+    static findOrAddVar := 0
+    static symInvalid := 73
+    static moduleBase := 0
+    static bifTablePtr := 0
+    static bifCount := 0
+    static bifStride := 0
+    static mdfuncTablePtr := 0
+    static mdfuncCount := 0
+    static mdfuncStride := 0
+    static bivTablePtr := 0
+    static bivCount := 0
+    static bivStride := 0
+    static bif := Map()
+    static mdfunc := Map()
+    static biv := Map()
+
+    static Init() {
+        if AhkMagic.scanner
+            return
+        if A_PtrSize != 8
+            throw Error(&quot;this mcode blob is x64 only&quot;, -1)
+        AhkMagic.scanner := MCode(MC_BIF_SCANNER_X64)
+        AhkMagic.moduleBase := DllCall(&quot;GetModuleHandle&quot;, &quot;Str&quot;, A_AhkPath, &quot;Ptr&quot;)
+        if !AhkMagic.moduleBase
+            throw Error(&quot;GetModuleHandle failed&quot;, -1)
+
+        out := Buffer(64 * 1024)
+        rc := DllCall(AhkMagic.scanner.Ptr, &quot;Ptr&quot;, AhkMagic.moduleBase, &quot;Ptr&quot;, out.Ptr, &quot;Int&quot;)
+        if rc != 0
+            throw Error(&quot;AhkScanTables failed with rc=&quot; rc, -1)
+
+        AhkMagic.bifTablePtr := NumGet(out, 0, &quot;Ptr&quot;)
+        AhkMagic.bifCount := NumGet(out, 8, &quot;Int64&quot;)
+        AhkMagic.bifStride := NumGet(out, 16, &quot;Int64&quot;)
+        AhkMagic.mdfuncTablePtr := NumGet(out, 24, &quot;Ptr&quot;)
+        AhkMagic.mdfuncCount := NumGet(out, 32, &quot;Int64&quot;)
+        AhkMagic.mdfuncStride := NumGet(out, 40, &quot;Int64&quot;)
+        AhkMagic.bivTablePtr := NumGet(out, 48, &quot;Ptr&quot;)
+        AhkMagic.bivCount := NumGet(out, 56, &quot;Int64&quot;)
+        AhkMagic.bivStride := NumGet(out, 64, &quot;Int64&quot;)
+
+        bifBase := 80
+        bifStride := 32
+        loop AhkMagic.bifCount {
+            p := out.Ptr + bifBase + (A_Index - 1) * bifStride
+            namePtr := NumGet(p, 0, &quot;Ptr&quot;)
+            fnPtr := NumGet(p, 8, &quot;Ptr&quot;)
+            min := NumGet(p, 16, &quot;UInt&quot;)
+            max := NumGet(p, 20, &quot;UInt&quot;)
+            fid := NumGet(p, 24, &quot;UInt&quot;)
+            name := StrGet(namePtr, &quot;UTF-16&quot;)
+            AhkMagic.bif[name] := Map(
+                &quot;index&quot;, A_Index - 1,
+                &quot;rva&quot;, fnPtr - AhkMagic.moduleBase,
+                &quot;min&quot;, min,
+                &quot;max&quot;, max,
+                &quot;fid&quot;, fid
+            )
+        }
+
+        mdfBase := 80 + 512 * 32
+        mdfStride := 40
+        loop AhkMagic.mdfuncCount {
+            p := out.Ptr + mdfBase + (A_Index - 1) * mdfStride
+            namePtr := NumGet(p, 0, &quot;Ptr&quot;)
+            fnPtr := NumGet(p, 8, &quot;Ptr&quot;)
+            retType := NumGet(p, 16, &quot;UChar&quot;)
+            name := StrGet(namePtr, &quot;UTF-16&quot;)
+            AhkMagic.mdfunc[name] := Map(
+                &quot;index&quot;, A_Index - 1,
+                &quot;rva&quot;, fnPtr - AhkMagic.moduleBase,
+                &quot;ret&quot;, retType
+            )
+        }
+
+        bivBase := 80 + 512 * 32 + 512 * 40
+        bivStride := 24
+        loop AhkMagic.bivCount {
+            p := out.Ptr + bivBase + (A_Index - 1) * bivStride
+            namePtr := NumGet(p, 0, &quot;Ptr&quot;)
+            getter := NumGet(p, 8, &quot;Ptr&quot;)
+            setter := NumGet(p, 16, &quot;Ptr&quot;)
+            name := StrGet(namePtr, &quot;UTF-16&quot;)
+            AhkMagic.biv[name] := Map(
+                &quot;index&quot;, A_Index - 1,
+                &quot;getter_rva&quot;, getter ? getter - AhkMagic.moduleBase : 0,
+                &quot;setter_rva&quot;, setter ? setter - AhkMagic.moduleBase : 0
+            )
+        }
+    }
+
+    static BifRva(name) {
+        AhkMagic.Init()
+        if !AhkMagic.bif.Has(name)
+            throw Error(&quot;builtin not found: &quot; name)
+        return AhkMagic.bif[name][&quot;rva&quot;]
+    }
+
+    static BifAddr(name) {
+        AhkMagic.Init()
+        return AhkMagic.moduleBase + AhkMagic.BifRva(name)
+    }
+
+    static PatchBif(name, newName) {
+        AhkMagic.Init()
+        if !AhkMagic.bif.Has(name)
+            throw Error(&quot;builtin not found: &quot; name)
+        if !AhkMagic.bif.Has(newName)
+            throw Error(&quot;builtin not found: &quot; newName)
+        entryAddr := AhkMagic.bifTablePtr
+            + AhkMagic.bif[name][&quot;index&quot;] * AhkMagic.bifStride
+            + A_PtrSize
+        oldPtr := NumGet(entryAddr, 0, &quot;Ptr&quot;)
+        expected := AhkMagic.moduleBase + AhkMagic.bif[name][&quot;rva&quot;]
+        if oldPtr != expected
+            throw Error(&quot;table pointer mismatch for &quot; name
+                &quot;: got 0x&quot; Format(&quot;{:X}&quot;, oldPtr)
+                &quot;, expected 0x&quot; Format(&quot;{:X}&quot;, expected))
+        NumPut(&quot;Ptr&quot;, AhkMagic.moduleBase + AhkMagic.bif[newName][&quot;rva&quot;], entryAddr)
+        return oldPtr
+    }
+
+    static RestoreBif(name, oldPtr) {
+        AhkMagic.Init()
+        if !AhkMagic.bif.Has(name)
+            throw Error(&quot;builtin not found: &quot; name)
+        entryAddr := AhkMagic.bifTablePtr
+            + AhkMagic.bif[name][&quot;index&quot;] * AhkMagic.bifStride
+            + A_PtrSize
+        NumPut(&quot;Ptr&quot;, oldPtr, entryAddr)
+    }
+
+    ; Deep patch: change the mBIF field of an already-resolved built-in Func
+    ; object, so even direct calls compiled at load time (e.g. Abs(1)) are
+    ; redirected.  Works together with PatchBif on the table itself.
+    static PatchBifObject(fnObj, newName) {
+        AhkMagic.Init()
+        if !(fnObj is Func)
+            throw TypeError(&quot;expected a Func object&quot;)
+        if !AhkMagic.bif.Has(newName)
+            throw Error(&quot;builtin not found: &quot; newName)
+        fnName := fnObj.Name
+        if !AhkMagic.bif.Has(fnName)
+            throw Error(&quot;function object is not a built-in: &quot; fnName)
+        oldAddr := AhkMagic.moduleBase + AhkMagic.bif[fnName][&quot;rva&quot;]
+        newAddr := AhkMagic.moduleBase + AhkMagic.bif[newName][&quot;rva&quot;]
+        rawPtr := ObjPtr(fnObj)
+        off := AhkMagic._FindBifPtrOffset(rawPtr, oldAddr)
+        if off &lt; 0
+            throw Error(&quot;could not locate mBIF in function object for &quot; fnName)
+        NumPut(&quot;Ptr&quot;, newAddr, rawPtr, off)
+        ; Keep future table lookups consistent with the deep patch.
+        AhkMagic.PatchBif(fnName, newName)
+        return Map(
+            &quot;fnName&quot;, fnName,
+            &quot;newName&quot;, newName,
+            &quot;oldPtr&quot;, oldAddr,
+            &quot;offset&quot;, off
+        )
+    }
+
+    static RestoreBifObject(fnObj, state) {
+        AhkMagic.Init()
+        if !(fnObj is Func)
+            throw TypeError(&quot;expected a Func object&quot;)
+        fnName := fnObj.Name
+        if state[&quot;fnName&quot;] != fnName
+            throw Error(&quot;state does not match function object &quot; fnName)
+        if !AhkMagic.bif.Has(state[&quot;newName&quot;])
+            throw Error(&quot;builtin not found: &quot; state[&quot;newName&quot;])
+        rawPtr := ObjPtr(fnObj)
+        current := AhkMagic.moduleBase + AhkMagic.bif[state[&quot;newName&quot;]][&quot;rva&quot;]
+        off := AhkMagic._FindBifPtrOffset(rawPtr, current)
+        if off &lt; 0
+            throw Error(&quot;could not locate mBIF in function object for &quot; fnName)
+        NumPut(&quot;Ptr&quot;, state[&quot;oldPtr&quot;], rawPtr, off)
+        AhkMagic.RestoreBif(fnName, state[&quot;oldPtr&quot;])
+    }
+
+    static _FindBifPtrOffset(rawPtr, targetAddr) {
+        loop 64 {
+            off := (A_Index - 1) * 8
+            if NumGet(rawPtr, off, &quot;Ptr&quot;) = targetAddr
+                return off
+        }
+        return -1
+    }
+
+    ; General PE export-table scanner (works for any loaded DLL/EXE module).
+    static ScanExports(moduleBase) {
+        if !AhkMagic.exportScanner
+            AhkMagic.exportScanner := MCode(MC_PE_EXPORT_SCANNER_X64)
+        out := Buffer(100 * 1024)
+        rc := DllCall(
+            AhkMagic.exportScanner.Ptr,
+            &quot;Ptr&quot;, moduleBase,
+            &quot;Ptr&quot;, out.Ptr,
+            &quot;Int&quot;
+        )
+        if rc != 0
+            throw Error(&quot;AhkScanExports failed with rc=&quot; rc)
+        count := NumGet(out, 8, &quot;Int64&quot;)
+        result := Map()
+        loop count {
+            p := out.Ptr + 24 + (A_Index - 1) * 24
+            namePtr := NumGet(p, 0, &quot;Ptr&quot;)
+            fnRva := NumGet(p, 8, &quot;Int64&quot;)
+            ordinal := NumGet(p, 16, &quot;UInt&quot;)
+            result[StrGet(namePtr, &quot;UTF-8&quot;)] := Map(
+                &quot;rva&quot;, fnRva,
+                &quot;ordinal&quot;, ordinal
+            )
+        }
+        return result
+    }
+
+    ; ------------------------------------------------------------------
+    ; True in-process Eval.  Locates the interpreter&#x27;s own expression
+    ; compiler/evaluator, builds a temporary Line/ArgStruct, and calls
+    ; them directly in this process.
+    ; ------------------------------------------------------------------
+
+    static _ModuleSections() {
+        base := AhkMagic.moduleBase
+        peOff := NumGet(base, 0x3C, &quot;UInt&quot;)
+        numSections := NumGet(base + peOff + 6, &quot;UShort&quot;)
+        optSize := NumGet(base + peOff + 20, &quot;UShort&quot;)
+        secTable := base + peOff + 24 + optSize
+        result := Map()
+        loop numSections {
+            hdr := secTable + (A_Index - 1) * 40
+            name := StrGet(hdr, 8, &quot;UTF-8&quot;)
+            vsize := NumGet(hdr + 8, &quot;UInt&quot;)
+            va := NumGet(hdr + 12, &quot;UInt&quot;)
+            result[name] := Map(
+                &quot;rva&quot;, va,
+                &quot;size&quot;, vsize,
+                &quot;ptr&quot;, base + va
+            )
+        }
+        return result
+    }
+
+    static _FindUtf16(secs, text) {
+        len := StrLen(text)
+        needle := Buffer(2 * (len + 1), 0)
+        StrPut(text, needle, &quot;UTF-16&quot;)
+        hits := []
+        for name, sec in secs {
+            if name != &quot;.rdata&quot;
+                continue
+            p := sec[&quot;ptr&quot;]
+            count := sec[&quot;size&quot;] &gt;= 2 * len
+                ? Min((sec[&quot;size&quot;] - 2 * len) // 2 + 1, 0x100000)
+                : 0
+            if count &lt;= 0
+                continue
+            loop count {
+                off := (A_Index - 1) * 2
+                ok := true
+                loop len {
+                    if NumGet(p + off + 2 * (A_Index - 1), &quot;UShort&quot;)
+                        != NumGet(needle, 2 * (A_Index - 1), &quot;UShort&quot;) {
+                        ok := false
+                        break
+                    }
+                }
+                if ok and NumGet(p + off + 2 * len, &quot;UShort&quot;) = 0
+                    hits.Push(sec[&quot;rva&quot;] + off)
+            }
+        }
+        return hits
+    }
+
+    static _RipRefs(sec, targetRva) {
+        p := sec[&quot;ptr&quot;]
+        size := sec[&quot;size&quot;]
+        refs := []
+        if size &lt; 8
+            return refs
+        loop size - 7 {
+            i := A_Index - 1
+            b := NumGet(p + i, &quot;UChar&quot;)
+            if b != 0x48 and b != 0x4C
+                continue
+            if NumGet(p + i + 1, &quot;UChar&quot;) != 0x8D
+                continue
+            reg := NumGet(p + i + 2, &quot;UChar&quot;)
+            if reg != 0x05 and reg != 0x0D and reg != 0x15 and reg != 0x1D
+                and reg != 0x25 and reg != 0x2D and reg != 0x35 and reg != 0x3D
+                continue
+            disp := NumGet(p + i + 3, &quot;Int&quot;)
+            next := sec[&quot;rva&quot;] + i + 7
+            if next + disp = targetRva
+                refs.Push(sec[&quot;rva&quot;] + i)
+        }
+        return refs
+    }
+
+    static _FnStart(sec, refRva) {
+        p := sec[&quot;ptr&quot;]
+        off := refRva - sec[&quot;rva&quot;]
+        i := off
+        while i &gt; 0 {
+            if NumGet(p + i - 1, &quot;UChar&quot;) = 0xCC
+                and i &gt;= 2 and NumGet(p + i - 2, &quot;UChar&quot;) = 0xCC
+                break
+            i -= 1
+        }
+        return sec[&quot;rva&quot;] + i
+    }
+
+    static _FindCallers(sec, targetRva) {
+        p := sec[&quot;ptr&quot;]
+        size := sec[&quot;size&quot;]
+        calls := []
+        if size &lt; 6
+            return calls
+        loop size - 5 {
+            i := A_Index - 1
+            if NumGet(p + i, &quot;UChar&quot;) != 0xE8
+                continue
+            disp := NumGet(p + i + 1, &quot;Int&quot;)
+            if sec[&quot;rva&quot;] + i + 5 + disp = targetRva
+                calls.Push(sec[&quot;rva&quot;] + i)
+        }
+        return calls
+    }
+
+    static _BestStart(sec, refs) {
+        starts := Map()
+        for ref in refs {
+            start := AhkMagic._FnStart(sec, ref)
+            starts[start] := starts.Has(start) ? starts[start] + 1 : 1
+        }
+        best := 0
+        bestCount := 0
+        for start, count in starts {
+            if count &gt; bestCount {
+                best := start
+                bestCount := count
+            }
+        }
+        return best
+    }
+
+    static _CurrLineSlotAddr() {
+        AhkMagic.Init()
+        if !AhkMagic.biv.Has(&quot;LineNumber&quot;)
+            throw Error(&quot;A_LineNumber getter not found&quot;)
+        p := AhkMagic.moduleBase + AhkMagic.biv[&quot;LineNumber&quot;][&quot;getter_rva&quot;]
+        if NumGet(p, &quot;UChar&quot;) != 0x48 or NumGet(p + 1, &quot;UChar&quot;) != 0x8B
+            or NumGet(p + 2, &quot;UChar&quot;) != 0x05
+            throw Error(&quot;unexpected A_LineNumber getter code&quot;)
+        disp := NumGet(p + 3, &quot;Int&quot;)
+        return p + 7 + disp
+    }
+
+    static _LocateInternalFunctions() {
+        if AhkMagic.internalLocated
+            return
+        secs := AhkMagic._ModuleSections()
+        text := secs[&quot;.text&quot;]
+
+        postfixRefs := AhkMagic._RipRefs(text, AhkMagic._FindUtf16(secs, &quot;Missing operand.&quot;)[1])
+        postfix2 := AhkMagic._BestStart(text, postfixRefs)
+        if !postfix2
+            throw Error(&quot;ExpressionToPostfix not found&quot;)
+
+        expandRefs := AhkMagic._RipRefs(text, AhkMagic._FindUtf16(secs, &quot;Error evaluating expression.&quot;)[1])
+        expand := AhkMagic._BestStart(text, expandRefs)
+        if !expand
+            throw Error(&quot;ExpandExpression not found&quot;)
+
+        AhkMagic.exprToPostfix := AhkMagic.moduleBase + postfix2
+        AhkMagic.expandSingleArg := AhkMagic.moduleBase + expand
+        AhkMagic.currLineSlot := AhkMagic._CurrLineSlotAddr()
+        if !AhkMagic.internalLocator
+            AhkMagic.internalLocator := MCode(MC_INTERNAL_LOCATOR_X64)
+        locOut := Buffer(64, 0)
+        rc := DllCall(
+            AhkMagic.internalLocator.Ptr,
+            &quot;Ptr&quot;, AhkMagic.moduleBase,
+            &quot;UInt64&quot;, text[&quot;rva&quot;],
+            &quot;UInt64&quot;, text[&quot;size&quot;],
+            &quot;UInt64&quot;, postfix2,
+            &quot;UInt64&quot;, expand,
+            &quot;Ptr&quot;, locOut.Ptr,
+            &quot;Int&quot;
+        )
+        if rc != 0
+            throw Error(&quot;internal locator failed with rc=&quot; rc)
+        AhkMagic.gScript := NumGet(locOut, 0, &quot;Ptr&quot;)
+        AhkMagic.finalizeExpr := NumGet(locOut, 8, &quot;Ptr&quot;)
+        AhkMagic.findOrAddVar := NumGet(locOut, 16, &quot;Ptr&quot;)
+        AhkMagic.crtFree := NumGet(locOut, 24, &quot;Ptr&quot;)
+        AhkMagic.symInvalid := NumGet(locOut, 32, &quot;UInt&quot;)
+        AhkMagic.internalLocated := true
+    }
+
+    static _LocateCrtFree() {
+        secs := AhkMagic._ModuleSections()
+        text := secs[&quot;.text&quot;]
+        postfixRva := AhkMagic.exprToPostfix - AhkMagic.moduleBase
+        callers := AhkMagic._FindCallers(text, postfixRva)
+        for callerRva in callers {
+            off := callerRva - text[&quot;rva&quot;] + 5
+            p := text[&quot;ptr&quot;] + off
+            loop 96 {
+                i := A_Index - 1
+                if NumGet(p + i, &quot;UChar&quot;) != 0xE8
+                    continue
+                disp := NumGet(p + i + 1, &quot;Int&quot;)
+                target := text[&quot;rva&quot;] + off + i + 5 + disp
+                if target != postfixRva
+                    return AhkMagic.moduleBase + target
+            }
+        }
+        throw Error(&quot;CRT free not found&quot;)
+    }
+
+    static _FindBytePattern(sec, hexPattern, startRva := 0) {
+        p := sec[&quot;ptr&quot;]
+        size := sec[&quot;size&quot;]
+        start := sec[&quot;rva&quot;] + startRva
+        needle := Buffer(StrLen(hexPattern) // 2)
+        loop needle.Size {
+            byte := Integer(&quot;0x&quot; SubStr(hexPattern, 2 * A_Index - 1, 2))
+            NumPut(&quot;UChar&quot;, byte, needle, A_Index - 1)
+        }
+        max := size - needle.Size + 1
+        loop max {
+            i := A_Index - 1
+            if NumGet(p + i, &quot;UChar&quot;) != NumGet(needle, 0, &quot;UChar&quot;)
+                continue
+            ok := true
+            loop needle.Size {
+                if NumGet(p + i + A_Index - 1, &quot;UChar&quot;)
+                    != NumGet(needle, A_Index - 1, &quot;UChar&quot;) {
+                    ok := false
+                    break
+                }
+            }
+            if ok
+                return sec[&quot;rva&quot;] + i
+        }
+        return 0
+    }
+
+    static _FindBytePatternInFunc(sec, startRva, hexPattern) {
+        p := sec[&quot;ptr&quot;]
+        off := startRva - sec[&quot;rva&quot;]
+        limit := Min(sec[&quot;size&quot;] - 4, off + 0x4000)
+        needle := Buffer(StrLen(hexPattern) // 2)
+        loop needle.Size {
+            byte := Integer(&quot;0x&quot; SubStr(hexPattern, 2 * A_Index - 1, 2))
+            NumPut(&quot;UChar&quot;, byte, needle, A_Index - 1)
+        }
+        i := off
+        while i &lt; limit {
+            if NumGet(p + i, &quot;UChar&quot;) = 0xCC
+                and NumGet(p + i + 1, &quot;UChar&quot;) = 0xCC
+                break
+            if NumGet(p + i, &quot;UChar&quot;) = NumGet(needle, 0, &quot;UChar&quot;) {
+                ok := true
+                loop needle.Size {
+                    if NumGet(p + i + A_Index - 1, &quot;UChar&quot;)
+                        != NumGet(needle, A_Index - 1, &quot;UChar&quot;) {
+                        ok := false
+                        break
+                    }
+                }
+                if ok
+                    return true
+            }
+            i += 1
+        }
+        return false
+    }
+
+    static _LocatePreprocessFunc(sec) {
+        p := sec[&quot;ptr&quot;]
+        size := sec[&quot;size&quot;]
+        count := size - 8
+        loop count {
+            i := A_Index - 1
+            if NumGet(p + i, &quot;UChar&quot;) != 0x41
+                or NumGet(p + i + 1, &quot;UChar&quot;) != 0x0F
+                or NumGet(p + i + 2, &quot;UChar&quot;) != 0xB6
+                continue
+            m := NumGet(p + i + 3, &quot;UChar&quot;)
+            if m != 0x76 and m != 0x7E
+                continue
+            if NumGet(p + i + 4, &quot;UChar&quot;) != 0x23
+                continue
+            limit := Min(size - 4, i + 0x300)
+            j := i + 5
+            while j &lt; limit {
+                if NumGet(p + j, &quot;UChar&quot;) = 0x80
+                    and NumGet(p + j + 1, &quot;UChar&quot;) = 0x78
+                    and NumGet(p + j + 2, &quot;UChar&quot;) = 0x23
+                    and NumGet(p + j + 3, &quot;UChar&quot;) = 0x02
+                    return AhkMagic._FnStart(sec, sec[&quot;rva&quot;] + i)
+                j += 1
+            }
+        }
+        return 0
+    }
+
+    static _LocateGptr(sec, preparseRva) {
+        callers := AhkMagic._FindCallers(sec, preparseRva)
+        for caller in callers {
+            start := AhkMagic._FnStart(sec, caller)
+            p := sec[&quot;ptr&quot;]
+            off := start - sec[&quot;rva&quot;]
+            limit := Min(sec[&quot;size&quot;] - 16, off + 0x4000)
+            i := off
+            while i &lt; limit {
+                if NumGet(p + i, &quot;UChar&quot;) = 0xCC
+                    and NumGet(p + i + 1, &quot;UChar&quot;) = 0xCC
+                    break
+                if NumGet(p + i, &quot;UChar&quot;) = 0x48
+                    and NumGet(p + i + 1, &quot;UChar&quot;) = 0x8B
+                    and NumGet(p + i + 2, &quot;UChar&quot;) = 0x05 {
+                    j := i + 7
+                    while j &lt; Min(i + 24, limit) {
+                        if NumGet(p + j, &quot;UChar&quot;) = 0x48
+                            and NumGet(p + j + 1, &quot;UChar&quot;) = 0x89
+                            and NumGet(p + j + 2, &quot;UChar&quot;) = 0x58
+                            and NumGet(p + j + 3, &quot;UChar&quot;) = 0x28
+                            or NumGet(p + j, &quot;UChar&quot;) = 0x48
+                            and NumGet(p + j + 1, &quot;UChar&quot;) = 0x89
+                            and NumGet(p + j + 2, &quot;UChar&quot;) = 0x50
+                            and NumGet(p + j + 3, &quot;UChar&quot;) = 0x28 {
+                            disp := NumGet(p + i + 3, &quot;Int&quot;)
+                            return sec[&quot;rva&quot;] + i + 7 + disp
+                        }
+                        j += 1
+                    }
+                }
+                i += 1
+            }
+        }
+        return 0
+    }
+
+    static _HasBytesNear(sec, rva, hexPattern, range := 40) {
+        found := AhkMagic._FindBytePattern(sec, hexPattern, rva - sec[&quot;rva&quot;])
+        return found and found - rva &lt; range
+    }
+
+    static _LocateLoadTs(sec, openRva) {
+        callers := AhkMagic._FindCallers(sec, openRva)
+        for caller in callers {
+            p := sec[&quot;ptr&quot;]
+            base := sec[&quot;rva&quot;]
+            off := caller - base + 5
+            limit := Min(sec[&quot;size&quot;] - 5, off + 0x300)
+            i := off
+            while i &lt; limit {
+                isCmp := NumGet(p + i, &quot;UChar&quot;) = 0x83
+                    and NumGet(p + i + 1, &quot;UChar&quot;) = 0xF8
+                    and NumGet(p + i + 2, &quot;UChar&quot;) = 0x03
+                isCmp2 := NumGet(p + i, &quot;UChar&quot;) = 0x3D
+                    and NumGet(p + i + 1, &quot;UChar&quot;) = 0x03
+                if isCmp or isCmp2 {
+                    j := i + 3
+                    callLimit := Min(sec[&quot;size&quot;] - 5, j + 0x200)
+                    while j &lt; callLimit {
+                        if NumGet(p + j, &quot;UChar&quot;) = 0xE8 {
+                            disp := NumGet(p + j + 1, &quot;Int&quot;)
+                            target := base + j + 5 + disp
+                            if AhkMagic._HasBytesNear(sec, target
+                                , &quot;555356574154415541564157&quot;, 40)
+                                return target
+                        }
+                        j += 1
+                    }
+                    break
+                }
+                i += 1
+            }
+        }
+        return 0
+    }
+
+    static _LocateSrcCount(sec, openRva) {
+        callers := AhkMagic._FindCallers(sec, openRva)
+        for caller in callers {
+            p := sec[&quot;ptr&quot;]
+            base := sec[&quot;rva&quot;]
+            off := caller - base
+            i := off - 5
+            min := Max(0, off - 0x100)
+            while i &gt;= min {
+                b := NumGet(p + i, &quot;UChar&quot;)
+                if b = 0x8B
+                    and (NumGet(p + i + 1, &quot;UChar&quot;) = 0x2D
+                    or NumGet(p + i + 1, &quot;UChar&quot;) = 0x1D
+                    or NumGet(p + i + 1, &quot;UChar&quot;) = 0x35
+                    or NumGet(p + i + 1, &quot;UChar&quot;) = 0x3D) {
+                    disp := NumGet(p + i + 2, &quot;Int&quot;)
+                    target := base + i + 6 + disp
+                    if target &gt; 0x10000 {
+                        val := NumGet(AhkMagic.moduleBase + target, &quot;Int&quot;)
+                        if val &gt;= 0 and val &lt; 100000
+                            return target
+                    }
+                }
+                if b = 0x44
+                    and NumGet(p + i + 1, &quot;UChar&quot;) = 0x8B
+                    and (NumGet(p + i + 2, &quot;UChar&quot;) = 0x2D
+                    or NumGet(p + i + 2, &quot;UChar&quot;) = 0x3D) {
+                    disp := NumGet(p + i + 3, &quot;Int&quot;)
+                    target := base + i + 7 + disp
+                    if target &gt; 0x10000 {
+                        val := NumGet(AhkMagic.moduleBase + target, &quot;Int&quot;)
+                        if val &gt;= 0 and val &lt; 100000
+                            return target
+                    }
+                }
+                i -= 1
+            }
+        }
+        return 0
+    }
+
+    static _LocateEvalScriptFunctions() {
+        if AhkMagic.evalScriptLocated
+            return
+        AhkMagic._LocateInternalFunctions()
+        secs := AhkMagic._ModuleSections()
+        text := secs[&quot;.text&quot;]
+        postfixRva := AhkMagic.exprToPostfix - AhkMagic.moduleBase
+        callers := AhkMagic._FindCallers(text, postfixRva)
+        preparse := 0
+        for caller in callers {
+            start := AhkMagic._FnStart(text, caller)
+            if AhkMagic._FindBytePatternInFunc(text, start, &quot;803B03&quot;)
+                and AhkMagic._FindBytePatternInFunc(text, start, &quot;803B04&quot;) {
+                preparse := start
+                break
+            }
+        }
+        if !preparse
+            throw Error(&quot;PreparseExpressions not found&quot;)
+
+        preprocess := AhkMagic._LocatePreprocessFunc(text)
+        if !preprocess
+            throw Error(&quot;PreprocessLocalVars not found&quot;)
+
+        openNeedle := &quot;48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200&quot;
+        openNeedle21 := &quot;40535556574154415541564157B8D8000100&quot;
+        open := AhkMagic._FindBytePattern(text, openNeedle)
+        if !open
+            open := AhkMagic._FindBytePattern(text, openNeedle21)
+        if !open
+            throw Error(&quot;OpenIncludedFile not found&quot;)
+
+        loadTs := AhkMagic._LocateLoadTs(text, open)
+        if !loadTs
+            throw Error(&quot;LoadIncludedFile(TextStream) not found&quot;)
+        srcCount := 0
+        if !RegExMatch(A_AhkVersion, &quot;^2\.1&quot;)
+            srcCount := AhkMagic._LocateSrcCount(text, open)
+
+        gptr := AhkMagic._LocateGptr(text, preparse)
+        if !gptr
+            throw Error(&quot;g pointer not found&quot;)
+
+        AhkMagic.evalPreparse := AhkMagic.moduleBase + preparse
+        AhkMagic.evalPreprocess := AhkMagic.moduleBase + preprocess
+        AhkMagic.evalOpenInclude := AhkMagic.moduleBase + open
+        AhkMagic.evalLoadTs := AhkMagic.moduleBase + loadTs
+        AhkMagic.evalSrcCount := srcCount ? AhkMagic.moduleBase + srcCount : 0
+        AhkMagic.evalGptr := AhkMagic.moduleBase + gptr
+        AhkMagic.evalScriptLocated := true
+    }
+
+    ; Evaluate an expression inside this interpreter process.
+    ; Returns a number or string.  Throws on unsupported/invalid input.
+    static EvalNative(expr) {
+        AhkMagic.Init()
+        if !(expr is String)
+            throw TypeError(&quot;expr must be a string&quot;, -1)
+        if StrLen(expr) &gt; 4096
+            throw ValueError(&quot;expr too long&quot;, -1)
+        if !AhkMagic.inprocEval
+            AhkMagic.inprocEval := MCode(MC_INPROC_EVAL_X64)
+        AhkMagic._LocateInternalFunctions()
+
+        scratch := Buffer(8 * 1024 * 1024, 0)
+        out := Buffer(512, 0)
+        exprBuf := Buffer((StrLen(expr) + 1) * 2, 0)
+        StrPut(expr, exprBuf, &quot;UTF-16&quot;)
+        rc := DllCall(
+            AhkMagic.inprocEval.Ptr,
+            &quot;Ptr&quot;, AhkMagic.exprToPostfix,
+            &quot;Ptr&quot;, AhkMagic.expandSingleArg,
+            &quot;Ptr&quot;, AhkMagic.currLineSlot,
+            &quot;Ptr&quot;, scratch.Ptr,
+            &quot;Ptr&quot;, exprBuf.Ptr,
+            &quot;Ptr&quot;, out.Ptr,
+            &quot;Int&quot;, 1,
+            &quot;Ptr&quot;, 0,
+            &quot;Ptr&quot;, 0,
+            &quot;Ptr&quot;, AhkMagic.gScript,
+            &quot;Ptr&quot;, AhkMagic.finalizeExpr,
+            &quot;Ptr&quot;, AhkMagic.findOrAddVar,
+            &quot;Ptr&quot;, AhkMagic.crtFree,
+            &quot;Ptr&quot;, AhkMagic.symInvalid,
+            &quot;Int&quot;
+        )
+        if rc != 0
+            throw Error(&quot;EvalNative harness failed with rc=&quot; rc)
+        status := NumGet(out, 0, &quot;UInt&quot;)
+        if status != 0
+            throw Error(&quot;EvalNative failed with status=&quot; status)
+        type := NumGet(out, 4, &quot;UInt&quot;)
+        if type = 1
+            return NumGet(out, 8, &quot;Int64&quot;)
+        if type = 2
+            return NumGet(out, 8, &quot;Double&quot;)
+        if type = 0
+            return StrGet(NumGet(out, 16, &quot;Ptr&quot;), &quot;UTF-16&quot;)
+        throw Error(&quot;EvalNative returned unknown symbol &quot; type)
+    }
+
+    static Summary() {
+        AhkMagic.Init()
+        return Format(
+            &quot;module=0x{:X}`nbif={} @0x{:X} (stride 0x{:X})`n&quot;
+            . &quot;mdfunc={} @0x{:X} (stride 0x{:X})`n&quot;
+            . &quot;biv={} @0x{:X} (stride 0x{:X})&quot;,
+            AhkMagic.moduleBase,
+            AhkMagic.bifCount, AhkMagic.bifTablePtr, AhkMagic.bifStride,
+            AhkMagic.mdfuncCount, AhkMagic.mdfuncTablePtr, AhkMagic.mdfuncStride,
+            AhkMagic.bivCount, AhkMagic.bivTablePtr, AhkMagic.bivStride
+        )
+    }
+
+    static Eval(expr) {
+        AhkMagic.Init()
+        if !(expr is String)
+            throw TypeError(&quot;expr must be a string&quot;, -1)
+        if expr = &quot;&quot;
+            throw ValueError(&quot;expr must not be empty&quot;, -1)
+        if RegExMatch(expr, &quot;[\r\n]&quot;)
+            return AhkMagic.EvalScript(expr)
+        try {
+            return AhkMagic.EvalNative(expr)
+        } catch as e {
+            ; Expressions the in-process pipeline cannot evaluate yet fall
+            ; back to the explicit subprocess implementation.
+        }
+        return AhkMagic.EvalSubprocess(expr)
+    }
+
+    static EvalScript(text) {
+        AhkMagic.Init()
+        if !(text is String)
+            throw TypeError(&quot;text must be a string&quot;, -1)
+        if Trim(text) = &quot;&quot;
+            throw ValueError(&quot;text must not be empty&quot;, -1)
+
+        entry := AhkMagic._EvalScriptOffsets().Get(A_AhkVersion, 0)
+        if !entry
+            throw Error(&quot;in-process EvalScript not adapted for &quot; A_AhkVersion)
+        AhkMagic._LocateEvalScriptFunctions()
+
+        last := &quot;&quot;
+        for line in StrSplit(text, &quot;`n&quot;, &quot;`r&quot;) {
+            t := Trim(line)
+            if t = &quot;&quot;
+                continue
+            if RegExMatch(t, &quot;^(if|else|for|while|loop|try|catch|finally|return|break|continue|class|static|global|local|throw)\b&quot;)
+                continue
+            if SubStr(t, -1) = &quot;{&quot;
+                continue
+            last := t
+        }
+        if last = &quot;&quot;
+            throw ValueError(&quot;no expression result found in script text&quot;, -1)
+
+        tag := Format(&quot;{:x}&quot;, A_TickCount) &quot;-&quot; Format(&quot;{:x}&quot;, Random(1, 0x7fffffff))
+        tmp := A_Temp &quot;\ahk_mcode_inproc_&quot; tag &quot;.ahk&quot;
+        if FileExist(tmp)
+            FileDelete tmp
+        FileAppend text, tmp, &quot;UTF-8&quot;
+
+        savedDir := A_WorkingDir
+        gScript := AhkMagic.gScript
+        oldLast := NumGet(gScript, entry[&quot;mlastline&quot;], &quot;Ptr&quot;)
+        oldFuncCount := NumGet(gScript, entry[&quot;mfuncs_count&quot;], &quot;Int&quot;)
+        g := NumGet(AhkMagic.evalGptr, &quot;Ptr&quot;)
+        savedCur := NumGet(g, entry[&quot;curr_off&quot;], &quot;Ptr&quot;)
+        savedState := []
+        for key in [&quot;mopen&quot;, &quot;mpending_parent&quot;, &quot;mline_parent&quot;, &quot;mpending_related&quot;
+            , &quot;mlast_param_init&quot;, &quot;mpending_hotkey&quot;, &quot;mexpr_func&quot;, &quot;mcurrent_module&quot;] {
+            if entry.Has(key)
+                savedState.Push([key, &quot;Ptr&quot;, NumGet(gScript, entry[key], &quot;Ptr&quot;)])
+        }
+        for key in [&quot;mexpr_func_index&quot;, &quot;mclass_count&quot;] {
+            if entry.Has(key)
+                savedState.Push([key, &quot;Int&quot;, NumGet(gScript, entry[key], &quot;Int&quot;)])
+        }
+        for key in [&quot;mnext_func_body&quot;, &quot;mignore_block&quot;, &quot;mbackcompat&quot;] {
+            if entry.Has(key)
+                savedState.Push([key, &quot;UChar&quot;, NumGet(gScript, entry[key], &quot;UChar&quot;)])
+        }
+        try {
+            if entry.Has(&quot;mopen&quot;)
+                NumPut(&quot;Ptr&quot;, 0, gScript, entry[&quot;mopen&quot;])
+            if entry.Has(&quot;mpending_parent&quot;)
+                NumPut(&quot;Ptr&quot;, 0, gScript, entry[&quot;mpending_parent&quot;])
+            if entry.Has(&quot;mline_parent&quot;)
+                NumPut(&quot;Ptr&quot;, 0, gScript, entry[&quot;mline_parent&quot;])
+            if entry.Has(&quot;mpending_related&quot;)
+                NumPut(&quot;Ptr&quot;, 0, gScript, entry[&quot;mpending_related&quot;])
+            if entry.Has(&quot;mlast_param_init&quot;)
+                NumPut(&quot;Ptr&quot;, 0, gScript, entry[&quot;mlast_param_init&quot;])
+            if entry.Has(&quot;mpending_hotkey&quot;)
+                NumPut(&quot;Ptr&quot;, 0, gScript, entry[&quot;mpending_hotkey&quot;])
+            if entry.Has(&quot;mexpr_func&quot;)
+                NumPut(&quot;Ptr&quot;, 0, gScript, entry[&quot;mexpr_func&quot;])
+            if entry.Has(&quot;mexpr_func_index&quot;)
+                NumPut(&quot;Int&quot;, 0x7fffffff, gScript, entry[&quot;mexpr_func_index&quot;])
+            if entry.Has(&quot;mnext_func_body&quot;)
+                NumPut(&quot;UChar&quot;, 0, gScript, entry[&quot;mnext_func_body&quot;])
+            if entry.Has(&quot;mignore_block&quot;)
+                NumPut(&quot;UChar&quot;, 0, gScript, entry[&quot;mignore_block&quot;])
+            if entry.Has(&quot;mbackcompat&quot;)
+                NumPut(&quot;UChar&quot;, 1, gScript, entry[&quot;mbackcompat&quot;])
+            if entry.Has(&quot;mclass_count&quot;)
+                NumPut(&quot;Int&quot;, 0, gScript, entry[&quot;mclass_count&quot;])
+            NumPut(&quot;Ptr&quot;, 0, g, entry[&quot;curr_off&quot;])
+
+            tsSlot := Buffer(8, 0)
+            rcOpen := DllCall(AhkMagic.evalOpenInclude
+                , &quot;Ptr&quot;, gScript
+                , &quot;Ptr&quot;, tsSlot.Ptr
+                , &quot;Str&quot;, tmp
+                , &quot;Int&quot;, 1
+                , &quot;Int&quot;, 0
+                , &quot;Int&quot;)
+            if rcOpen != 3
+                throw Error(&quot;OpenIncludedFile failed with rc=&quot; rcOpen)
+            ts := NumGet(tsSlot, 0, &quot;Ptr&quot;)
+            srcIndex := AhkMagic.evalSrcCount
+                ? NumGet(AhkMagic.evalSrcCount, &quot;Int&quot;)
+                : 0
+            rc := DllCall(AhkMagic.evalLoadTs
+                , &quot;Ptr&quot;, gScript
+                , &quot;Ptr&quot;, ts
+                , &quot;Int&quot;, srcIndex
+                , &quot;Int&quot;)
+            if ts and rc = 1 {
+                vtable := NumGet(ts, 0, &quot;Ptr&quot;)
+                DllCall(NumGet(vtable, 0, &quot;Ptr&quot;), &quot;Ptr&quot;, ts, &quot;Int&quot;, 1)
+            }
+            if rc != 1
+                throw Error(&quot;LoadIncludedFile failed with rc=&quot; rc)
+
+            funcsItem := NumGet(gScript, entry[&quot;mfuncs&quot;], &quot;Ptr&quot;)
+            funcCount := NumGet(gScript, entry[&quot;mfuncs_count&quot;], &quot;Int&quot;)
+            if funcCount &gt; oldFuncCount {
+                firstNew := oldLast ? NumGet(oldLast, entry[&quot;line_next&quot;], &quot;Ptr&quot;) : 0
+                if firstNew {
+                    rcTail := DllCall(AhkMagic.evalPreparse
+                        , &quot;Ptr&quot;, gScript
+                        , &quot;Ptr&quot;, firstNew
+                        , &quot;Int&quot;)
+                    if rcTail != 1
+                        throw Error(&quot;PreparseExpressions(tail) failed with rc=&quot; rcTail)
+                }
+                loop funcCount - oldFuncCount {
+                    idx := oldFuncCount + A_Index - 1
+                    newFunc := NumGet(funcsItem + idx * 8, &quot;Ptr&quot;)
+                    jump := NumGet(newFunc, entry[&quot;mjumpline&quot;], &quot;Ptr&quot;)
+                    if !jump
+                        continue
+
+                    rc2 := DllCall(AhkMagic.evalPreparse
+                        , &quot;Ptr&quot;, gScript
+                        , &quot;Ptr&quot;, jump
+                        , &quot;Int&quot;)
+                    if rc2 != 1
+                        throw Error(&quot;PreparseExpressions failed with rc=&quot; rc2)
+
+                    NumPut(&quot;Ptr&quot;, newFunc, g, entry[&quot;curr_off&quot;])
+                    line := jump
+                    while line {
+                        if NumGet(line, entry[&quot;line_action&quot;], &quot;UChar&quot;) = 3
+                            and NumGet(line, entry[&quot;line_attribute&quot;], &quot;Ptr&quot;)
+                            NumPut(&quot;Ptr&quot;, NumGet(line, entry[&quot;line_attribute&quot;], &quot;Ptr&quot;)
+                                , g, entry[&quot;curr_off&quot;])
+                        argc := NumGet(line, entry[&quot;line_argc&quot;], &quot;UChar&quot;)
+                        if argc {
+                            arg := NumGet(line, entry[&quot;line_arg&quot;], &quot;Ptr&quot;)
+                            if arg and NumGet(arg, 1, &quot;UChar&quot;) {
+                                postfix := NumGet(arg, entry[&quot;arg_postfix&quot;], &quot;Ptr&quot;)
+                                if postfix {
+                                    while NumGet(postfix, entry[&quot;token_symbol&quot;], &quot;UInt&quot;) != AhkMagic.symInvalid {
+                                        if NumGet(postfix, entry[&quot;token_symbol&quot;], &quot;UInt&quot;) = 4
+                                            and NumGet(postfix, entry[&quot;token_usage&quot;], &quot;UInt&quot;) &lt; 3 {
+                                            deref := NumGet(postfix, entry[&quot;token_value&quot;], &quot;Ptr&quot;)
+                                            if deref {
+                                                derefType := NumGet(deref, 16, &quot;UChar&quot;)
+                                                marker := NumGet(deref, entry[&quot;deref_marker&quot;], &quot;Ptr&quot;)
+                                                len := NumGet(deref, entry[&quot;deref_len&quot;], &quot;UInt&quot;)
+                                                if derefType = 7 {
+                                                    NumPut(&quot;Ptr&quot;, NumGet(deref, 8, &quot;Ptr&quot;)
+                                                        , postfix, entry[&quot;token_value&quot;])
+                                                } else if derefType = 0 and marker and len &gt; 0 and len &lt;= 64 {
+                                                    var := DllCall(AhkMagic.findOrAddVar
+                                                        , &quot;Ptr&quot;, gScript
+                                                        , &quot;Ptr&quot;, marker
+                                                        , &quot;UPtr&quot;, len
+                                                        , &quot;UInt&quot;, 0x103
+                                                        , &quot;Ptr&quot;)
+                                                    if var
+                                                        NumPut(&quot;Ptr&quot;, var, postfix, entry[&quot;token_value&quot;])
+                                                }
+                                            }
+                                        }
+                                        postfix += 24
+                                    }
+                                }
+                            }
+                        }
+                        line := NumGet(line, entry[&quot;line_next&quot;], &quot;Ptr&quot;)
+                    }
+                    NumPut(&quot;Ptr&quot;, savedCur, g, entry[&quot;curr_off&quot;])
+                    rc4 := DllCall(AhkMagic.evalPreprocess
+                        , &quot;Ptr&quot;, gScript
+                        , &quot;Ptr&quot;, newFunc
+                        , &quot;Int&quot;)
+                    if rc4 != 1
+                        throw Error(&quot;PreprocessLocalVars failed with rc=&quot; rc4)
+                }
+            }
+            ; Detach the newly added lines from the running line list so the
+            ; active execution cannot continue into them.  The new function
+            ; remains reachable through mFuncs.
+            ; NumPut(&quot;Ptr&quot;, 0, oldLast, entry[&quot;line_next&quot;])
+            ; NumPut(&quot;Ptr&quot;, oldLast, gScript, entry[&quot;mlastline&quot;])
+            NumPut(&quot;Ptr&quot;, 0, g, entry[&quot;curr_off&quot;])
+            r := AhkMagic.EvalNative(last)
+            NumPut(&quot;Ptr&quot;, savedCur, g, entry[&quot;curr_off&quot;])
+            return r
+        } finally {
+            if FileExist(tmp)
+                FileDelete tmp
+            try
+                SetWorkingDir savedDir
+            for item in savedState
+                NumPut(item[2], item[3], gScript, entry[item[1]])
+            NumPut(&quot;Ptr&quot;, savedCur, g, entry[&quot;curr_off&quot;])
+        }
+    }
+
+    static _EvalScriptOffsets() {
+        return Map(
+            &quot;2.0.26&quot;, Map(
+                &quot;curr_off&quot;, 0x28,
+                &quot;mlastline&quot;, 8,
+                &quot;mfuncs&quot;, 32,
+                &quot;mfuncs_count&quot;, 40,
+                &quot;mopen&quot;, 112,
+                &quot;mpending_parent&quot;, 120,
+                &quot;mpending_related&quot;, 128,
+                &quot;mlast_param_init&quot;, 136,
+                &quot;mnext_func_body&quot;, 144,
+                &quot;mclass_count&quot;, 148,
+                &quot;mjumpline&quot;, 0x40,
+                &quot;line_action&quot;, 0,
+                &quot;line_argc&quot;, 1,
+                &quot;line_arg&quot;, 8,
+                &quot;line_attribute&quot;, 16,
+                &quot;line_next&quot;, 32,
+                &quot;arg_postfix&quot;, 24,
+                &quot;token_symbol&quot;, 16,
+                &quot;token_usage&quot;, 8,
+                &quot;token_value&quot;, 0,
+                &quot;deref_marker&quot;, 0,
+                &quot;deref_len&quot;, 20
+            ),
+            &quot;2.0.0&quot;, Map(
+                &quot;curr_off&quot;, 0x28,
+                &quot;mlastline&quot;, 8,
+                &quot;mfuncs&quot;, 32,
+                &quot;mfuncs_count&quot;, 40,
+                &quot;mopen&quot;, 112,
+                &quot;mpending_parent&quot;, 120,
+                &quot;mpending_related&quot;, 128,
+                &quot;mnext_func_body&quot;, 136,
+                &quot;mclass_count&quot;, 140,
+                &quot;mjumpline&quot;, 0x40,
+                &quot;line_action&quot;, 0,
+                &quot;line_argc&quot;, 1,
+                &quot;line_arg&quot;, 8,
+                &quot;line_attribute&quot;, 16,
+                &quot;line_next&quot;, 32,
+                &quot;arg_postfix&quot;, 24,
+                &quot;token_symbol&quot;, 16,
+                &quot;token_usage&quot;, 8,
+                &quot;token_value&quot;, 0,
+                &quot;deref_marker&quot;, 0,
+                &quot;deref_len&quot;, 20
+            ),
+            &quot;2.0-beta.10&quot;, Map(
+                &quot;curr_off&quot;, 0x28,
+                &quot;mlastline&quot;, 8,
+                &quot;mfuncs&quot;, 32,
+                &quot;mfuncs_count&quot;, 40,
+                &quot;mopen&quot;, 112,
+                &quot;mpending_parent&quot;, 120,
+                &quot;mpending_related&quot;, 128,
+                &quot;mnext_func_body&quot;, 136,
+                &quot;mclass_count&quot;, 140,
+                &quot;mjumpline&quot;, 0x40,
+                &quot;line_action&quot;, 0,
+                &quot;line_argc&quot;, 1,
+                &quot;line_arg&quot;, 8,
+                &quot;line_attribute&quot;, 16,
+                &quot;line_next&quot;, 32,
+                &quot;arg_postfix&quot;, 24,
+                &quot;token_symbol&quot;, 16,
+                &quot;token_usage&quot;, 8,
+                &quot;token_value&quot;, 0,
+                &quot;deref_marker&quot;, 0,
+                &quot;deref_len&quot;, 20
+            ),
+            &quot;2.1-alpha.30&quot;, Map(
+                &quot;curr_off&quot;, 0x28,
+                &quot;mlastline&quot;, 0,
+                &quot;mfuncs&quot;, 8,
+                &quot;mfuncs_count&quot;, 16,
+                &quot;mline_parent&quot;, 0x158,
+                &quot;mpending_related&quot;, 0x160,
+                &quot;mlast_param_init&quot;, 0x168,
+                &quot;mpending_hotkey&quot;, 0x170,
+                &quot;mexpr_func&quot;, 0x178,
+                &quot;mexpr_func_index&quot;, 0x180,
+                &quot;mnext_func_body&quot;, 0x184,
+                &quot;mignore_block&quot;, 0x185,
+                &quot;mbackcompat&quot;, 0x186,
+                &quot;mclass_count&quot;, 0x188,
+                &quot;mcurrent_module&quot;, 0x138,
+                &quot;mlast_module&quot;, 0x140,
+                &quot;mjumpline&quot;, 0x48,
+                &quot;line_action&quot;, 0,
+                &quot;line_argc&quot;, 1,
+                &quot;line_arg&quot;, 8,
+                &quot;line_attribute&quot;, 16,
+                &quot;line_next&quot;, 32,
+                &quot;arg_postfix&quot;, 24,
+                &quot;token_symbol&quot;, 16,
+                &quot;token_usage&quot;, 8,
+                &quot;token_value&quot;, 0,
+                &quot;deref_marker&quot;, 0,
+                &quot;deref_len&quot;, 20
+            )
+        )
+    }
+
+    static EvalSubprocess(expr) {
+        AhkMagic.Init()
+        if !(expr is String)
+            throw TypeError(&quot;expr must be a string&quot;, -1)
+        if expr = &quot;&quot;
+            throw ValueError(&quot;expr must not be empty&quot;, -1)
+
+        tag := Format(&quot;{:x}&quot;, A_TickCount) &quot;-&quot; Format(&quot;{:x}&quot;, Random(1, 0x7fffffff))
+        scriptFile := A_Temp &quot;\ahk_mcode_eval_&quot; tag &quot;.ahk&quot;
+        resultFile := A_Temp &quot;\ahk_mcode_eval_&quot; tag &quot;.txt&quot;
+
+        quote := expr
+        script := &quot;try {`n&quot;
+            . &quot;    result := (&quot; quote &quot;)`n&quot;
+            . &quot;    FileAppend result, `&quot;&quot; resultFile &quot;`&quot;, `&quot;UTF-8`&quot;`n&quot;
+            . &quot;} catch as e {`n&quot;
+            . &quot;    FileAppend `&quot;ERROR: `&quot; e.Message, `&quot;&quot; resultFile &quot;`&quot;, `&quot;UTF-8`&quot;`n&quot;
+            . &quot;    ExitApp 1`n&quot;
+            . &quot;}`n&quot;
+        FileAppend script, scriptFile, &quot;UTF-8&quot;
+        try {
+            RunWait Format(&#x27;&quot;{1}&quot; /ErrorStdOut &quot;{2}&quot;&#x27;, A_AhkPath, scriptFile), , &quot;Hide&quot;
+            if !FileExist(resultFile)
+                throw Error(&quot;eval child produced no result&quot;, -1)
+            result := FileRead(resultFile, &quot;UTF-8&quot;)
+            if RegExMatch(result, &quot;^ERROR: (.*)$&quot;, &amp;m)
+                throw Error(&quot;eval failed: &quot; m[1], -1)
+            return result
+        } finally {
+            if FileExist(scriptFile)
+                FileDelete(scriptFile)
+            if FileExist(resultFile)
+                FileDelete(resultFile)
+        }
+    }
+}
+
+MC_INTERNAL_LOCATOR_X64 := &quot;4157415641554154565755534881ec38030000488bb424a8030000c744242c000000004885c90f94c04885d2410f94c24108c24d85c0410f94c34508d34885f6410f94c2b8010000004508da0f854a0200004c8b9c24a00300004929d10f92c04929d3410f92c24108c2b8020000000f85270200004d8d9100000200b8030000004d39c20f8712020000498d41074c39d00f87000200004801ca4881c10000010031ff4c89c8eb180f1f840000000000488d58014883c0084c39d04889d8777c803c024875ea488d1c02807b018d75e0807b020d75da4c6373034c01f34883c3074839cb72ca4189ff4531f685ff74154a399cf430010000740b49ffc64d39f775ee4589fe4139fe400f95c583ff40410f93c44108ec75134a899cfc3001000042c744bc3000000000ffc74139fe73804489f3ff449c30e974ffffff85ff0f845301000089fb89d883e00383ff040f832202000031ff4531f631c94885c074384a8d1cf44881c3300100004e8d34b44983c6304531ffeb100f1f84000000000049ffc74c39f87410438b2cbe39cd76f04a8b3cfb89e9ebe84885ff0f84f6000000b8050000004981f8000100000f82e900000031c94889d3eb20660f1f4400004c8d71014881c10101000048ffc34c39c14c89f10f87c2000000803c0a4475e0807c0a018975d9807c0a024c75d2807c0a032475cb807c0a042075c441be04000000eb106666662e0f1f8400000000004983c60242807c33fc66752442807c33fd83751c42807c33fe3a751442807c33ff0074386666662e0f1f8400000000004981fe000100000f8473ffffff42807c33fd6675bb42807c33fe8375b342807c33ff3a75ab42803c330075a44c8d72ff4885c97418410fb6040e3dc3000000740e3dcc000000740748ffc975e831c94801d14531ffeb2eb8040000004881c4380300005b5d5f5e415c415d415e415fc3498d5f014983c706b8080000004d39c74989df77d742803c3ae875e44a8d043a486358014801d84883c0054839c875d04d85ff740f4c89fb41803c1ecc740748ffcb75f431db488d83000100004c39c077ae4801d3b804000000eb044883c002807c03fc667515807c03fd83750e807c03fe3a7507807c03ff007427483d000100000f8478ffffff807c03fd6675cd807c03fe8375c6807c03ff3a75bf803c030075b94d39d34d0f42d3498d41104c39d00f866d0100004531f6488d4a064531ffe99100000083e3fc31ff4531f631c9eb1b66666666662e0f1f8400000000004983c6044c39f30f84befdffff428b6cb43039cd760a4a8bbcf43001000089e9428b6cb43439cd760a4a8bbcf43801000089e9428b6cb43839cd760a4a8bbcf44001000089e9428b6cb43c39cd76b14a8bbcf44801000089e9eba54d8d5f014983c70648ffc1b8060000004d39c74d89df0f8795feffff42803c3ae875dd4a8d043a4c6360014c01e04829d04883c0054c39c875c64d8d5f05498d470a4c39c0400f97c5498d47654939c3410f93c34108eb75a741bb050000004d29e34531e442807c21ffe8750d4e632c214b8d2c234c01ed75264f8d2c274983c5064939c50f8375ffffff4f8d2c274983c50b49ffc44d39c576cae960ffffff4c8d4c242c4889d54889d14c89c24d89d0e80f01000085c00f84f90000004c01ed4c01fd498d042c4883c00a48893e4c89760848895e10488946188b44242c89462031c0e9c8fdffff4d89ceeb14498d46014983c6114d39d64989c60f877afeffff42803c324875e542807c32018975dd42807c32025475d542807c32032475cd42807c32041075c542807c32055575bd42807c32065675b542807c32075775ad42807c32084175a542807c320954759d42807c320a41759542807c320b55758d42807c320c41758542807c320d560f8579ffffff42807c320e410f856dffffff4983fe020f8263ffffff42807c320f570f8557ffffff42807c32ffcc0f854bffffff42807c32fecc0f853fffffff4901d6e9c8fdffffb807000000e9f0fcffff0f1f4000498d80000800004839d0480f42d04983c00431c0eb0d662e0f1f84000000000049ffc04939d0772842807c01fc8375f042807c01fe1075e8460fb65401ff458d5ace4180fb3277d8458911b801000000c3&quot;
+MC_INPROC_EVAL_X64 := &quot;4157415641554154565755534881ec980000004c89cf4c89c34989cf4c8ba42408010000488b8c240001000048c78424800000000000400048c7442468000000004d85ff0f94c04885d2410f94c04108c04885db0f94c04d85c9410f94c14108c14508c14885c90f94c04408c84d85e4410f94c04883bc242801000000410f94c14508c14108c14883bc243801000000410f94c04883bc244001000000410f94c2b8010000004508c24508ca41f6c2010f851b060000488b8424200100004c8bac24180100004c8d87000100004885c04889c6490f44f04c8db7800100004c8d8f000300004c894c24704c898c24900000004d85ed4c0f44ef756e0f57c00f11070f1147100f1147200f1147300f1147400f1147500f1147600f1147700f1187800000000f1187900000000f1187a00000000f1187b00000000f1187c00000000f1187d00000000f1187e00000000f1187f0000000c6070341c645010141c7450401000000498975080f57c0410f1106410f114610410f114620410f114630410f114640410f114650410f114660410f1146706683390074164531c90f1f40006642837c4902004d8d490175f3eb034531c94885c04c897c24600f85fe010000488d870008100048894424500f57c0410f1100410f114010410f114020410f114030410f114040410f114050410f114060410f11407041c60000c646010144894e0448894e0849b800010000000100004c8946204531c04989cb4d89d9eb0c904983c1044084ed4d0f45cb450fb7114183fa22744b4183fa2774454585d20f8457010000418d429f6683f81a0f828e000000664183fa5f0f8483000000418d42a56683f8e57779410fb7c23d80000000736e4983c102ebb30f1f8400000000004d8d5902450fb77902664585ff400f94c5664539d70f94c04008e875830f1f00664183ff60750f66418379040074074983c1044d89cb4d89d94983c302450fb77902664585ff400f94c50f8450ffffff664539d775cae945ffffff0f1f44000031ed4d89cbeb14660f1f840000000000450fb753024983c302ffc5418d429f6683f81a72eb418d42bf6683f81a0f92c0664183fa5f410f94c74108c775d2410fb7c23d800000000f92c04183c2c6664183faf6410f92c24484d074b44939c9741f4181f8ff0000000f92c066418379fe2e410f95c24184c20f84bcfeffffeb0d4181f8fe0000000f87adfeffff4489c0488d04404c8b5424504d890cc249c744c208000000006641c744c210000041896cc21441ffc0e97ffeffff4585c04c8b7c2460741941c1e003438d0440488b4c245048c704010000000048894e10488954247849c70424010000000f57c0410f11442408488b0348894424504c892b4c8d4424684c89e94889f241ffd789c5488b4c24684885c97407ff94244001000083fd0175214883bc2410010000000f84e8010000488bac24480100004c8b7e18418b4710eb32488b44245048890341c7042402000000e994020000488b400849890766666666662e0f1f840000000000418b47284983c71839e8745083f80475ef41837f080277e8498b074885c074e08078100774c5448b4014488b10488b8c242801000041b903010000ff9424380100004885c075a8488b44245048890341c7042405000000e923020000488b8424300100004885c00f94c1483b4424600f94c208ca75114c89e94889f2ffd083f8010f854d010000488b4424704889842488000000c78790010000ffffffff48c78788010000ffffffff4889879801000048c787a001000000000000488d8700033f004889442438488d8424800000004889442430488d8424900000004889442428488d842488000000488944242048c744244000003f004c8d44245c4c89e931d24d89f1ff542478488b4c245048890b4885c00f84ae00000041c70424000000008b8f9001000041894c2404488b8f8001000049894c240849894c2410498d4c24204889ca4c29f24883fa0f0f8797000000ba05000000660f1f840000000000450fb64416fb44884411fb450fb64416fc44884411fc450fb64416fd44884411fd450fb64416fe44884411fe450fb64416ff44884411ff450fb60416448804114883c2064883fa3575b6eb56488b44245048890348b8000000006300000049890424e9b800000041c7042403000000e9ab000000488b44245048890341c7042406000000e996000000410f10060f1101410f1046100f114110410f1046200f114120418b4c240483f9050f8785000000ba270000000fa3ca737b488b461849894424504885c0744b31c0660f1f440000488b4e180fb60c0141884c0458488b4e180fb64c010141884c0459488b4e180fb64c010241884c045a488b4e180fb64c010341884c045b4883c004483d2001000075bd8b44245c41898424c800000031c04881c4980000005b5d5f5e415c415d415e415fc341c7442404000000004989442410e972ffffff&quot;
+
+</code></pre>
+        </details>
+      </section>
+    </article>
+  </main>
+
+  <footer class="wrap">
+    <div class="footer">
+      ahk-hack · AutoHotkey v2 运行时结构扫描库 ·
+      <a href="https://github.com/MonoEven/ahk-hack-library">GitHub</a> ·
+      MIT License
+    </div>
+  </footer>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 #NoTrayIcon
 #Include ..\ahk_hack_single.ahk
 
-outFile := A_ScriptDir "\evalnative_probe.out"
+outFile := A_ScriptDir "\evalnative_probe_" A_AhkVersion ".out"
 if FileExist(outFile)
     FileDelete outFile
 

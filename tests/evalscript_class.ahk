@@ -2,20 +2,26 @@
 #NoTrayIcon
 #Include ..\ahk_hack_single.ahk
 
-outFile := A_ScriptDir "\evalscript_inproc_" A_AhkVersion ".out"
+outFile := A_ScriptDir "\evalscript_class_" A_AhkVersion ".out"
 if FileExist(outFile)
     FileDelete outFile
 
 text := "
 (
-add(a, b) {
-    return a + b
+class Point {
+    x := 0
+    y := 0
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
 }
-add(1, 2)
+Point(1, 2).x + Point(1, 2).y
 )"
+
 try {
-    r1 := AhkMagic.Eval(text)
-    FileAppend "r1=" r1 "`n", outFile
+    r := AhkMagic.EvalScript(text)
+    FileAppend "r=" r "`n", outFile
     ExitApp 0
 } catch as e {
     FileAppend "FAIL " e.What " | " e.Message " | line " e.Line

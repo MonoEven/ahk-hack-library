@@ -2,7 +2,7 @@
 #NoTrayIcon
 #Include ..\ahk_hack_single.ahk
 
-outFile := A_ScriptDir "\version_probe.out"
+outFile := A_ScriptDir "\version_probe_" A_AhkVersion ".out"
 if FileExist(outFile)
     FileDelete outFile
 
@@ -12,6 +12,8 @@ try {
     FileAppend "version=" A_AhkVersion "`n"
         . "slot=0x" Format("{:X}", AhkMagic.currLineSlot) "`n"
         . "gscript=0x" Format("{:X}", AhkMagic.gScript) "`n"
+        . "postfix=0x" Format("{:X}", AhkMagic.exprToPostfix) "`n"
+        . "expand=0x" Format("{:X}", AhkMagic.expandSingleArg) "`n"
         . "finalize=0x" Format("{:X}", AhkMagic.finalizeExpr) "`n"
         . "findvar=0x" Format("{:X}", AhkMagic.findOrAddVar) "`n"
         . "free=0x" Format("{:X}", AhkMagic.crtFree) "`n"

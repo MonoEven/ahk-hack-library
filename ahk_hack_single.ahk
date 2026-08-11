@@ -30,6 +30,13 @@ class AhkMagic {
     static inprocEval := 0
     static internalLocator := 0
     static internalLocated := false
+    static evalScriptLocated := false
+    static evalPreparse := 0
+    static evalPreprocess := 0
+    static evalOpenInclude := 0
+    static evalLoadTs := 0
+    static evalSrcCount := 0
+    static evalGptr := 0
     static exprToPostfix := 0
     static expandSingleArg := 0
     static currLineSlot := 0
@@ -457,6 +464,264 @@ class AhkMagic {
         throw Error("CRT free not found")
     }
 
+    static _FindBytePattern(sec, hexPattern, startRva := 0) {
+        p := sec["ptr"]
+        size := sec["size"]
+        start := sec["rva"] + startRva
+        needle := Buffer(StrLen(hexPattern) // 2)
+        loop needle.Size {
+            byte := Integer("0x" SubStr(hexPattern, 2 * A_Index - 1, 2))
+            NumPut("UChar", byte, needle, A_Index - 1)
+        }
+        max := size - needle.Size + 1
+        loop max {
+            i := A_Index - 1
+            if NumGet(p + i, "UChar") != NumGet(needle, 0, "UChar")
+                continue
+            ok := true
+            loop needle.Size {
+                if NumGet(p + i + A_Index - 1, "UChar")
+                    != NumGet(needle, A_Index - 1, "UChar") {
+                    ok := false
+                    break
+                }
+            }
+            if ok
+                return sec["rva"] + i
+        }
+        return 0
+    }
+
+    static _FindBytePatternInFunc(sec, startRva, hexPattern) {
+        p := sec["ptr"]
+        off := startRva - sec["rva"]
+        limit := Min(sec["size"] - 4, off + 0x4000)
+        needle := Buffer(StrLen(hexPattern) // 2)
+        loop needle.Size {
+            byte := Integer("0x" SubStr(hexPattern, 2 * A_Index - 1, 2))
+            NumPut("UChar", byte, needle, A_Index - 1)
+        }
+        i := off
+        while i < limit {
+            if NumGet(p + i, "UChar") = 0xCC
+                and NumGet(p + i + 1, "UChar") = 0xCC
+                break
+            if NumGet(p + i, "UChar") = NumGet(needle, 0, "UChar") {
+                ok := true
+                loop needle.Size {
+                    if NumGet(p + i + A_Index - 1, "UChar")
+                        != NumGet(needle, A_Index - 1, "UChar") {
+                        ok := false
+                        break
+                    }
+                }
+                if ok
+                    return true
+            }
+            i += 1
+        }
+        return false
+    }
+
+    static _LocatePreprocessFunc(sec) {
+        p := sec["ptr"]
+        size := sec["size"]
+        count := size - 8
+        loop count {
+            i := A_Index - 1
+            if NumGet(p + i, "UChar") != 0x41
+                or NumGet(p + i + 1, "UChar") != 0x0F
+                or NumGet(p + i + 2, "UChar") != 0xB6
+                continue
+            m := NumGet(p + i + 3, "UChar")
+            if m != 0x76 and m != 0x7E
+                continue
+            if NumGet(p + i + 4, "UChar") != 0x23
+                continue
+            limit := Min(size - 4, i + 0x300)
+            j := i + 5
+            while j < limit {
+                if NumGet(p + j, "UChar") = 0x80
+                    and NumGet(p + j + 1, "UChar") = 0x78
+                    and NumGet(p + j + 2, "UChar") = 0x23
+                    and NumGet(p + j + 3, "UChar") = 0x02
+                    return AhkMagic._FnStart(sec, sec["rva"] + i)
+                j += 1
+            }
+        }
+        return 0
+    }
+
+    static _LocateGptr(sec, preparseRva) {
+        callers := AhkMagic._FindCallers(sec, preparseRva)
+        for caller in callers {
+            start := AhkMagic._FnStart(sec, caller)
+            p := sec["ptr"]
+            off := start - sec["rva"]
+            limit := Min(sec["size"] - 16, off + 0x4000)
+            i := off
+            while i < limit {
+                if NumGet(p + i, "UChar") = 0xCC
+                    and NumGet(p + i + 1, "UChar") = 0xCC
+                    break
+                if NumGet(p + i, "UChar") = 0x48
+                    and NumGet(p + i + 1, "UChar") = 0x8B
+                    and NumGet(p + i + 2, "UChar") = 0x05 {
+                    j := i + 7
+                    while j < Min(i + 24, limit) {
+                        if NumGet(p + j, "UChar") = 0x48
+                            and NumGet(p + j + 1, "UChar") = 0x89
+                            and NumGet(p + j + 2, "UChar") = 0x58
+                            and NumGet(p + j + 3, "UChar") = 0x28
+                            or NumGet(p + j, "UChar") = 0x48
+                            and NumGet(p + j + 1, "UChar") = 0x89
+                            and NumGet(p + j + 2, "UChar") = 0x50
+                            and NumGet(p + j + 3, "UChar") = 0x28 {
+                            disp := NumGet(p + i + 3, "Int")
+                            return sec["rva"] + i + 7 + disp
+                        }
+                        j += 1
+                    }
+                }
+                i += 1
+            }
+        }
+        return 0
+    }
+
+    static _HasBytesNear(sec, rva, hexPattern, range := 40) {
+        found := AhkMagic._FindBytePattern(sec, hexPattern, rva - sec["rva"])
+        return found and found - rva < range
+    }
+
+    static _LocateLoadTs(sec, openRva) {
+        callers := AhkMagic._FindCallers(sec, openRva)
+        for caller in callers {
+            p := sec["ptr"]
+            base := sec["rva"]
+            off := caller - base + 5
+            limit := Min(sec["size"] - 5, off + 0x300)
+            i := off
+            while i < limit {
+                isCmp := NumGet(p + i, "UChar") = 0x83
+                    and NumGet(p + i + 1, "UChar") = 0xF8
+                    and NumGet(p + i + 2, "UChar") = 0x03
+                isCmp2 := NumGet(p + i, "UChar") = 0x3D
+                    and NumGet(p + i + 1, "UChar") = 0x03
+                if isCmp or isCmp2 {
+                    j := i + 3
+                    callLimit := Min(sec["size"] - 5, j + 0x200)
+                    while j < callLimit {
+                        if NumGet(p + j, "UChar") = 0xE8 {
+                            disp := NumGet(p + j + 1, "Int")
+                            target := base + j + 5 + disp
+                            if AhkMagic._HasBytesNear(sec, target
+                                , "555356574154415541564157", 40)
+                                return target
+                        }
+                        j += 1
+                    }
+                    break
+                }
+                i += 1
+            }
+        }
+        return 0
+    }
+
+    static _LocateSrcCount(sec, openRva) {
+        callers := AhkMagic._FindCallers(sec, openRva)
+        for caller in callers {
+            p := sec["ptr"]
+            base := sec["rva"]
+            off := caller - base
+            i := off - 5
+            min := Max(0, off - 0x100)
+            while i >= min {
+                b := NumGet(p + i, "UChar")
+                if b = 0x8B
+                    and (NumGet(p + i + 1, "UChar") = 0x2D
+                    or NumGet(p + i + 1, "UChar") = 0x1D
+                    or NumGet(p + i + 1, "UChar") = 0x35
+                    or NumGet(p + i + 1, "UChar") = 0x3D) {
+                    disp := NumGet(p + i + 2, "Int")
+                    target := base + i + 6 + disp
+                    if target > 0x10000 {
+                        val := NumGet(AhkMagic.moduleBase + target, "Int")
+                        if val >= 0 and val < 100000
+                            return target
+                    }
+                }
+                if b = 0x44
+                    and NumGet(p + i + 1, "UChar") = 0x8B
+                    and (NumGet(p + i + 2, "UChar") = 0x2D
+                    or NumGet(p + i + 2, "UChar") = 0x3D) {
+                    disp := NumGet(p + i + 3, "Int")
+                    target := base + i + 7 + disp
+                    if target > 0x10000 {
+                        val := NumGet(AhkMagic.moduleBase + target, "Int")
+                        if val >= 0 and val < 100000
+                            return target
+                    }
+                }
+                i -= 1
+            }
+        }
+        return 0
+    }
+
+    static _LocateEvalScriptFunctions() {
+        if AhkMagic.evalScriptLocated
+            return
+        AhkMagic._LocateInternalFunctions()
+        secs := AhkMagic._ModuleSections()
+        text := secs[".text"]
+        postfixRva := AhkMagic.exprToPostfix - AhkMagic.moduleBase
+        callers := AhkMagic._FindCallers(text, postfixRva)
+        preparse := 0
+        for caller in callers {
+            start := AhkMagic._FnStart(text, caller)
+            if AhkMagic._FindBytePatternInFunc(text, start, "803B03")
+                and AhkMagic._FindBytePatternInFunc(text, start, "803B04") {
+                preparse := start
+                break
+            }
+        }
+        if !preparse
+            throw Error("PreparseExpressions not found")
+
+        preprocess := AhkMagic._LocatePreprocessFunc(text)
+        if !preprocess
+            throw Error("PreprocessLocalVars not found")
+
+        openNeedle := "48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200"
+        openNeedle21 := "40535556574154415541564157B8D8000100"
+        open := AhkMagic._FindBytePattern(text, openNeedle)
+        if !open
+            open := AhkMagic._FindBytePattern(text, openNeedle21)
+        if !open
+            throw Error("OpenIncludedFile not found")
+
+        loadTs := AhkMagic._LocateLoadTs(text, open)
+        if !loadTs
+            throw Error("LoadIncludedFile(TextStream) not found")
+        srcCount := 0
+        if !RegExMatch(A_AhkVersion, "^2\.1")
+            srcCount := AhkMagic._LocateSrcCount(text, open)
+
+        gptr := AhkMagic._LocateGptr(text, preparse)
+        if !gptr
+            throw Error("g pointer not found")
+
+        AhkMagic.evalPreparse := AhkMagic.moduleBase + preparse
+        AhkMagic.evalPreprocess := AhkMagic.moduleBase + preprocess
+        AhkMagic.evalOpenInclude := AhkMagic.moduleBase + open
+        AhkMagic.evalLoadTs := AhkMagic.moduleBase + loadTs
+        AhkMagic.evalSrcCount := srcCount ? AhkMagic.moduleBase + srcCount : 0
+        AhkMagic.evalGptr := AhkMagic.moduleBase + gptr
+        AhkMagic.evalScriptLocated := true
+    }
+
     ; Evaluate an expression inside this interpreter process.
     ; Returns a number or string.  Throws on unsupported/invalid input.
     static EvalNative(expr) {
@@ -546,7 +811,7 @@ class AhkMagic {
         entry := AhkMagic._EvalScriptOffsets().Get(A_AhkVersion, 0)
         if !entry
             throw Error("in-process EvalScript not adapted for " A_AhkVersion)
-        AhkMagic._LocateInternalFunctions()
+        AhkMagic._LocateEvalScriptFunctions()
 
         last := ""
         for line in StrSplit(text, "`n", "`r") {
@@ -571,84 +836,154 @@ class AhkMagic {
         savedDir := A_WorkingDir
         gScript := AhkMagic.gScript
         oldLast := NumGet(gScript, entry["mlastline"], "Ptr")
-        g := NumGet(AhkMagic.moduleBase + entry["gptr"], "Ptr")
+        oldFuncCount := NumGet(gScript, entry["mfuncs_count"], "Int")
+        g := NumGet(AhkMagic.evalGptr, "Ptr")
         savedCur := NumGet(g, entry["curr_off"], "Ptr")
+        savedState := []
+        for key in ["mopen", "mpending_parent", "mline_parent", "mpending_related"
+            , "mlast_param_init", "mpending_hotkey", "mexpr_func", "mcurrent_module"] {
+            if entry.Has(key)
+                savedState.Push([key, "Ptr", NumGet(gScript, entry[key], "Ptr")])
+        }
+        for key in ["mexpr_func_index", "mclass_count"] {
+            if entry.Has(key)
+                savedState.Push([key, "Int", NumGet(gScript, entry[key], "Int")])
+        }
+        for key in ["mnext_func_body", "mignore_block", "mbackcompat"] {
+            if entry.Has(key)
+                savedState.Push([key, "UChar", NumGet(gScript, entry[key], "UChar")])
+        }
         try {
-            NumPut("Ptr", 0, gScript, entry["mopen"])
-            NumPut("Ptr", 0, gScript, entry["mpending_parent"])
-            NumPut("Ptr", 0, gScript, entry["mpending_related"])
-            NumPut("Ptr", 0, gScript, entry["mlast_param_init"])
-            NumPut("UChar", 0, gScript, entry["mnext_func_body"])
-            NumPut("Int", 0, gScript, entry["mclass_count"])
+            if entry.Has("mopen")
+                NumPut("Ptr", 0, gScript, entry["mopen"])
+            if entry.Has("mpending_parent")
+                NumPut("Ptr", 0, gScript, entry["mpending_parent"])
+            if entry.Has("mline_parent")
+                NumPut("Ptr", 0, gScript, entry["mline_parent"])
+            if entry.Has("mpending_related")
+                NumPut("Ptr", 0, gScript, entry["mpending_related"])
+            if entry.Has("mlast_param_init")
+                NumPut("Ptr", 0, gScript, entry["mlast_param_init"])
+            if entry.Has("mpending_hotkey")
+                NumPut("Ptr", 0, gScript, entry["mpending_hotkey"])
+            if entry.Has("mexpr_func")
+                NumPut("Ptr", 0, gScript, entry["mexpr_func"])
+            if entry.Has("mexpr_func_index")
+                NumPut("Int", 0x7fffffff, gScript, entry["mexpr_func_index"])
+            if entry.Has("mnext_func_body")
+                NumPut("UChar", 0, gScript, entry["mnext_func_body"])
+            if entry.Has("mignore_block")
+                NumPut("UChar", 0, gScript, entry["mignore_block"])
+            if entry.Has("mbackcompat")
+                NumPut("UChar", 1, gScript, entry["mbackcompat"])
+            if entry.Has("mclass_count")
+                NumPut("Int", 0, gScript, entry["mclass_count"])
             NumPut("Ptr", 0, g, entry["curr_off"])
 
-            rc := DllCall(AhkMagic.moduleBase + entry["load"]
+            tsSlot := Buffer(8, 0)
+            rcOpen := DllCall(AhkMagic.evalOpenInclude
                 , "Ptr", gScript
+                , "Ptr", tsSlot.Ptr
                 , "Str", tmp
                 , "Int", 1
                 , "Int", 0
                 , "Int")
+            if rcOpen != 3
+                throw Error("OpenIncludedFile failed with rc=" rcOpen)
+            ts := NumGet(tsSlot, 0, "Ptr")
+            srcIndex := AhkMagic.evalSrcCount
+                ? NumGet(AhkMagic.evalSrcCount, "Int")
+                : 0
+            rc := DllCall(AhkMagic.evalLoadTs
+                , "Ptr", gScript
+                , "Ptr", ts
+                , "Int", srcIndex
+                , "Int")
+            if ts and rc = 1 {
+                vtable := NumGet(ts, 0, "Ptr")
+                DllCall(NumGet(vtable, 0, "Ptr"), "Ptr", ts, "Int", 1)
+            }
             if rc != 1
                 throw Error("LoadIncludedFile failed with rc=" rc)
 
             funcsItem := NumGet(gScript, entry["mfuncs"], "Ptr")
             funcCount := NumGet(gScript, entry["mfuncs_count"], "Int")
-            if funcCount < 1
-                throw Error("no functions registered")
-            newFunc := NumGet(funcsItem + (funcCount - 1) * 8, "Ptr")
-            jump := NumGet(newFunc, entry["mjumpline"], "Ptr")
-            if !jump
-                throw Error("new function has no body")
+            if funcCount > oldFuncCount {
+                firstNew := oldLast ? NumGet(oldLast, entry["line_next"], "Ptr") : 0
+                if firstNew {
+                    rcTail := DllCall(AhkMagic.evalPreparse
+                        , "Ptr", gScript
+                        , "Ptr", firstNew
+                        , "Int")
+                    if rcTail != 1
+                        throw Error("PreparseExpressions(tail) failed with rc=" rcTail)
+                }
+                loop funcCount - oldFuncCount {
+                    idx := oldFuncCount + A_Index - 1
+                    newFunc := NumGet(funcsItem + idx * 8, "Ptr")
+                    jump := NumGet(newFunc, entry["mjumpline"], "Ptr")
+                    if !jump
+                        continue
 
-            rc2 := DllCall(AhkMagic.moduleBase + entry["preparse"]
-                , "Ptr", gScript
-                , "Ptr", jump
-                , "Int")
-            if rc2 != 1
-                throw Error("PreparseExpressions failed with rc=" rc2)
+                    rc2 := DllCall(AhkMagic.evalPreparse
+                        , "Ptr", gScript
+                        , "Ptr", jump
+                        , "Int")
+                    if rc2 != 1
+                        throw Error("PreparseExpressions failed with rc=" rc2)
 
-            NumPut("Ptr", newFunc, g, entry["curr_off"])
-            line := jump
-            while line {
-                if NumGet(line, entry["line_action"], "UChar") = 3
-                    and NumGet(line, entry["line_attribute"], "Ptr")
-                    NumPut("Ptr", NumGet(line, entry["line_attribute"], "Ptr")
-                        , g, entry["curr_off"])
-                argc := NumGet(line, entry["line_argc"], "UChar")
-                if argc {
-                    arg := NumGet(line, entry["line_arg"], "Ptr")
-                    if arg and NumGet(arg, 1, "UChar") {
-                        postfix := NumGet(arg, entry["arg_postfix"], "Ptr")
-                        if postfix {
-                            while NumGet(postfix, entry["token_symbol"], "UInt") != AhkMagic.symInvalid {
-                                if NumGet(postfix, entry["token_symbol"], "UInt") = 4
-                                    and NumGet(postfix, entry["token_usage"], "UInt") < 3 {
-                                    deref := NumGet(postfix, entry["token_value"], "Ptr")
-                                    if deref {
-                                        var := DllCall(AhkMagic.findOrAddVar
-                                            , "Ptr", gScript
-                                            , "Ptr", NumGet(deref, entry["deref_marker"], "Ptr")
-                                            , "UPtr", NumGet(deref, entry["deref_len"], "UInt")
-                                            , "UInt", 0x103
-                                            , "Ptr")
-                                        if var
-                                            NumPut("Ptr", var, postfix, entry["token_value"])
+                    NumPut("Ptr", newFunc, g, entry["curr_off"])
+                    line := jump
+                    while line {
+                        if NumGet(line, entry["line_action"], "UChar") = 3
+                            and NumGet(line, entry["line_attribute"], "Ptr")
+                            NumPut("Ptr", NumGet(line, entry["line_attribute"], "Ptr")
+                                , g, entry["curr_off"])
+                        argc := NumGet(line, entry["line_argc"], "UChar")
+                        if argc {
+                            arg := NumGet(line, entry["line_arg"], "Ptr")
+                            if arg and NumGet(arg, 1, "UChar") {
+                                postfix := NumGet(arg, entry["arg_postfix"], "Ptr")
+                                if postfix {
+                                    while NumGet(postfix, entry["token_symbol"], "UInt") != AhkMagic.symInvalid {
+                                        if NumGet(postfix, entry["token_symbol"], "UInt") = 4
+                                            and NumGet(postfix, entry["token_usage"], "UInt") < 3 {
+                                            deref := NumGet(postfix, entry["token_value"], "Ptr")
+                                            if deref {
+                                                derefType := NumGet(deref, 16, "UChar")
+                                                marker := NumGet(deref, entry["deref_marker"], "Ptr")
+                                                len := NumGet(deref, entry["deref_len"], "UInt")
+                                                if derefType = 7 {
+                                                    NumPut("Ptr", NumGet(deref, 8, "Ptr")
+                                                        , postfix, entry["token_value"])
+                                                } else if derefType = 0 and marker and len > 0 and len <= 64 {
+                                                    var := DllCall(AhkMagic.findOrAddVar
+                                                        , "Ptr", gScript
+                                                        , "Ptr", marker
+                                                        , "UPtr", len
+                                                        , "UInt", 0x103
+                                                        , "Ptr")
+                                                    if var
+                                                        NumPut("Ptr", var, postfix, entry["token_value"])
+                                                }
+                                            }
+                                        }
+                                        postfix += 24
                                     }
                                 }
-                                postfix += 24
                             }
                         }
+                        line := NumGet(line, entry["line_next"], "Ptr")
                     }
+                    NumPut("Ptr", savedCur, g, entry["curr_off"])
+                    rc4 := DllCall(AhkMagic.evalPreprocess
+                        , "Ptr", gScript
+                        , "Ptr", newFunc
+                        , "Int")
+                    if rc4 != 1
+                        throw Error("PreprocessLocalVars failed with rc=" rc4)
                 }
-                line := NumGet(line, entry["line_next"], "Ptr")
             }
-            NumPut("Ptr", savedCur, g, entry["curr_off"])
-            rc4 := DllCall(AhkMagic.moduleBase + entry["preproc"]
-                , "Ptr", gScript
-                , "Ptr", newFunc
-                , "Int")
-            if rc4 != 1
-                throw Error("PreprocessLocalVars failed with rc=" rc4)
             ; Detach the newly added lines from the running line list so the
             ; active execution cannot continue into them.  The new function
             ; remains reachable through mFuncs.
@@ -663,27 +998,102 @@ class AhkMagic {
                 FileDelete tmp
             try
                 SetWorkingDir savedDir
+            for item in savedState
+                NumPut(item[2], item[3], gScript, entry[item[1]])
+            NumPut("Ptr", savedCur, g, entry["curr_off"])
         }
     }
 
     static _EvalScriptOffsets() {
         return Map(
             "2.0.26", Map(
-                "load", 0x47840,
-                "preparse", 0x58370,
-                "preproc", 0x620e0,
-                "gptr", 0x1221d8,
                 "curr_off", 0x28,
+                "mlastline", 8,
+                "mfuncs", 32,
+                "mfuncs_count", 40,
                 "mopen", 112,
                 "mpending_parent", 120,
                 "mpending_related", 128,
                 "mlast_param_init", 136,
                 "mnext_func_body", 144,
                 "mclass_count", 148,
+                "mjumpline", 0x40,
+                "line_action", 0,
+                "line_argc", 1,
+                "line_arg", 8,
+                "line_attribute", 16,
+                "line_next", 32,
+                "arg_postfix", 24,
+                "token_symbol", 16,
+                "token_usage", 8,
+                "token_value", 0,
+                "deref_marker", 0,
+                "deref_len", 20
+            ),
+            "2.0.0", Map(
+                "curr_off", 0x28,
                 "mlastline", 8,
                 "mfuncs", 32,
                 "mfuncs_count", 40,
+                "mopen", 112,
+                "mpending_parent", 120,
+                "mpending_related", 128,
+                "mnext_func_body", 136,
+                "mclass_count", 140,
                 "mjumpline", 0x40,
+                "line_action", 0,
+                "line_argc", 1,
+                "line_arg", 8,
+                "line_attribute", 16,
+                "line_next", 32,
+                "arg_postfix", 24,
+                "token_symbol", 16,
+                "token_usage", 8,
+                "token_value", 0,
+                "deref_marker", 0,
+                "deref_len", 20
+            ),
+            "2.0-beta.10", Map(
+                "curr_off", 0x28,
+                "mlastline", 8,
+                "mfuncs", 32,
+                "mfuncs_count", 40,
+                "mopen", 112,
+                "mpending_parent", 120,
+                "mpending_related", 128,
+                "mnext_func_body", 136,
+                "mclass_count", 140,
+                "mjumpline", 0x40,
+                "line_action", 0,
+                "line_argc", 1,
+                "line_arg", 8,
+                "line_attribute", 16,
+                "line_next", 32,
+                "arg_postfix", 24,
+                "token_symbol", 16,
+                "token_usage", 8,
+                "token_value", 0,
+                "deref_marker", 0,
+                "deref_len", 20
+            ),
+            "2.1-alpha.30", Map(
+                "curr_off", 0x28,
+                "mlastline", 0,
+                "mfuncs", 8,
+                "mfuncs_count", 16,
+                "mline_parent", 0x158,
+                "mpending_related", 0x160,
+                "mlast_param_init", 0x168,
+                "mpending_hotkey", 0x170,
+                "mexpr_func", 0x178,
+                "mexpr_func_index", 0x180,
+                "mnext_func_body", 0x184,
+                "mignore_block", 0x185,
+                "mbackcompat", 0x186,
+                "mclass_count", 0x188,
+                "mcurrent_module", 0x138,
+                "mlast_module", 0x140,
+                "mjumpline", 0x48,
                 "line_action", 0,
                 "line_argc", 1,
                 "line_arg", 8,
@@ -737,5 +1147,5 @@ class AhkMagic {
 }
 
 MC_INTERNAL_LOCATOR_X64 := "4157415641554154565755534881ec38030000488bb424a8030000c744242c000000004885c90f94c04885d2410f94c24108c24d85c0410f94c34508d34885f6410f94c2b8010000004508da0f854a0200004c8b9c24a00300004929d10f92c04929d3410f92c24108c2b8020000000f85270200004d8d9100000200b8030000004d39c20f8712020000498d41074c39d00f87000200004801ca4881c10000010031ff4c89c8eb180f1f840000000000488d58014883c0084c39d04889d8777c803c024875ea488d1c02807b018d75e0807b020d75da4c6373034c01f34883c3074839cb72ca4189ff4531f685ff74154a399cf430010000740b49ffc64d39f775ee4589fe4139fe400f95c583ff40410f93c44108ec75134a899cfc3001000042c744bc3000000000ffc74139fe73804489f3ff449c30e974ffffff85ff0f845301000089fb89d883e00383ff040f832202000031ff4531f631c94885c074384a8d1cf44881c3300100004e8d34b44983c6304531ffeb100f1f84000000000049ffc74c39f87410438b2cbe39cd76f04a8b3cfb89e9ebe84885ff0f84f6000000b8050000004981f8000100000f82e900000031c94889d3eb20660f1f4400004c8d71014881c10101000048ffc34c39c14c89f10f87c2000000803c0a4475e0807c0a018975d9807c0a024c75d2807c0a032475cb807c0a042075c441be04000000eb106666662e0f1f8400000000004983c60242807c33fc66752442807c33fd83751c42807c33fe3a751442807c33ff0074386666662e0f1f8400000000004981fe000100000f8473ffffff42807c33fd6675bb42807c33fe8375b342807c33ff3a75ab42803c330075a44c8d72ff4885c97418410fb6040e3dc3000000740e3dcc000000740748ffc975e831c94801d14531ffeb2eb8040000004881c4380300005b5d5f5e415c415d415e415fc3498d5f014983c706b8080000004d39c74989df77d742803c3ae875e44a8d043a486358014801d84883c0054839c875d04d85ff740f4c89fb41803c1ecc740748ffcb75f431db488d83000100004c39c077ae4801d3b804000000eb044883c002807c03fc667515807c03fd83750e807c03fe3a7507807c03ff007427483d000100000f8478ffffff807c03fd6675cd807c03fe8375c6807c03ff3a75bf803c030075b94d39d34d0f42d3498d41104c39d00f866d0100004531f6488d4a064531ffe99100000083e3fc31ff4531f631c9eb1b66666666662e0f1f8400000000004983c6044c39f30f84befdffff428b6cb43039cd760a4a8bbcf43001000089e9428b6cb43439cd760a4a8bbcf43801000089e9428b6cb43839cd760a4a8bbcf44001000089e9428b6cb43c39cd76b14a8bbcf44801000089e9eba54d8d5f014983c70648ffc1b8060000004d39c74d89df0f8795feffff42803c3ae875dd4a8d043a4c6360014c01e04829d04883c0054c39c875c64d8d5f05498d470a4c39c0400f97c5498d47654939c3410f93c34108eb75a741bb050000004d29e34531e442807c21ffe8750d4e632c214b8d2c234c01ed75264f8d2c274983c5064939c50f8375ffffff4f8d2c274983c50b49ffc44d39c576cae960ffffff4c8d4c242c4889d54889d14c89c24d89d0e80f01000085c00f84f90000004c01ed4c01fd498d042c4883c00a48893e4c89760848895e10488946188b44242c89462031c0e9c8fdffff4d89ceeb14498d46014983c6114d39d64989c60f877afeffff42803c324875e542807c32018975dd42807c32025475d542807c32032475cd42807c32041075c542807c32055575bd42807c32065675b542807c32075775ad42807c32084175a542807c320954759d42807c320a41759542807c320b55758d42807c320c41758542807c320d560f8579ffffff42807c320e410f856dffffff4983fe020f8263ffffff42807c320f570f8557ffffff42807c32ffcc0f854bffffff42807c32fecc0f853fffffff4901d6e9c8fdffffb807000000e9f0fcffff0f1f4000498d80000800004839d0480f42d04983c00431c0eb0d662e0f1f84000000000049ffc04939d0772842807c01fc8375f042807c01fe1075e8460fb65401ff458d5ace4180fb3277d8458911b801000000c3"
-MC_INPROC_EVAL_X64 := "4157415641554154565755534881ec980000004c89cf4c89c34989cb4c8ba42408010000488b8c240001000048c78424800000000000400048c7442468000000004d85db0f94c04885d2410f94c04108c04885db0f94c04d85c9410f94c14108c14508c14885c90f94c04408c84d85e4410f94c04883bc242801000000410f94c14508c14108c14883bc243801000000410f94c04883bc244001000000410f94c2b8010000004508c24508ca41f6c2010f85eb050000488b8424200100004c8bac24180100004c8d87000100004885c04889c6490f44f04c8db7800100004c8d8f000300004c894c24704c898c24900000004d85ed4c0f44ef756e0f57c00f11070f1147100f1147200f1147300f1147400f1147500f1147600f1147700f1187800000000f1187900000000f1187a00000000f1187b00000000f1187c00000000f1187d00000000f1187e00000000f1187f0000000c6070341c645010141c7450401000000498975080f57c0410f1106410f114610410f114620410f114630410f114640410f114650410f114660410f1146706683390074164531c90f1f40006642837c4902004d8d490175f3eb034531c94885c04c895c24600f85d4010000488d87000810000f57c0410f1100410f114010410f114020410f114030410f114040410f114050410f114060410f11407041c60000c646010144894e0448894e0849b800010000000100004c8946204531c04989c9eb14660f1f8400000000004983c1044584db4c0f45c9450fb7114183fa22744b4183fa2774454585d20f8432010000418d4a9f6683f91a0f828e000000664183fa5f0f8483000000418d4aa56683f9e57779410fb7ca81f980000000736d4983c102ebb20f1f8000000000498d4902410fb769026685ed410f94c3664439d5410f94c74508df75830f1f006683fd60750f66418379040074074983c1044c89c94989c94883c102410fb769026685ed410f94c30f8452ffffff664439d575cce947ffffff0f1f80000000004531db4c89c9eb140f1f840000000000440fb751024883c10241ffc3418d6a9f6683fd1a72ea418d6abf6683fd1a400f92c5664183fa5f410f94c74108ef75d0410fb7ea81fd80000000400f92c54183c2c6664183faf6410f92c24484d574b04181f8fe0000000f87c5feffff4589c24f8d14524e890cd04ac744d008000000006642c744d010000046895cd01441ffc0e99cfeffff4585c04c8b5c2460741441c1e003438d0c4048c704080000000048894610488954247849c70424010000000f57c0410f114424084c8b3b4c892b4c8d4424684c89e94889f241ffd389c5488b4c24684885c97407ff94244001000083fd0175264883bc2410010000000f84e70100004c897c2450488bac24480100004c8b7e18418b4710eb2c4c893b41c7042402000000e993020000488b4008498907666666662e0f1f840000000000418b47284983c71839e8745083f80475ef41837f080277e8498b074885c074e08078100774c6448b4014488b10488b8c242801000041b903010000ff9424380100004885c075a9488b44245048890341c7042405000000e923020000488b8424300100004885c00f94c1483b4424600f94c208ca75114c89e94889f2ffd083f8010f8548010000488b4424704889842488000000c78790010000ffffffff48c78788010000ffffffff4889879801000048c787a001000000000000488d8700033f004889442438488d8424800000004889442430488d8424900000004889442428488d842488000000488944242048c744244000003f004c8d44245c4c89e931d24d89f1ff542478488b4c245048890b4885c00f84a900000041c70424000000008b8f9001000041894c2404488b8f8001000049894c240849894c2410498d4c24204889ca4c29f24883fa0f0f8792000000ba05000000660f1f840000000000450fb64416fb44884411fb450fb64416fc44884411fc450fb64416fd44884411fd450fb64416fe44884411fe450fb64416ff44884411ff450fb60416448804114883c2064883fa3575b6eb514c893b48b8000000006300000049890424e9bd00000041c7042403000000e9b0000000488b44245048890341c7042406000000e99b000000410f10060f1101410f1046100f114110410f1046200f114120418b4c240483f9050f878a000000ba270000000fa3ca0f837c000000488b461849894424504885c0744c31c00f1f8000000000488b4e180fb60c0141884c0458488b4e180fb64c010141884c0459488b4e180fb64c010241884c045a488b4e180fb64c010341884c045b4883c004483d2001000075bd8b44245c41898424c800000031c04881c4980000005b5d5f5e415c415d415e415fc341c7442404000000004989442410e971ffffff"
+MC_INPROC_EVAL_X64 := "4157415641554154565755534881ec980000004c89cf4c89c34989cf4c8ba42408010000488b8c240001000048c78424800000000000400048c7442468000000004d85ff0f94c04885d2410f94c04108c04885db0f94c04d85c9410f94c14108c14508c14885c90f94c04408c84d85e4410f94c04883bc242801000000410f94c14508c14108c14883bc243801000000410f94c04883bc244001000000410f94c2b8010000004508c24508ca41f6c2010f851b060000488b8424200100004c8bac24180100004c8d87000100004885c04889c6490f44f04c8db7800100004c8d8f000300004c894c24704c898c24900000004d85ed4c0f44ef756e0f57c00f11070f1147100f1147200f1147300f1147400f1147500f1147600f1147700f1187800000000f1187900000000f1187a00000000f1187b00000000f1187c00000000f1187d00000000f1187e00000000f1187f0000000c6070341c645010141c7450401000000498975080f57c0410f1106410f114610410f114620410f114630410f114640410f114650410f114660410f1146706683390074164531c90f1f40006642837c4902004d8d490175f3eb034531c94885c04c897c24600f85fe010000488d870008100048894424500f57c0410f1100410f114010410f114020410f114030410f114040410f114050410f114060410f11407041c60000c646010144894e0448894e0849b800010000000100004c8946204531c04989cb4d89d9eb0c904983c1044084ed4d0f45cb450fb7114183fa22744b4183fa2774454585d20f8457010000418d429f6683f81a0f828e000000664183fa5f0f8483000000418d42a56683f8e57779410fb7c23d80000000736e4983c102ebb30f1f8400000000004d8d5902450fb77902664585ff400f94c5664539d70f94c04008e875830f1f00664183ff60750f66418379040074074983c1044d89cb4d89d94983c302450fb77902664585ff400f94c50f8450ffffff664539d775cae945ffffff0f1f44000031ed4d89cbeb14660f1f840000000000450fb753024983c302ffc5418d429f6683f81a72eb418d42bf6683f81a0f92c0664183fa5f410f94c74108c775d2410fb7c23d800000000f92c04183c2c6664183faf6410f92c24484d074b44939c9741f4181f8ff0000000f92c066418379fe2e410f95c24184c20f84bcfeffffeb0d4181f8fe0000000f87adfeffff4489c0488d04404c8b5424504d890cc249c744c208000000006641c744c210000041896cc21441ffc0e97ffeffff4585c04c8b7c2460741941c1e003438d0440488b4c245048c704010000000048894e10488954247849c70424010000000f57c0410f11442408488b0348894424504c892b4c8d4424684c89e94889f241ffd789c5488b4c24684885c97407ff94244001000083fd0175214883bc2410010000000f84e8010000488bac24480100004c8b7e18418b4710eb32488b44245048890341c7042402000000e994020000488b400849890766666666662e0f1f840000000000418b47284983c71839e8745083f80475ef41837f080277e8498b074885c074e08078100774c5448b4014488b10488b8c242801000041b903010000ff9424380100004885c075a8488b44245048890341c7042405000000e923020000488b8424300100004885c00f94c1483b4424600f94c208ca75114c89e94889f2ffd083f8010f854d010000488b4424704889842488000000c78790010000ffffffff48c78788010000ffffffff4889879801000048c787a001000000000000488d8700033f004889442438488d8424800000004889442430488d8424900000004889442428488d842488000000488944242048c744244000003f004c8d44245c4c89e931d24d89f1ff542478488b4c245048890b4885c00f84ae00000041c70424000000008b8f9001000041894c2404488b8f8001000049894c240849894c2410498d4c24204889ca4c29f24883fa0f0f8797000000ba05000000660f1f840000000000450fb64416fb44884411fb450fb64416fc44884411fc450fb64416fd44884411fd450fb64416fe44884411fe450fb64416ff44884411ff450fb60416448804114883c2064883fa3575b6eb56488b44245048890348b8000000006300000049890424e9b800000041c7042403000000e9ab000000488b44245048890341c7042406000000e996000000410f10060f1101410f1046100f114110410f1046200f114120418b4c240483f9050f8785000000ba270000000fa3ca737b488b461849894424504885c0744b31c0660f1f440000488b4e180fb60c0141884c0458488b4e180fb64c010141884c0459488b4e180fb64c010241884c045a488b4e180fb64c010341884c045b4883c004483d2001000075bd8b44245c41898424c800000031c04881c4980000005b5d5f5e415c415d415e415fc341c7442404000000004989442410e972ffffff"
 

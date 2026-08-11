@@ -17,6 +17,8 @@ Repository: [https://github.com/MonoEven/ahk-hack-library](https://github.com/Mo
 
 Practice integration: [https://github.com/MonoEven/cnumpy](https://github.com/MonoEven/cnumpy)
 
+Bilingual field notes: [https://monoeven.github.io/ahk-hack-library/](https://monoeven.github.io/ahk-hack-library/)
+
 ---
 
 ## Table of Contents
@@ -48,7 +50,8 @@ Practice integration: [https://github.com/MonoEven/cnumpy](https://github.com/Mo
   expression pipeline first and falls back to `EvalSubprocess()` for
   expressions it cannot evaluate yet. `EvalNative()` is the in-process core.
   `EvalScript()` loads multi-line script text through the interpreter's own
-  `LoadIncludedFile`, so function definitions work in-process.
+  `LoadIncludedFile`, so function definitions and class definitions work
+  in-process.
 - **Optional cnumpy bridge.** `CnpBridge` converts `CnpArray` to native AHK
   values, supports zero-copy views, and is validated by 1D/2D/3D tests.
 - **Self-contained at runtime.** No Python, no external scanner, no
@@ -112,8 +115,28 @@ MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)") ; "bc", in-process
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5, in-process first
 MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))") ; explicit subprocess
 
-script := "add(a, b)`n{`n    return a + b`n}`nadd(1, 2)`n"
+script := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
 MsgBox AhkMagic.EvalScript(script)          ; 3, in-process
+
+classScript := "
+(
+class Point {
+    x := 0
+    y := 0
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
+}
+Point(1, 2).x
+)"
+MsgBox AhkMagic.EvalScript(classScript)     ; 1, class loaded and used in-process
 ```
 
 ### Optional cnumpy integration
@@ -206,9 +229,12 @@ Key risks:
 
 - Executable-memory allocation and internal function calls may be flagged by
   antivirus or EDR.
-- Offsets are derived from the AutoHotkey 2.0.26 source. Other versions,
-  compilers, or architectures may differ. Run the test suite against the
-  target exe first.
+- All `EvalScript` entry points and globals (`PreparseExpressions`,
+  `PreprocessLocalVars`, `OpenIncludedFile`, `LoadIncludedFile`,
+  `g`, `Line::sSourceFileCount`) are located at runtime. The only remaining
+  per-version table is C++ struct layout (`Script`/`ScriptModule`/`UserFunc`).
+  Other versions, compilers, or architectures may still differ. Run the
+  test suite against the target exe first.
 - Never eval untrusted input. Never leave `PatchBif` enabled in production.
 - `EvalNative` builds a temporary `Line`/`ArgStruct` inside the interpreter.
   Variable/function derefs are resolved through the interpreter's own var
@@ -249,8 +275,11 @@ the 100M measurement is the real figure.
 `EvalNative` is verified on AutoHotkey 2.1-alpha.30, 2.0.26, 2.0.0, and
 2.0-beta.10 (all x64).
 
-`EvalScript` currently carries 2.0.26 x64 internal offsets. Other builds
-raise an explicit unsupported-version error instead of degrading silently.
+`EvalScript` is verified on all four builds. Every function entry point and
+global used by the pipeline is located at runtime, including
+`LoadIncludedFile(TextStream*)` and `Line::sSourceFileCount`. A small
+per-version table covers only the C++ struct layout differences
+(`Script`/`ScriptModule`/`UserFunc`) between 2.1 and the 2.0 line.
 
 ## Project Layout
 
@@ -269,6 +298,7 @@ examples/                   export inventory and built-in probe demos
 fork/cnumpy-ahk-bridge/     cnumpy integration tests and benchmarks
 blog_ahk_hack.txt           blog post (ZH)
 blog_ahk_hack_en.txt        blog post (EN)
+docs/                       bilingual GitHub Pages blog site
 ahk_hack_single.ahk         standalone single-file core
 ahk_hack_demo.ahk           runnable self-test demo
 ```
@@ -284,6 +314,13 @@ python tools\build_mcode.py --embed-only --out lib\ahk_hack.ahk
 The build compiles all C sources under `lib/mcode/`, verifies that no
 relocation escapes the `.text` blob, and writes the machine code back into
 `lib/ahk_hack.ahk`.
+
+The bilingual Pages site in `docs/` is generated from
+`tools/site_templates/`; after changing the single-file core, rebuild it with:
+
+```powershell
+python tools\build_site.py
+```
 
 ## Locating internal expression functions
 
@@ -312,6 +349,12 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 # In-process expression eval
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
+
+# In-process long text with function definitions
+& D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
+
+# In-process class definition and instantiation
+& D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
 
 # Per-version internal address probe
 & D:\...\AutoHotkey64.exe tests\version_probe.ahk
