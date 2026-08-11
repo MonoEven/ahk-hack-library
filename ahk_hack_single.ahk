@@ -27,6 +27,12 @@ MCode(hex) {
 class AhkMagic {
     static scanner := 0
     static exportScanner := 0
+    static inprocEval := 0
+    static internalLocated := false
+    static exprToPostfix := 0
+    static expandSingleArg := 0
+    static currLineSlot := 0
+    static crtFree := 0
     static moduleBase := 0
     static bifTablePtr := 0
     static bifCount := 0
@@ -241,6 +247,239 @@ class AhkMagic {
         return result
     }
 
+    ; ------------------------------------------------------------------
+    ; True in-process Eval.  Locates the interpreter's own expression
+    ; compiler/evaluator, builds a temporary Line/ArgStruct, and calls
+    ; them directly in this process.
+    ; ------------------------------------------------------------------
+
+    static _ModuleSections() {
+        base := AhkMagic.moduleBase
+        peOff := NumGet(base, 0x3C, "UInt")
+        numSections := NumGet(base + peOff + 6, "UShort")
+        optSize := NumGet(base + peOff + 20, "UShort")
+        secTable := base + peOff + 24 + optSize
+        result := Map()
+        loop numSections {
+            hdr := secTable + (A_Index - 1) * 40
+            name := StrGet(hdr, 8, "UTF-8")
+            vsize := NumGet(hdr + 8, "UInt")
+            va := NumGet(hdr + 12, "UInt")
+            result[name] := Map(
+                "rva", va,
+                "size", vsize,
+                "ptr", base + va
+            )
+        }
+        return result
+    }
+
+    static _FindUtf16(secs, text) {
+        len := StrLen(text)
+        needle := Buffer(2 * (len + 1), 0)
+        StrPut(text, needle, "UTF-16")
+        hits := []
+        for name, sec in secs {
+            if name != ".rdata"
+                continue
+            p := sec["ptr"]
+            count := sec["size"] >= 2 * len
+                ? Min((sec["size"] - 2 * len) // 2 + 1, 0x100000)
+                : 0
+            if count <= 0
+                continue
+            loop count {
+                off := (A_Index - 1) * 2
+                ok := true
+                loop len {
+                    if NumGet(p + off + 2 * (A_Index - 1), "UShort")
+                        != NumGet(needle, 2 * (A_Index - 1), "UShort") {
+                        ok := false
+                        break
+                    }
+                }
+                if ok and NumGet(p + off + 2 * len, "UShort") = 0
+                    hits.Push(sec["rva"] + off)
+            }
+        }
+        return hits
+    }
+
+    static _RipRefs(sec, targetRva) {
+        p := sec["ptr"]
+        size := sec["size"]
+        refs := []
+        if size < 8
+            return refs
+        loop size - 7 {
+            i := A_Index - 1
+            b := NumGet(p + i, "UChar")
+            if b != 0x48 and b != 0x4C
+                continue
+            if NumGet(p + i + 1, "UChar") != 0x8D
+                continue
+            reg := NumGet(p + i + 2, "UChar")
+            if reg != 0x05 and reg != 0x0D and reg != 0x15 and reg != 0x1D
+                and reg != 0x25 and reg != 0x2D and reg != 0x35 and reg != 0x3D
+                continue
+            disp := NumGet(p + i + 3, "Int")
+            next := sec["rva"] + i + 7
+            if next + disp = targetRva
+                refs.Push(sec["rva"] + i)
+        }
+        return refs
+    }
+
+    static _FnStart(sec, refRva) {
+        p := sec["ptr"]
+        off := refRva - sec["rva"]
+        i := off
+        while i > 0 {
+            if NumGet(p + i - 1, "UChar") = 0xCC
+                and i >= 2 and NumGet(p + i - 2, "UChar") = 0xCC
+                break
+            i -= 1
+        }
+        return sec["rva"] + i
+    }
+
+    static _FindCallers(sec, targetRva) {
+        p := sec["ptr"]
+        size := sec["size"]
+        calls := []
+        if size < 6
+            return calls
+        loop size - 5 {
+            i := A_Index - 1
+            if NumGet(p + i, "UChar") != 0xE8
+                continue
+            disp := NumGet(p + i + 1, "Int")
+            if sec["rva"] + i + 5 + disp = targetRva
+                calls.Push(sec["rva"] + i)
+        }
+        return calls
+    }
+
+    static _BestStart(sec, refs) {
+        starts := Map()
+        for ref in refs {
+            start := AhkMagic._FnStart(sec, ref)
+            starts[start] := starts.Has(start) ? starts[start] + 1 : 1
+        }
+        best := 0
+        bestCount := 0
+        for start, count in starts {
+            if count > bestCount {
+                best := start
+                bestCount := count
+            }
+        }
+        return best
+    }
+
+    static _CurrLineSlotAddr() {
+        AhkMagic.Init()
+        if !AhkMagic.biv.Has("LineNumber")
+            throw Error("A_LineNumber getter not found")
+        p := AhkMagic.moduleBase + AhkMagic.biv["LineNumber"]["getter_rva"]
+        if NumGet(p, "UChar") != 0x48 or NumGet(p + 1, "UChar") != 0x8B
+            or NumGet(p + 2, "UChar") != 0x05
+            throw Error("unexpected A_LineNumber getter code")
+        disp := NumGet(p + 3, "Int")
+        return p + 7 + disp
+    }
+
+    static _LocateInternalFunctions() {
+        if AhkMagic.internalLocated
+            return
+        secs := AhkMagic._ModuleSections()
+        text := secs[".text"]
+
+        postfixRefs := AhkMagic._RipRefs(text, AhkMagic._FindUtf16(secs, "Missing operand.")[1])
+        postfix2 := AhkMagic._BestStart(text, postfixRefs)
+        if !postfix2
+            throw Error("ExpressionToPostfix not found")
+
+        expandRefs := AhkMagic._RipRefs(text, AhkMagic._FindUtf16(secs, "Error evaluating expression.")[1])
+        expand := AhkMagic._BestStart(text, expandRefs)
+        if !expand
+            throw Error("ExpandExpression not found")
+
+        AhkMagic.exprToPostfix := AhkMagic.moduleBase + postfix2
+        AhkMagic.expandSingleArg := AhkMagic.moduleBase + expand
+        AhkMagic.currLineSlot := AhkMagic._CurrLineSlotAddr()
+        AhkMagic.crtFree := AhkMagic._LocateCrtFree()
+        AhkMagic.internalLocated := true
+    }
+
+    static _LocateCrtFree() {
+        secs := AhkMagic._ModuleSections()
+        text := secs[".text"]
+        postfixRva := AhkMagic.exprToPostfix - AhkMagic.moduleBase
+        callers := AhkMagic._FindCallers(text, postfixRva)
+        for callerRva in callers {
+            off := callerRva - text["rva"] + 5
+            p := text["ptr"] + off
+            loop 96 {
+                i := A_Index - 1
+                if NumGet(p + i, "UChar") != 0xE8
+                    continue
+                disp := NumGet(p + i + 1, "Int")
+                target := text["rva"] + off + i + 5 + disp
+                if target != postfixRva
+                    return AhkMagic.moduleBase + target
+            }
+        }
+        throw Error("CRT free not found")
+    }
+
+    ; Evaluate an expression inside this interpreter process.
+    ; Returns a number or string.  Throws on unsupported/invalid input.
+    static EvalNative(expr) {
+        AhkMagic.Init()
+        if !(expr is String)
+            throw TypeError("expr must be a string", -1)
+        if StrLen(expr) > 4096
+            throw ValueError("expr too long", -1)
+        if !AhkMagic.inprocEval
+            AhkMagic.inprocEval := MCode(MC_INPROC_EVAL_X64)
+        AhkMagic._LocateInternalFunctions()
+
+        scratch := Buffer(8 * 1024 * 1024, 0)
+        out := Buffer(512, 0)
+        exprBuf := Buffer((StrLen(expr) + 1) * 2, 0)
+        StrPut(expr, exprBuf, "UTF-16")
+        rc := DllCall(
+            AhkMagic.inprocEval.Ptr,
+            "Ptr", AhkMagic.exprToPostfix,
+            "Ptr", AhkMagic.expandSingleArg,
+            "Ptr", AhkMagic.currLineSlot,
+            "Ptr", scratch.Ptr,
+            "Ptr", exprBuf.Ptr,
+            "Ptr", out.Ptr,
+            "Int", 1,
+            "Ptr", 0,
+            "Ptr", 0,
+            "Int"
+        )
+        infix := NumGet(out, 208, "Ptr")
+        if infix
+            DllCall(AhkMagic.crtFree, "Ptr", infix)
+        if rc != 0
+            throw Error("EvalNative harness failed with rc=" rc)
+        status := NumGet(out, 0, "UInt")
+        if status != 0
+            throw Error("EvalNative failed with status=" status)
+        type := NumGet(out, 4, "UInt")
+        if type = 1
+            return NumGet(out, 8, "Int64")
+        if type = 2
+            return NumGet(out, 8, "Double")
+        if type = 0
+            return StrGet(NumGet(out, 16, "Ptr"), "UTF-16")
+        throw Error("EvalNative returned unknown symbol " type)
+    }
+
     static Summary() {
         AhkMagic.Init()
         return Format(
@@ -290,4 +529,6 @@ class AhkMagic {
         }
     }
 }
+
+MC_INPROC_EVAL_X64 := "4157415641554154565755534883ec784c89cf4d89c64889c84c8ba424e8000000488b8c24e000000048c74424600000400048c7442450000000004885c0410f94c04885d2410f94c14508c14d85f6410f94c04885ff410f94c24508c24508ca4885c9410f94c04508d04d85e4410f94c1bd010000004508c10f856f0300004c8b8c24000100004c8bbc24f80000004c8d87000100004d85c94c89ce490f44f0488d9f80010000488daf0003000048896c24704d85ff4c0f44ff756e0f57c00f11070f1147100f1147200f1147300f1147400f1147500f1147600f1147700f1187800000000f1187900000000f1187a00000000f1187b00000000f1187c00000000f1187d00000000f1187e00000000f1187f0000000c6070341c647010141c7470401000000498977080f57c00f11030f1143100f1143200f1143300f1143400f1143500f1143600f11437066833900741d4531d266662e0f1f8400000000006642837c5102004d8d520175f3eb034531d248895424584d85c975480f57c0410f1100410f114010410f114020410f114030410f114040410f114050410f114060410f11407041c60000c64601014489560448894e0848b9000100000001000048894e2049c70424010000000f57c0410f114424084d8b2e4d893e4c8d4424504c89f94889f2ffd083f8010f851b0100004883bc24f0000000000f841c01000048896c2468c78790010000ffffffff48c78788010000ffffffff4889af9801000048c787a001000000000000488d8700033f004889442438488d4424604889442430488d4424704889442428488d442468488944242048c744244000003f0031ed4c8d44244c4c89f931d24989d9ff5424584d892e4885c00f84b400000041c70424000000008b8f9001000041894c2404488b8f8001000049894c240849894c2410498d4c24204889ca4829da4883fa0f0f8788000000ba050000000f1f4000440fb64413fb44884411fb440fb64413fc44884411fc440fb64413fd44884411fd440fb64413fe44884411fe440fb64413ff44884411ff440fb60413448804114883c2064883fa3575b6eb494d892e41c7042402000000e9d00000004d892e48b8000000006300000049890424e9ba00000041c7042403000000e9af0000000f10030f11010f1043100f1141100f1043200f114120418b4c240483f9050f879e000000ba270000000fa3ca0f8390000000488b461849894424504885c0745431c06666666666662e0f1f840000000000488b4e180fb60c0141884c0458488b4e180fb64c010141884c0459488b4e180fb64c010241884c045a488b4e180fb64c010341884c045b4883c004483d2001000075bd8b44244c41898424c8000000488b44245049898424d000000031ed89e84883c4785b5d5f5e415c415d415e415fc341c7442404000000004989442410e95dffffff"
 

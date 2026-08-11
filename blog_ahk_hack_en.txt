@@ -99,7 +99,16 @@ in source also returns `sin(1)`, and is restored to 1 afterwards.
 
 MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7, in-process
+MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0, in-process
 [/codebox]
+
+[c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls
+the running interpreter's own [c]ExpressionToPostfix[/c] and
+[c]ExpandExpression[/c] functions directly in this process. It currently
+covers literal and operator expressions; variable and function derefs are
+not wired yet and fail loudly instead of degrading silently. [c]Eval[/c]
+remains the general fallback for arbitrary expression strings.
 
 [color=#BF4000][b]4.4 Rebuilding the machine code[/b][/color]
 
@@ -115,6 +124,7 @@ python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk
 python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
 & D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
+& D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 [/codebox]
 
 Verified versions: 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
@@ -128,7 +138,8 @@ Operations fall into three categories:
 
 - Read-only: [c]Init / Summary / BifRva / BifAddr / ScanExports[/c]. These do not modify process state; the main risk is compatibility;
 - Mutating: [c]PatchBif / RestoreBif[/c]. These directly modify internal tables and can crash the interpreter if misused. During development this project hit [c]0xC0000374[/c] (heap corruption);
-- Executing: [c]Eval[/c]. This is equivalent to running arbitrary scripts.
+- Executing: [c]Eval[/c] and [c]EvalNative[/c]. This is equivalent to running
+  arbitrary scripts.
 
 Risks to keep in mind:
 
@@ -146,20 +157,26 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 2026-08-11:
 
 - The scanning core was distilled into [c]ahk_hack_single.ahk[/c], with a runnable [c]ahk_hack_demo.ahk[/c];
+- Added [c]EvalNative[/c], an in-process expression evaluator built on the
+  interpreter's own [c]ExpressionToPostfix[/c]/[c]ExpandExpression[/c]
+  pipeline;
 - Fixed hardcoded structural offsets in the optional integration layer by switching to runtime layout discovery and native fill interfaces.
 
 
 [b]7. Known limitations[/b]
 
 - The machine-code blocks are x64 only;
-- [c]Eval()[/c] evaluates expressions through a hidden child process of the same exe and returns strings/numbers; true in-process eval still requires locating the internal expression parser;
+- [c]EvalNative()[/c] runs the interpreter's in-process expression pipeline
+  for literal and operator expressions; variable/function derefs are not
+  wired yet and fail loudly. [c]Eval()[/c] remains the subprocess fallback
+  for arbitrary expression strings;
 - [c]PatchBif()[/c] does not retroactively affect already-cached function objects;
 - native construction relies on source-derived or runtime-discovered layout, so cross-version verification is mandatory.
 
 
 [b]8. Closing[/b]
 
-The project ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. Future directions include in-process eval, automatic DLL binding generation, and expanding the scan to more interpreter internals.
+The project ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. In-process eval now works for literal/operator expressions. Future directions include wiring variable/function derefs into [c]EvalNative[/c], automatic DLL binding generation, and expanding the scan to more interpreter internals.
 
 
 
@@ -456,6 +473,50 @@ class AhkMagic {
             if FileExist(resultFile)
                 FileDelete(resultFile)
         }
+    }
+
+    static EvalNative(expr) {
+        AhkMagic.Init()
+        if !(expr is String)
+            throw TypeError("expr must be a string", -1)
+        if StrLen(expr) > 4096
+            throw ValueError("expr too long", -1)
+        if !AhkMagic.inprocEval
+            AhkMagic.inprocEval := MCode(MC_INPROC_EVAL_X64)
+        AhkMagic._LocateInternalFunctions()
+        scratch := Buffer(8 * 1024 * 1024, 0)
+        out := Buffer(512, 0)
+        exprBuf := Buffer((StrLen(expr) + 1) * 2, 0)
+        StrPut(expr, exprBuf, "UTF-16")
+        rc := DllCall(
+            AhkMagic.inprocEval.Ptr,
+            "Ptr", AhkMagic.exprToPostfix,
+            "Ptr", AhkMagic.expandSingleArg,
+            "Ptr", AhkMagic.currLineSlot,
+            "Ptr", scratch.Ptr,
+            "Ptr", exprBuf.Ptr,
+            "Ptr", out.Ptr,
+            "Int", 1,
+            "Ptr", 0,
+            "Ptr", 0,
+            "Int"
+        )
+        infix := NumGet(out, 208, "Ptr")
+        if infix
+            DllCall(AhkMagic.crtFree, "Ptr", infix)
+        if rc != 0
+            throw Error("EvalNative harness failed with rc=" rc)
+        status := NumGet(out, 0, "UInt")
+        if status != 0
+            throw Error("EvalNative failed with status=" status)
+        type := NumGet(out, 4, "UInt")
+        if type = 1
+            return NumGet(out, 8, "Int64")
+        if type = 2
+            return NumGet(out, 8, "Double")
+        if type = 0
+            return StrGet(NumGet(out, 16, "Ptr"), "UTF-16")
+        throw Error("EvalNative returned unknown symbol " type)
     }
 }
 [/codebox]

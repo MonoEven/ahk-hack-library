@@ -70,6 +70,11 @@ try {
     Write("  StrLen(`"hello`") = " AhkMagic.Eval("StrLen(`"hello`")"))
     Write("  Format(`"{:.2f}`", Sin(1)) = "
         . AhkMagic.Eval("Format(`"{:.2f}`", Sin(1))"))
+
+    Write("in-process eval demo:")
+    Write("  1 + 2 * 3 = " AhkMagic.EvalNative("1 + 2 * 3"))
+    Write("  2 * 3.5 = " AhkMagic.EvalNative("2 * 3.5"))
+    Write("  `"hello`" = " AhkMagic.EvalNative("`"hello`""))
     Write("OK")
 } catch as e {
     Write("FAIL: " e.What " | " e.Message " | line " e.Line)

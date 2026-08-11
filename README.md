@@ -44,8 +44,9 @@ Practice integration: [https://github.com/MonoEven/cnumpy](https://github.com/Mo
   function RVA and ordinal.
 - **Runtime built-in redirection.** `PatchBif()` can temporarily re-point a
   built-in C function and `RestoreBif()` restores it.
-- **Expression eval.** `AhkMagic.Eval()` evaluates AHK expression strings
-  with the same interpreter.
+- **Expression eval.** `AhkMagic.EvalNative()` evaluates expression strings
+  by driving the running interpreter's own expression compiler/evaluator
+  in-process. `AhkMagic.Eval()` remains as the subprocess fallback.
 - **Optional cnumpy bridge.** `CnpBridge` converts `CnpArray` to native AHK
   values, supports zero-copy views, and is validated by 1D/2D/3D tests.
 - **Self-contained at runtime.** No Python, no external scanner, no
@@ -102,8 +103,8 @@ AhkMagic.RestoreBif("Abs", old)
 ### Expression eval
 
 ```ahk
-MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
-MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7, in-process
+MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5, subprocess fallback
 ```
 
 ### Optional cnumpy integration
@@ -145,6 +146,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `PatchBif(name, newName)` / `RestoreBif(name, oldPtr)` | Temporarily redirect and restore a built-in |
 | `PatchBifObject(fnObj, newName)` / `RestoreBifObject(fnObj, state)` | Deep-redirect an already-resolved built-in so direct calls are affected |
 | `Eval(expr)` | Evaluates an expression string with the same interpreter |
+| `EvalNative(expr)` | Evaluates literals and operators through the interpreter's in-process expression pipeline |
 
 ### CnpBridge
 
@@ -186,7 +188,8 @@ Operations fall into three categories:
   `Metadata`, and `CnpView` reads. These do not modify process state.
 - **Mutating:** `PatchBif`, `RestoreBif`, `WriteRaw`, and `CnpView.Set`.
   Wrong offsets, types, or ordering can crash the interpreter.
-- **Executing:** `Eval`. This is arbitrary expression/code execution.
+- **Executing:** `Eval` and `EvalNative`. This is arbitrary expression/code
+  execution.
 
 Key risks:
 
@@ -196,6 +199,9 @@ Key risks:
   compilers, or architectures may differ. Run the test suite against the
   target exe first.
 - Never eval untrusted input. Never leave `PatchBif` enabled in production.
+- `EvalNative` builds a temporary `Line`/`ArgStruct` inside the interpreter.
+  It currently covers literal and operator expressions; variable/function
+  derefs are not wired yet and may fail loudly instead of degrading silently.
 - Never use `CnpView` after its owner reference is released.
 - Do not substitute external `Buffer` memory for the internal `mItem` of an
   `Array()`; it causes a double free.
@@ -226,6 +232,10 @@ the 100M measurement is the real figure.
 - AutoHotkey 2.0.26 (64-bit)
 - AutoHotkey 2.0.0 (64-bit)
 - AutoHotkey 2.0-beta.10 (64-bit)
+
+`EvalNative` is verified on AutoHotkey 2.0.26 x64. Its internal function
+locators are fingerprint-based, but the temporary `Line`/`ArgStruct` layout
+is source-derived and may need verification on other builds.
 
 ## Project Layout
 
@@ -270,9 +280,9 @@ AutoHotkey exe, using error-string fingerprints and RIP-relative xrefs:
 python tools\locate_internal_functions.py D:\...\AutoHotkey64.exe
 ```
 
-These RVAs are the basis for a future in-process `Eval` harness that builds a
-temporary `Line`/`ArgStruct` and calls the interpreter's own compiler and
-evaluator, instead of launching a child process.
+These RVAs are consumed by `AhkMagic.EvalNative()`, which builds a temporary
+`Line`/`ArgStruct` and calls the interpreter's own compiler and evaluator
+directly instead of launching a child process.
 
 ## Testing
 
@@ -284,6 +294,9 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 # Generic PE export scan
 & D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
+
+# In-process expression eval
+& D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 
 # cnumpy integration, including 1D/2D/3D native construction
 & D:\...\AutoHotkey64.exe fork\cnumpy-ahk-bridge\tests\cnumpy_bridge.test.ahk
