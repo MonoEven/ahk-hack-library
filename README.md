@@ -143,6 +143,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `BifRva(name)` / `BifAddr(name)` | RVA / absolute address of a built-in C function |
 | `ScanExports(moduleBase)` | Returns `Map(name -> {rva, ordinal})` for a loaded module |
 | `PatchBif(name, newName)` / `RestoreBif(name, oldPtr)` | Temporarily redirect and restore a built-in |
+| `PatchBifObject(fnObj, newName)` / `RestoreBifObject(fnObj, state)` | Deep-redirect an already-resolved built-in so direct calls are affected |
 | `Eval(expr)` | Evaluates an expression string with the same interpreter |
 
 ### CnpBridge

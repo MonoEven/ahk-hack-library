@@ -56,16 +56,13 @@ try {
     }
     Write("")
 
-    Write("patch demo (Abs -> Sin):")
-    name := "Abs"
-    Write("  baseline Abs(1) via child eval = " AhkMagic.Eval("Abs(1)"))
-    old := AhkMagic.PatchBif("Abs", "Sin")
-    Write("  patched Abs(1)=" %name%(1))
-    AhkMagic.RestoreBif("Abs", old)
-    entryAddr := AhkMagic.bifTablePtr
-        + AhkMagic.bif["Abs"]["index"] * AhkMagic.bifStride
-        + A_PtrSize
-    Write("  restored ptr=0x" Format("{:X}", NumGet(entryAddr, "Ptr")))
+    Write("deep patch demo (Abs -> Sin):")
+    Write("  before   Abs(1) = " Abs(1))
+    state := AhkMagic.PatchBifObject(Abs, "Sin")
+    Write("  patched  Abs(1) = " Abs(1))
+    Write("  expected Sin(1) = " Sin(1))
+    AhkMagic.RestoreBifObject(Abs, state)
+    Write("  restored Abs(1) = " Abs(1))
     Write("")
 
     Write("eval demo:")

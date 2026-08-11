@@ -157,6 +157,62 @@ class AhkMagic {
         NumPut("Ptr", oldPtr, entryAddr)
     }
 
+    ; Deep patch: change the mBIF field of an already-resolved built-in Func
+    ; object, so even direct calls compiled at load time (e.g. Abs(1)) are
+    ; redirected.  Works together with PatchBif on the table itself.
+    static PatchBifObject(fnObj, newName) {
+        AhkMagic.Init()
+        if !(fnObj is Func)
+            throw TypeError("expected a Func object")
+        if !AhkMagic.bif.Has(newName)
+            throw Error("builtin not found: " newName)
+        fnName := fnObj.Name
+        if !AhkMagic.bif.Has(fnName)
+            throw Error("function object is not a built-in: " fnName)
+        oldAddr := AhkMagic.moduleBase + AhkMagic.bif[fnName]["rva"]
+        newAddr := AhkMagic.moduleBase + AhkMagic.bif[newName]["rva"]
+        rawPtr := ObjPtr(fnObj)
+        off := AhkMagic._FindBifPtrOffset(rawPtr, oldAddr)
+        if off < 0
+            throw Error("could not locate mBIF in function object for " fnName)
+        NumPut("Ptr", newAddr, rawPtr, off)
+        ; Keep future table lookups consistent with the deep patch.
+        AhkMagic.PatchBif(fnName, newName)
+        return Map(
+            "fnName", fnName,
+            "newName", newName,
+            "oldPtr", oldAddr,
+            "offset", off
+        )
+    }
+
+    static RestoreBifObject(fnObj, state) {
+        AhkMagic.Init()
+        if !(fnObj is Func)
+            throw TypeError("expected a Func object")
+        fnName := fnObj.Name
+        if state["fnName"] != fnName
+            throw Error("state does not match function object " fnName)
+        if !AhkMagic.bif.Has(state["newName"])
+            throw Error("builtin not found: " state["newName"])
+        rawPtr := ObjPtr(fnObj)
+        current := AhkMagic.moduleBase + AhkMagic.bif[state["newName"]]["rva"]
+        off := AhkMagic._FindBifPtrOffset(rawPtr, current)
+        if off < 0
+            throw Error("could not locate mBIF in function object for " fnName)
+        NumPut("Ptr", state["oldPtr"], rawPtr, off)
+        AhkMagic.RestoreBif(fnName, state["oldPtr"])
+    }
+
+    static _FindBifPtrOffset(rawPtr, targetAddr) {
+        loop 64 {
+            off := (A_Index - 1) * 8
+            if NumGet(rawPtr, off, "Ptr") = targetAddr
+                return off
+        }
+        return -1
+    }
+
     ; General PE export-table scanner (works for any loaded DLL/EXE module).
     static ScanExports(moduleBase) {
         if !AhkMagic.exportScanner

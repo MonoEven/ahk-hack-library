@@ -80,11 +80,17 @@ MsgBox exports.Count
 
 old := AhkMagic.PatchBif("Abs", "Sin")
 name := "Abs"
-MsgBox %name%(1)              ; first dynamic call returns sin(1)
+MsgBox %name%(1)              ; table patch: dynamic call returns sin(1)
+
+state := AhkMagic.PatchBifObject(Abs, "Sin")
+MsgBox Abs(1)                 ; deep patch: direct call also returns sin(1)
+AhkMagic.RestoreBifObject(Abs, state)
 AhkMagic.RestoreBif("Abs", old)
 [/codebox]
 
-AutoHotkey may cache already-resolved function objects, so "the first dynamic call reflects the new pointer" is expected; the table pointer itself is restored.
+The table patch affects future dynamic lookups. The deep patch rewrites the
+already-resolved function object's C function pointer, so a direct `Abs(1)`
+in source also returns `sin(1)`, and is restored to 1 afterwards.
 
 [color=#BF4000][b]4.3 Expression Eval[/b][/color]
 
@@ -317,6 +323,62 @@ class AhkMagic {
             + AhkMagic.bif[name]["index"] * AhkMagic.bifStride
             + A_PtrSize
         NumPut("Ptr", oldPtr, entryAddr)
+    }
+
+    ; Deep patch: change the mBIF field of an already-resolved built-in Func
+    ; object, so even direct calls compiled at load time (e.g. Abs(1)) are
+    ; redirected.  Works together with PatchBif on the table itself.
+    static PatchBifObject(fnObj, newName) {
+        AhkMagic.Init()
+        if !(fnObj is Func)
+            throw TypeError("expected a Func object")
+        if !AhkMagic.bif.Has(newName)
+            throw Error("builtin not found: " newName)
+        fnName := fnObj.Name
+        if !AhkMagic.bif.Has(fnName)
+            throw Error("function object is not a built-in: " fnName)
+        oldAddr := AhkMagic.moduleBase + AhkMagic.bif[fnName]["rva"]
+        newAddr := AhkMagic.moduleBase + AhkMagic.bif[newName]["rva"]
+        rawPtr := ObjPtr(fnObj)
+        off := AhkMagic._FindBifPtrOffset(rawPtr, oldAddr)
+        if off < 0
+            throw Error("could not locate mBIF in function object for " fnName)
+        NumPut("Ptr", newAddr, rawPtr, off)
+        ; Keep future table lookups consistent with the deep patch.
+        AhkMagic.PatchBif(fnName, newName)
+        return Map(
+            "fnName", fnName,
+            "newName", newName,
+            "oldPtr", oldAddr,
+            "offset", off
+        )
+    }
+
+    static RestoreBifObject(fnObj, state) {
+        AhkMagic.Init()
+        if !(fnObj is Func)
+            throw TypeError("expected a Func object")
+        fnName := fnObj.Name
+        if state["fnName"] != fnName
+            throw Error("state does not match function object " fnName)
+        if !AhkMagic.bif.Has(state["newName"])
+            throw Error("builtin not found: " state["newName"])
+        rawPtr := ObjPtr(fnObj)
+        current := AhkMagic.moduleBase + AhkMagic.bif[state["newName"]]["rva"]
+        off := AhkMagic._FindBifPtrOffset(rawPtr, current)
+        if off < 0
+            throw Error("could not locate mBIF in function object for " fnName)
+        NumPut("Ptr", state["oldPtr"], rawPtr, off)
+        AhkMagic.RestoreBif(fnName, state["oldPtr"])
+    }
+
+    static _FindBifPtrOffset(rawPtr, targetAddr) {
+        loop 64 {
+            off := (A_Index - 1) * 8
+            if NumGet(rawPtr, off, "Ptr") = targetAddr
+                return off
+        }
+        return -1
     }
 
     ; General PE export-table scanner (works for any loaded DLL/EXE module).

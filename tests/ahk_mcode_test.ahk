@@ -36,6 +36,16 @@ try {
         . " abs=0x" Format("{:X}", absAddr) "`n"
     if afterRestorePtr != absAddr
         throw Error("restore did not stick")
+
+    ; Deep patch: redirect an already-compiled direct call in source.
+    deepState := AhkMagic.PatchBifObject(Abs, "Sin")
+    deepPatched := Abs(1)
+    if Abs(deepPatched - Sin(1)) > 0.000000001
+        throw Error("deep patch did not redirect direct call")
+    AhkMagic.RestoreBifObject(Abs, deepState)
+    if Abs(1) != 1
+        throw Error("deep restore failed")
+    out .= "deep patch ok`n"
     out .= "OK`n"
 } catch as e {
     out .= "FAIL: " e.What " | " e.Message " | line " e.Line " | " e.Extra "`n"
