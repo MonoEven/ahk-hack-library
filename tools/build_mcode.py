@@ -15,8 +15,6 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 CLANG = pathlib.Path(r"F:\Tech\LLVM\bin\clang.exe")
 SCANNER_C = ROOT / "lib" / "mcode" / "scanner.c"
 EXPORT_SCANNER_C = ROOT / "lib" / "mcode" / "export_scanner.c"
-ARRAY_BUILDER_C = ROOT / "lib" / "mcode" / "array_builder.c"
-ARRAY_CHILDREN_BUILDER_C = ROOT / "lib" / "mcode" / "array_children_builder.c"
 AHK_OUT = ROOT / "ahk_hack_single.ahk"
 
 
@@ -121,14 +119,10 @@ def main(argv=None):
     args = parser.parse_args(argv)
     code = build_blob(SCANNER_C)
     export_code = build_blob(EXPORT_SCANNER_C)
-    array_code = build_blob(ARRAY_BUILDER_C)
-    children_code = build_blob(ARRAY_CHILDREN_BUILDER_C)
     if args.embed_only:
         text = args.out.read_text(encoding="utf-8")
         text = replace_marker(text, 'MC_BIF_SCANNER_X64 := "', code)
         text = replace_marker(text, 'MC_PE_EXPORT_SCANNER_X64 := "', export_code)
-        text = replace_marker(text, 'MC_ARRAY_BUILDER_X64 := "', array_code)
-        text = replace_marker(text, 'MC_ARRAY_CHILDREN_BUILDER_X64 := "', children_code)
         args.out.write_text(text, encoding="utf-8")
     else:
         # The placeholder file is generated once by ahk_mcode.ahk's author;
@@ -138,8 +132,6 @@ def main(argv=None):
         )
     print("bif scanner size: %d bytes" % len(code))
     print("export scanner size: %d bytes" % len(export_code))
-    print("array builder size: %d bytes" % len(array_code))
-    print("array children builder size: %d bytes" % len(children_code))
     print("embedded into: %s" % args.out)
     return 0
 

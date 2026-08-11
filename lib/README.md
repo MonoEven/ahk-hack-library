@@ -20,8 +20,6 @@ lib/
   mcode/
     scanner.c               AHK interpreter table scanner (g_BIF/sMdFunc/g_BIV_A)
     export_scanner.c        generic PE export-table scanner
-    array_builder.c         native AHK Array fill (numeric leaves)
-    array_children_builder.c native AHK Array fill (nested children)
   cnumpy/
     init.ahk                optional integration entry
     numpy.ahk               cnumpy wrapper (original copy)
@@ -39,8 +37,7 @@ AhkMagic.BifRva("Abs")              ; RVA of a built-in C function
 AhkMagic.ScanExports(dllBase)       ; named exports of any loaded module
 ```
 
-`AhkMagic` also exposes native Array construction (`BuildArrayFlat`,
-`BuildArrayChildren`) and `Eval`, which are the "magic" layer that scanning
+`AhkMagic` also exposes `Eval`, which is part of the magic layer that scanning
 enables.
 
 ## Optional cnumpy integration

@@ -27,8 +27,6 @@ MCode(hex) {
 class AhkMagic {
     static scanner := 0
     static exportScanner := 0
-    static arrayBuilder := 0
-    static childrenBuilder := 0
     static moduleBase := 0
     static bifTablePtr := 0
     static bifCount := 0
@@ -187,42 +185,6 @@ class AhkMagic {
         return result
     }
 
-    ; Fill an existing empty AHK Array() with values directly in machine code.
-    ; typeCode: 0=f64, 1=i64, 2=f32, 3=i32, 4=u64, 5=u32,
-    ;           6=i16, 7=u16, 8=i8, 9=u8/bool
-    static BuildArrayFlat(arrObjPtr, itemPtr, dataPtr, count, itemSize, typeCode) {
-        if !AhkMagic.arrayBuilder
-            AhkMagic.arrayBuilder := MCode(MC_ARRAY_BUILDER_X64)
-        rc := DllCall(
-            AhkMagic.arrayBuilder.Ptr,
-            "Ptr", arrObjPtr,
-            "Ptr", itemPtr,
-            "Ptr", dataPtr,
-            "Int64", count,
-            "Int", itemSize,
-            "Int", typeCode,
-            "Int"
-        )
-        if rc != 0
-            throw Error("AhkBuildArrayFlat failed with rc=" rc)
-    }
-
-    ; Fill a parent Array() with child Array pointers (ownership transferred,
-    ; no AddRef: the caller must drop its own reference to each child).
-    static BuildArrayChildren(arrObjPtr, childPtrs, count) {
-        if !AhkMagic.childrenBuilder
-            AhkMagic.childrenBuilder := MCode(MC_ARRAY_CHILDREN_BUILDER_X64)
-        rc := DllCall(
-            AhkMagic.childrenBuilder.Ptr,
-            "Ptr", arrObjPtr,
-            "Ptr", childPtrs.Ptr,
-            "Int64", count,
-            "Int"
-        )
-        if rc != 0
-            throw Error("AhkBuildArrayChildren failed with rc=" rc)
-    }
-
     static Summary() {
         AhkMagic.Init()
         return Format(
@@ -273,5 +235,3 @@ class AhkMagic {
     }
 }
 
-MC_ARRAY_BUILDER_X64 := "4885c90f94c04885d2410f94c24108c24d85c90f98c04408d0b8010000000f85270100004d85c9410f95c24d85c0410f94c34584d30f8510010000448b5424284585d20f840301000048895120448949284489492c4d85c90f84eb0000008b4c2430b80300000083f9090f87db0000004489d0eb4366662e0f1f84000000000085c90f848700000083f9010f85af0000004d8b104c891241ba0100000044895208c7420c000000004901c04883c21049ffc90f849100000083f9037e2383f9057e3e83f906746783f907746b83f908756f4d0fbe10ebbd660f1f84000000000083f9017e9b83f902742c83f90375514d6310eba06666662e0f1f84000000000083f904748c83f9057536458b10eb85f2410f1000eb09f3410f1000f30f5ac0f20f110241ba02000000e96fffffff4d0fbf10e95dffffff450fb710e954ffffff450fb610e94bffffff31c0c3b802000000c3"
-MC_ARRAY_CHILDREN_BUILDER_X64 := "41565657534883ec28b8010000004885c974764c89c64889d74d85c00f95c24885ff410f94c04184d0755e4c8b71204d85f6744989712889712c31c04885f674486666666666662e0f1f840000000000488b1f4885db742c488b034889d9ff500849891e49c74608050000004883c7084983c61048ffce75d731c0eb0cb802000000eb05b8030000004883c4285b5f5e415ec3"

@@ -42,9 +42,6 @@ Practice integration: [https://github.com/MonoEven/cnumpy](https://github.com/Mo
 - **Generic PE export scanning.** `AhkMagic.ScanExports()` parses the export
   directory of any loaded module and returns every named export with its
   function RVA and ordinal.
-- **Native AHK array construction.** Machine code fills the internal
-  `mItem`/`mLength`/`mCapacity` fields of real `Array()` objects, including
-  nested N-D trees, without AHK element loops.
 - **Runtime built-in redirection.** `PatchBif()` can temporarily re-point a
   built-in C function and `RestoreBif()` restores it.
 - **Expression eval.** `AhkMagic.Eval()` evaluates AHK expression strings
@@ -68,9 +65,6 @@ relocation escapes the blob.
 | --- | --- | --- |
 | Interpreter scanner | `lib/mcode/scanner.c` | Locates `g_BIF`, `sMdFunc`, `g_BIV_A` |
 | Export scanner | `lib/mcode/export_scanner.c` | Generic PE export-table scan |
-| Array builder | `lib/mcode/array_builder.c` | Fills numeric leaf `Array()` objects |
-| Children builder | `lib/mcode/array_children_builder.c` | Fills parent `Array()` objects with child references |
-
 The AHK entry point is `lib/init.ahk`, which loads only the scanning core.
 The cnumpy integration lives in `lib/cnumpy/` and is optional.
 
@@ -133,8 +127,6 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `BifRva(name)` / `BifAddr(name)` | RVA / absolute address of a built-in C function |
 | `ScanExports(moduleBase)` | Returns `Map(name -> {rva, ordinal})` for a loaded module |
 | `PatchBif(name, newName)` / `RestoreBif(name, oldPtr)` | Temporarily redirect and restore a built-in |
-| `BuildArrayFlat(...)` | Fills a leaf `Array()` from numeric data |
-| `BuildArrayChildren(...)` | Fills a parent `Array()` with child references |
 | `Eval(expr)` | Evaluates an expression string with the same interpreter |
 
 ### CnpBridge
