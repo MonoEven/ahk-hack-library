@@ -12,6 +12,7 @@
   --code-ink: #e6e9ef;
   --code-muted: #9aa7b8;
   --radius: 8px;
+  --content-max: 42rem;
 }
 
 * {
@@ -146,6 +147,7 @@ body {
 }
 
 article {
+  max-width: var(--content-max);
   padding-top: 2rem;
 }
 
@@ -167,13 +169,13 @@ h3 {
 
 p {
   margin: 0.9rem 0;
-  max-width: 66ch;
+  max-width: 100%;
 }
 
 ul,
 ol {
   padding-left: 1.4rem;
-  max-width: 66ch;
+  max-width: 100%;
 }
 
 li {
