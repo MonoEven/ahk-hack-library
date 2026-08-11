@@ -448,6 +448,21 @@ class AhkMagic {
             throw TypeError("expr must be a string", -1)
         if expr = ""
             throw ValueError("expr must not be empty", -1)
+        try {
+            return AhkMagic.EvalNative(expr)
+        } catch as e {
+            ; Expressions the in-process pipeline cannot evaluate yet fall
+            ; back to the explicit subprocess implementation.
+        }
+        return AhkMagic.EvalSubprocess(expr)
+    }
+
+    static EvalSubprocess(expr) {
+        AhkMagic.Init()
+        if !(expr is String)
+            throw TypeError("expr must be a string", -1)
+        if expr = ""
+            throw ValueError("expr must not be empty", -1)
 
         tag := Format("{:x}", A_TickCount) "-" Format("{:x}", Random(1, 0x7fffffff))
         scriptFile := A_Temp "\ahk_mcode_eval_" tag ".ahk"
@@ -506,7 +521,7 @@ class AhkMagic {
             "Ptr", AhkMagic.finalizeExpr,
             "Ptr", AhkMagic.findOrAddVar,
             "Ptr", AhkMagic.crtFree,
-            "Ptr", AhkMagic.freeInfix,
+            "Ptr", AhkMagic.symInvalid,
             "Int"
         )
         if rc != 0
