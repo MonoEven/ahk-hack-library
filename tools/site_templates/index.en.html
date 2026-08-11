@@ -272,7 +272,8 @@ class Point {
 }
 Point(1, 2).x
 )"
-MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
+MsgBox AhkMagic.EvalScript(classScript)          ; 1
+MsgBox AhkMagic.EvalNative("Point(1, 2).y")      ; 2, class loaded and used in-process</code></pre>
       </section>
 
       <section id="boundary">

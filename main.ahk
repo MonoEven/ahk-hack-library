@@ -1,15 +1,24 @@
 #SingleInstance Force
+#NoTrayIcon
 #Include ahk_hack_single.ahk
 
-test := "
+MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
+MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
+MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))") ; explicit subprocess
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7, in-process
+MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0, in-process
+MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5, in-process
+
+script := "
 (
 add(a, b) {
     return a + b
 }
 add(1, 2)
 )"
+MsgBox AhkMagic.EvalScript(script)          ; 3, in-process
 
-classTest := "
+classScript := "
 (
 class Point {
     x := 0
@@ -21,9 +30,5 @@ class Point {
 }
 Point(1, 2).x
 )"
-
-MsgBox AhkMagic.EvalScript(test)              ; 3, in-process
-MsgBox AhkMagic.EvalScript(classTest)         ; 1, class instance in-process
-MsgBox AhkMagic.EvalNative("1 + 2 * 3")       ; 7, in-process
-MsgBox AhkMagic.Eval("StrLen(`"hello`")")     ; 5
-MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))") ; explicit subprocess
+MsgBox AhkMagic.EvalScript(classScript)     ; 1, class loaded and used in-process
+MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2, class loaded and used in-process
