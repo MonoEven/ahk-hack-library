@@ -133,6 +133,12 @@ MsgBox AhkMagic.EvalScript(classScript)     ; 1, class loaded and used in-proces
 
 [c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls the running interpreter's own [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c] functions directly in this process. It currently covers literals, operators, global variables, and function calls on all verified builds. Unsupported syntax fails loudly instead of degrading silently. [c]Eval[/c] tries the in-process pipeline first and uses [c]EvalSubprocess[/c] for expressions it cannot evaluate yet. [c]EvalScript[/c] no longer writes a temp [c].ahk[/c] file: the text is encoded as UTF-16, a [c]TextMem[/c]-compatible [c]TextStream[/c] is built in a scratch buffer, and it is passed directly to the interpreter's own [c]LoadIncludedFile(TextStream*)[/c], so function definitions and class definitions work in-process. [c]OpenIncludedFile[/c] now serves only as a fingerprint for locating [c]LoadIncludedFile[/c]. Every entry point and global used by the pipeline is located at runtime: [c]PreparseExpressions[/c], [c]PreprocessLocalVars[/c], [c]OpenIncludedFile[/c], [c]LoadIncludedFile(TextStream*)[/c], [c]g[/c], and [c]Line::sSourceFileCount[/c]. There is no per-version table: the [c]Script[/c]/[c]UserFunc[/c]/[c]TextStream[/c] layout offsets are discovered at runtime by a one-time probe. Verified on 2.1-alpha.30, 2.0.26, 2.0.0, and 2.0-beta.10.
 
+[c]Why this enables Eval:[/c] AutoHotkey does not evaluate expression strings directly. During script load, [c]Line::ExpressionToPostfix[/c] compiles each expression into a postfix [c]ExprTokenType[/c] array, [c]PreparseExpressions[/c] pre-compiles expression lines, [c]PreprocessLocalVars[/c] binds local variables, and [c]Line::ExpandExpression[/c] later evaluates the postfix. [c]EvalNative()[/c] builds the same temporary [c]Line[/c]/[c]ArgStruct[/c] and calls those functions, so it reuses the interpreter's own grammar and evaluation semantics. [c]EvalScript()[/c] feeds the same [c]LoadIncludedFile(TextStream*, int)[/c] pipeline through an in-memory [c]TextStream[/c]; the parser does not know whether the text came from disk or from a synthetic stream, which is why function and class definitions work in-process.
+
+[c]Why dynamic discovery works:[/c] stable error strings are referenced with RIP-relative [c]lea[/c] instructions in every build, so scanning those cross-references and walking back to the prologue yields function addresses. Globals are materialized the same way. Layout offsets are revealed by the running interpreter itself: a one-time probe loads a throwaway function, diffs the live [c]Script[/c] object for [c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c], walks the new function's line chain for [c]mJumpLine[/c], and reads parser-state anchors from [c]LoadIncludedFile[/c]'s [c]cmp[/c] prologue. The [c]TextStream[/c] object is built with both [c]mData[/c] regions populated, so no layout choice is needed.
+
+[c]Multi-version compatibility:[/c] the four-version matrix runs the same blob on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30. Stable [c]Line[/c]/[c]ArgStruct[/c]/token offsets have not changed in those builds; everything that changed is discovered at runtime. An unrecognized layout makes the probe throw instead of guessing, which keeps failures explicit and isolated.
+
 [color=#BF4000][b]4.4 Rebuilding the machine code[/b][/color]
 
 Requires LLVM clang (locally at [c]F:\Tech\LLVM\bin\clang.exe[/c]):
@@ -159,6 +165,8 @@ Verified on 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
 [b]5. Security[/b]
 
 [color=#BF4000]This library allocates executable memory, executes machine code, and reads or writes interpreter internals directly. Use it with reverse-engineering research discipline.[/color]
+
+[c]Is Eval safe? No.[/c] [c]Eval[/c], [c]EvalNative[/c], and [c]EvalScript[/c] execute arbitrary code in the current process with the same privileges as the host script. They are not sandboxes. The in-process path also fabricates interpreter objects, so a wrong layout or state-save mistake can corrupt memory instead of raising a clean exception.
 
 Operations fall into three categories:
 

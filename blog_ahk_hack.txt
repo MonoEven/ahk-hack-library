@@ -4,25 +4,25 @@
 
 在线双语版本：[url=https://monoeven.github.io/ahk-hack-library/]https://monoeven.github.io/ahk-hack-library/[/url]
 
-这个库解决一个问题：让 AutoHotkey 脚本在运行时读取正在运行的 [c]AutoHotkey.exe[/c]，定位解释器内部表，并在此基础上提供原生数组构造、内置函数重定向和表达式求值。实现方式是往一个 AHK v2 文件里嵌入 x64 机器码，运行时解析 PE 结构并扫描内部结构。
+这个库解决一个问题：让 AutoHotkey 脚本在运行时读取正在运行的[c]AutoHotkey.exe[/c]，定位解释器内部表，并在此基础上提供原生数组构造、内置函数重定向和表达式求值。实现方式是往一个 AHK v2 文件里嵌入 x64 机器码，运行时解析 PE 结构并扫描内部结构。
 
 
 [b]1. 运行时扫描[/b]
 
-AutoHotkey 2 解释器在 [c].data[/c] 段维护几张关键表：
+AutoHotkey 2 解释器在[c].data[/c]段维护几张关键表：
 
-- [c]g_BIF[/c]：内置脚本函数表（[c]Abs[/c]、[c]Sin[/c] 等），x64 下每条记录 0x20 字节；
-- [c]sMdFunc[/c]：带类型签名的原生函数表（[c]MsgBox[/c]、[c]WinActivate[/c] 等），0x28 字节；
-- [c]g_BIV_A[/c]：以 [c]A_[/c] 开头的内置变量表（[c]A_AhkPath[/c]、[c]A_YYYY[/c] 等），0x18 字节。
+- [c]g_BIF[/c]：内置脚本函数表（[c]Abs[/c]、[c]Sin[/c]等），x64 下每条记录 0x20 字节；
+- [c]sMdFunc[/c]：带类型签名的原生函数表（[c]MsgBox[/c]、[c]WinActivate[/c]等），0x28 字节；
+- [c]g_BIV_A[/c]：以[c]A_[/c]开头的内置变量表（[c]A_AhkPath[/c]、[c]A_YYYY[/c]等），0x18 字节。
 
-定位分两步。先解析 DOS 头、NT 头、节表，拿到各段内存范围；再检查 [c].data[/c] 和 [c].rdata[/c] 里的指针槽，看是否满足三个条件：名字指针指向 UTF-16 字符串、函数指针落在 [c].text[/c]、表内记录按字典序排列。满足条件的连续记录区就是目标表，随后读出每条记录的 RVA、参数个数和 ID。
+定位分两步。先解析 DOS 头、NT 头、节表，拿到各段内存范围；再检查[c].data[/c]和[c].rdata[/c]里的指针槽，看是否满足三个条件：名字指针指向 UTF-16 字符串、函数指针落在[c].text[/c]、表内记录按字典序排列。满足条件的连续记录区就是目标表，随后读出每条记录的 RVA、参数个数和 ID。
 
 这套逻辑写进机器码后，同一段代码可以跑在 2.0-beta、2.0.0、2.0.26、2.1-alpha 上。通用化之后还能扫任意 DLL/EXE 的导出表，枚举具名导出、RVA 和序号。
 
 
 [b]2. 机器码生成[/b]
 
-机器码用 C 编写，经 clang 编译后从 COFF 对象的 [c].text[/c] 段提取，再以十六进制字符串嵌进 AHK：
+机器码用 C 编写，经 clang 编译后从 COFF 对象的[c].text[/c]段提取，再以十六进制字符串嵌进 AHK：
 
 [codebox=text file=mcode-build]
 clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
@@ -30,7 +30,7 @@ clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
   -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
 [/codebox]
 
-构建脚本会检查 [c].text[/c] 的重定位，只要有重定位逃出代码块就拒绝嵌入。这样保证嵌入结果是自包含、位置无关的机器码。
+构建脚本会检查[c].text[/c]的重定位，只要有重定位逃出代码块就拒绝嵌入。这样保证嵌入结果是自包含、位置无关的机器码。
 
 机器码部分包含五块：
 
@@ -38,12 +38,12 @@ clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
 - [c]export_scanner.c[/c]：通用 PE 导出表扫描；
 - [c]inproc_eval.c[/c]：进程内表达式求值；
 - [c]internal_locator.c[/c]：EvalNative 内部符号的运行时发现；
-- [c]mem_script.c[/c]：EvalScript 的内存 [c]TextStream[/c]。
+- [c]mem_script.c[/c]：EvalScript 的内存[c]TextStream[/c]。
 
 
 [b]3. 单文件核心[/b]
 
-扫描核心被提炼成一个文件：[c]ahk_hack_single.ahk[/c]。它包含 [c]MCode()[/c]、[c]AhkMagic[/c] 和全部嵌入的机器码，复制到哪里都能用。仓库里另有一个 [c]ahk_hack_demo.ahk[/c]，直接运行就能看到扫描摘要、内置函数替换和 Eval 的效果。
+扫描核心被提炼成一个文件：[c]ahk_hack_single.ahk[/c]。它包含[c]MCode()[/c]、[c]AhkMagic[/c]和全部嵌入的机器码，复制到哪里都能用。仓库里另有一个[c]ahk_hack_demo.ahk[/c]，直接运行就能看到扫描摘要、内置函数替换和 Eval 的效果。
 
 库结构：
 
@@ -93,7 +93,7 @@ AhkMagic.RestoreBifObject(Abs, state)
 AhkMagic.RestoreBif("Abs", old)
 [/codebox]
 
-表指针替换影响后续动态查找；深替换直接改写已解析函数对象的 C 函数指针，所以脚本里写死的 [c]Abs(1)[/c] 也会变成 [c]sin(1)[/c]，还原后恢复为 1。
+表指针替换影响后续动态查找；深替换直接改写已解析函数对象的 C 函数指针，所以脚本里写死的[c]Abs(1)[/c]也会变成[c]sin(1)[/c]，还原后恢复为 1。
 
 [color=#BF4000][b]4.3 表达式 Eval[/b][/color]
 
@@ -131,11 +131,17 @@ Point(1, 2).x
 MsgBox AhkMagic.EvalScript(classScript)     ; 1，类定义并实例化
 [/codebox]
 
-[c]EvalNative[/c] 会构造临时 [c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的 [c]ExpressionToPostfix[/c] 和 [c]ExpandExpression[/c]。已验证的四个版本上都支持 字面量、运算符、全局变量与函数调用；不支持的语法会直接报错而不是悄悄降级。 [c]Eval[/c] 会先走同进程管线，遇到暂不支持的表达式再使用 [c]EvalSubprocess[/c]。 [c]EvalScript[/c] 不再写临时 [c].ahk[/c] 文件：文本编码成 UTF-16 后， 在 scratch 缓冲区里构造一个 [c]TextMem[/c] 兼容的 [c]TextStream[/c]， 直接交给解释器自己的 [c]LoadIncludedFile(TextStream*)[/c] 加载，因此函数 定义和类定义都能直接生效。[c]OpenIncludedFile[/c] 现在只作为定位 [c]LoadIncludedFile[/c] 的指纹。管线的全部入口和全局量 （[c]PreparseExpressions[/c]、[c]PreprocessLocalVars[/c]、 [c]OpenIncludedFile[/c]、[c]LoadIncludedFile(TextStream*)[/c]、[c]g[/c]、 [c]Line::sSourceFileCount[/c]）都在运行时定位；[c]Script[/c]/ [c]UserFunc[/c]/[c]TextStream[/c] 的布局偏移也由一次性探针在运行时发现， 不再有按版本维护的表。 2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10 四个版本均已验证。
+[c]EvalNative[/c]会构造临时[c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的[c]ExpressionToPostfix[/c]和[c]ExpandExpression[/c]。已验证的四个版本上都支持字面量、运算符、全局变量与函数调用；不支持的语法会直接报错而不是悄悄降级。[c]Eval[/c]会先走同进程管线，遇到暂不支持的表达式再使用[c]EvalSubprocess[/c]。[c]EvalScript[/c]不再写临时[c].ahk[/c]文件：文本编码成 UTF-16 后，在 scratch 缓冲区里构造一个[c]TextMem[/c]兼容的[c]TextStream[/c]，直接交给解释器自己的[c]LoadIncludedFile(TextStream*)[/c]加载，因此函数定义和类定义都能直接生效。[c]OpenIncludedFile[/c]现在只作为定位[c]LoadIncludedFile[/c]的指纹。管线的全部入口和全局量（[c]PreparseExpressions[/c]、[c]PreprocessLocalVars[/c]、[c]OpenIncludedFile[/c]、[c]LoadIncludedFile(TextStream*)[/c]、[c]g[/c]、[c]Line::sSourceFileCount[/c]）都在运行时定位；[c]Script[/c]/ [c]UserFunc[/c]/[c]TextStream[/c]的布局偏移也由一次性探针在运行时发现，不再有按版本维护的表。 2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10 四个版本均已验证。
+
+[c]为什么这样就能 Eval：[/c]AutoHotkey 不会直接求值表达式字符串。脚本加载时，[c]Line::ExpressionToPostfix[/c]把每个表达式编译成后缀[c]ExprTokenType[/c]数组，[c]PreparseExpressions[/c]在加载期预编译表达式行，[c]PreprocessLocalVars[/c]绑定局部变量，最后[c]Line::ExpandExpression[/c]执行后缀。[c]EvalNative()[/c]构造同样的临时[c]Line[/c]/[c]ArgStruct[/c]并调用这些函数，所以复用的是解释器自己的语法和求值语义。[c]EvalScript()[/c]则通过内存[c]TextStream[/c]喂给同一条[c]LoadIncludedFile(TextStream*, int)[/c]管线；解析器不知道文本来自磁盘还是合成流，这就是函数和类能在进程内生效的原因。
+
+[c]为什么能动态获取：[/c]稳定错误字符串在每次构建里都由 RIP 相对的[c]lea[/c]指令引用，扫描这些交叉引用并回退到函数开头就能得到函数地址；全局变量也用同样方式物化。布局偏移则让运行中的解释器自己暴露：一次性探针加载一个临时函数，diff 存活[c]Script[/c]对象得到[c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c]，沿新函数的行链找到[c]mJumpLine[/c]，再从[c]LoadIncludedFile[/c]的[c]cmp[/c] prologue 读取解析器状态锚点。[c]TextStream[/c]对象同时填充两个[c]mData[/c]区域，不需要选择布局。
+
+[c]多版本兼容：[/c]四版本矩阵用同一份 blob 跑 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30。稳定偏移在这些构建中没有变化；变化的都改为运行时发现。无法识别的布局会让探针抛错，而不是猜一个偏移继续，失败因此是显式且隔离的。
 
 [color=#BF4000][b]4.4 重新构建机器码[/b][/color]
 
-需要 LLVM clang（本机在 [c]F:\Tech\LLVM\bin\clang.exe[/c]）：
+需要 LLVM clang（本机在[c]F:\Tech\LLVM\bin\clang.exe[/c]）：
 
 [codebox=text file=rebuild]
 python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk
@@ -160,17 +166,19 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 [color=#BF4000]这个库会在你的进程里分配可执行内存、执行机器码，并直接读写解释器内部结构。请按逆向工程研究工具的标准来使用。[/color]
 
+[c]Eval 安全吗？不安全。[/c][c]Eval[/c]、[c]EvalNative[/c]、[c]EvalScript[/c]会在当前进程以宿主脚本相同的权限执行任意代码，不是沙箱。进程内路径还会伪造解释器对象，布局错误或状态保存失误可能直接损坏内存，而不是抛出一个干净的异常。
+
 操作分三类：
 
 - 只读：[c]Init / Summary / BifRva / BifAddr / ScanExports[/c]，不修改进程状态，主要风险在兼容性；
-- 修改：[c]PatchBif / RestoreBif[/c]，直接改内存里的内部表，写错会崩溃。开发中实际遇到过 [c]0xC0000374[/c]（堆损坏）；
-- 执行：[c]Eval[/c] 和 [c]EvalNative[/c]，等价于运行任意脚本。
+- 修改：[c]PatchBif / RestoreBif[/c]，直接改内存里的内部表，写错会崩溃。开发中实际遇到过[c]0xC0000374[/c]（堆损坏）；
+- 执行：[c]Eval[/c]和[c]EvalNative[/c]，等价于运行任意脚本。
 
 需要留意的风险：
 
 - 可执行内存分配和内部函数调用可能被杀毒软件或 EDR 标记；
 - 全部函数入口、全局量和布局偏移均在运行时定位，没有按版本表；仍需在目标 exe 上跑测试确认；
-- [c]PatchBif[/c] 用完必须还原，不要长期保留；
+- [c]PatchBif[/c]用完必须还原，不要长期保留；
 - 不要 eval 未受信任的输入；
 - 32 位版本会显式报错。
 
@@ -181,16 +189,16 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 2026-08-11：
 
-- 扫描核心提炼成单文件 [c]ahk_hack_single.ahk[/c]，并附带可运行的 [c]ahk_hack_demo.ahk[/c]；
-- 新增 [c]EvalNative[/c]，基于解释器自身的 [c]ExpressionToPostfix[/c]/[c]ExpandExpression[/c] 管线实现同进程表达式求值；
+- 扫描核心提炼成单文件[c]ahk_hack_single.ahk[/c]，并附带可运行的[c]ahk_hack_demo.ahk[/c]；
+- 新增[c]EvalNative[/c]，基于解释器自身的[c]ExpressionToPostfix[/c]/[c]ExpandExpression[/c]管线实现同进程表达式求值；
 - 修复可选集成层依赖第三方结构的硬编码偏移，改用运行时布局发现与原生填充接口。
 
 
 [b]7. 已知限制[/b]
 
 - 机器码块只支持 x64；
-- [c]EvalNative()[/c] 通过解释器内部的同进程表达式管线执行，已验证的四个版本上支持字面量、运算符、全局变量与函数调用。[c]Eval()[/c] 仍是任意表达式的子进程兜底；
-- [c]PatchBif()[/c] 对已经缓存的函数对象不追溯生效；
+- [c]EvalNative()[/c]通过解释器内部的同进程表达式管线执行，已验证的四个版本上支持字面量、运算符、全局变量与函数调用。[c]Eval()[/c]仍是任意表达式的子进程兜底；
+- [c]PatchBif()[/c]对已经缓存的函数对象不追溯生效；
 - 原生构造依赖源码布局或运行时布局发现，跨版本使用前要验证。
 
 

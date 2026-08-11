@@ -173,6 +173,8 @@ secTable := base + peOff + 24 + optSize</code></pre>
       <section id="evalnative">
         <h2>5. EvalNative：进程内表达式求值</h2>
         <p><code>EvalNative()</code> 分配一块 scratch 缓冲区，构造临时 <code>Line</code> 和 <code>ArgStruct</code>，然后原地调用解释器的表达式管线。整个过程不启动子进程，表达式能直接看到调用者的全局变量表和模块状态。</p>
+        <h3>5.1 为什么这样就能 Eval</h3>
+        <p>AutoHotkey 不会直接求值一段表达式字符串。脚本加载时，每个表达式行会由 <code>Line::ExpressionToPostfix</code> 编译成后缀 <code>ExprTokenType</code> 数组，解析变量和函数引用，之后由 <code>Line::ExpandExpression</code> 执行。<code>EvalNative()</code> 构造的临时 <code>Line</code>/<code>ArgStruct</code> 与解析器会生成的完全一致，然后调用同一组函数。结果不是重新实现一遍 AHK 语义，而是让解释器自己的表达式管线运行在一条合成行上。运算符优先级、字符串转义、内置函数调用和全局变量解析都与编译后的脚本行完全一致。</p>
         <p>第一步是定位函数。库在 <code>.text</code> 里搜索对两个稳定错误字符串 <code>"Missing operand."</code> 和 <code>"Error evaluating expression."</code> 的 RIP 相对引用，再回退到所在函数开头，得到 <code>ExpressionToPostfix</code> 和 <code>ExpandExpression</code>。</p>
         <p>其余支撑地址由第二个机器码定位器发现：</p>
         <ul>
@@ -197,7 +199,10 @@ MsgBox AhkMagic.EvalNative("myVar + 1")          ; 43</code></pre>
       </section>
 
       <section id="evalscript">
-        <h2>6. EvalScript：长文本、函数与类</h2>
+        <h2>6. EvalScript：解析器框架与内存加载</h2>
+        <h3>6.1 AutoHotkey 如何解析脚本</h3>
+        <p>脚本加载是一条管线。<code>Script::LoadFromFile</code> 打开主文件；<code>OpenIncludedFile</code> 创建 <code>TextStream</code>；<code>LoadIncludedFile(TextStream*, int)</code> 通过 <code>GetLine</code>/<code>GetLineContinuation</code> 逐行读取，分类每行（指令、热键、标签、类、表达式），再通过 <code>AddLine</code>/<code>ParseAndAddLine</code> 创建 <code>Line</code> 对象。表达式行由 <code>ExpressionToPostfix</code> 编译成 <code>ExprTokenType</code> 数组；<code>PreparseExpressions</code> 在加载期预编译表达式行；<code>PreprocessLocalVars</code> 绑定函数体内的局部变量。函数定义注册到 <code>Script::mFuncs</code>，每个 <code>UserFunc</code> 保存指向函数体的 <code>mJumpToLine</code> 指针。</p>
+        <p>这就是 <code>EvalScript()</code> 能在进程内定义函数和类的原因：它喂给 <code>LoadIncludedFile</code> 同一条管线，只是文本来自内存 <code>TextStream</code> 而不是磁盘文件。解析器不需要知道文本来自哪里。</p>
         <p>表达式求值本身无法定义函数或类。<code>EvalScript()</code> 改走解释器的 include 流程，但直接从内存加载：文本编码为 UTF-16，在 scratch 缓冲区里构造一个最小的 <code>TextMem</code> 兼容 <code>TextStream</code>，直接交给 <code>LoadIncludedFile(TextStream*)</code>，不创建临时 <code>.ahk</code> 文件。新行随后执行 <code>PreparseExpressions</code>，新函数执行 <code>PreprocessLocalVars</code>，最后用 <code>EvalNative()</code> 求值最后一个非声明行。</p>
         <p>这些入口都在运行时定位：</p>
         <ul>
@@ -267,6 +272,11 @@ MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
           </tbody>
         </table>
         <p>探针每个进程只运行一次，结束后恢复 Script 对象，不会留下隐藏测试函数。如果目标构建的布局不同，探针会显式失败，不会用猜出来的偏移继续。</p>
+        <h3>7.1 为什么这些方法能读取版本参数</h3>
+        <p>地址能被发现，是因为稳定字符串形成了稳定交叉引用。解释器在每次构建里都用 RIP 相对的 <code>lea</code> 指令引用 <code>"Missing operand."</code> 这类错误字符串；沿引用回退到函数开头就能找到所属函数。全局变量同理：编译器用 <code>lea reg,[rip+disp]</code> 取全局地址，统计并过滤这些引用就能得到 <code>g</code>、<code>gScript</code> 和当前行槽。</p>
+        <p>布局偏移是另一个问题。与其写死，探针让运行中的解释器自己暴露它们：加载一个一次性函数，diff 存活 Script 对象找到 <code>mFuncs</code>、<code>mFuncsCount</code>、<code>mLastLine</code>，再沿新函数的行链找到 <code>mJumpLine</code>。解析器状态锚点从 <code>LoadIncludedFile</code> prologue 里的 <code>cmp</code> 指令读取。<code>TextStream</code> 布局干脆不做选择：两个 <code>mData</code> 区域同时填充，同一个对象在两种布局下都能工作。这些方法依赖的是解释器的结构不变量，不是按版本写死的魔数。</p>
+        <h3>7.2 多版本兼容</h3>
+        <p>兼容性是能被测试证明的结论，不是假设。四版本矩阵用同一份 blob 跑 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30。<code>Line</code>/<code>ArgStruct</code>/token 这些稳定偏移在这些构建中没有变化；变化的都改为运行时发现。如果未来某个构建改了无法识别的布局，探针或定位器会直接抛错，而不是带着猜出来的偏移继续。这是设计的失败模式：显式、隔离、容易调试。</p>
         <p>可选 cnumpy 桥接把同一思路用在 AHK <code>Array</code> 对象上。<code>AhkLayout</code> 通过 diff 存活对象发现 <code>mItem</code>、<code>mLength</code>、<code>mCapacity</code> 和 <code>Variant</code> 布局，再用第二组独立探针交叉验证。</p>
       </section>
 
@@ -417,6 +427,8 @@ try {
 
       <section id="security">
         <h2>11. 安全与使用规则</h2>
+        <h3>11.1 Eval 安全吗</h3>
+        <p>不安全。<code>Eval</code>、<code>EvalNative</code>、<code>EvalScript</code> 会在当前进程里以宿主脚本相同的权限执行任意代码，不是沙箱。进程内路径还会伪造解释器对象，布局错误或状态保存失误可能直接损坏内存，而不是抛出一个干净的异常。请把每一个被求值的字符串都当作拥有完整进程权限的脚本。</p>
         <blockquote class="warn">这个库会分配可执行内存、执行机器码，并直接读写解释器内部结构。请按逆向工程研究工具的标准来使用。</blockquote>
         <p>操作分三类：</p>
         <ul>

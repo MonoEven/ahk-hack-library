@@ -173,6 +173,8 @@ secTable := base + peOff + 24 + optSize</code></pre>
       <section id="evalnative">
         <h2>5. EvalNative: in-process expression evaluation</h2>
         <p><code>EvalNative()</code> allocates a scratch buffer, builds a temporary <code>Line</code> and <code>ArgStruct</code>, and calls the interpreter's expression pipeline in place. No child process is involved, so the expression resolves against the caller's global variable table and module state.</p>
+        <h3>5.1 Why this enables Eval</h3>
+        <p>AutoHotkey does not evaluate an expression string directly. During script load, each expression line is compiled by <code>Line::ExpressionToPostfix</code> into a postfix <code>ExprTokenType</code> array, variables and functions are resolved, and <code>Line::ExpandExpression</code> later evaluates that postfix. <code>EvalNative()</code> constructs the same temporary <code>Line</code>/<code>ArgStruct</code> the parser would have produced, then calls those same functions. The result is not a reimplementation of AHK semantics; it is the interpreter's own expression pipeline running on a synthetic line. Operator precedence, string escapes, built-in calls, and global variable resolution are identical to a compiled script line.</p>
         <p>The first step is locating the functions. The library scans <code>.text</code> for RIP-relative references to two stable error strings, <code>"Missing operand."</code> and <code>"Error evaluating expression."</code>, then walks backward to the enclosing function starts. Those functions are <code>ExpressionToPostfix</code> and <code>ExpandExpression</code>.</p>
         <p>Supporting addresses come from a second machine-code locator:</p>
         <ul>
@@ -197,7 +199,10 @@ MsgBox AhkMagic.EvalNative("myVar + 1")          ; 43</code></pre>
       </section>
 
       <section id="evalscript">
-        <h2>6. EvalScript: long text, functions, and classes</h2>
+        <h2>6. EvalScript: the parser framework and in-memory loading</h2>
+        <h3>6.1 How AutoHotkey parses scripts</h3>
+        <p>Script loading is a pipeline. <code>Script::LoadFromFile</code> opens the main file; <code>OpenIncludedFile</code> creates a <code>TextStream</code>; <code>LoadIncludedFile(TextStream*, int)</code> reads lines through <code>GetLine</code>/<code>GetLineContinuation</code>, classifies each line (directive, hotkey, label, class, expression), and creates <code>Line</code> objects through <code>AddLine</code>/<code>ParseAndAddLine</code>. Expression lines are compiled by <code>ExpressionToPostfix</code> into <code>ExprTokenType</code> arrays; <code>PreparseExpressions</code> pre-compiles expression lines at load time; <code>PreprocessLocalVars</code> binds local variables inside function bodies. Function definitions are registered in <code>Script::mFuncs</code>, and each <code>UserFunc</code> keeps a <code>mJumpToLine</code> pointer to its body.</p>
+        <p>This framework is why <code>EvalScript()</code> can define functions and classes in-process: it feeds the same <code>LoadIncludedFile</code> pipeline, from a memory <code>TextStream</code> instead of a file. The parser does not know whether the text came from disk or from a synthetic stream.</p>
         <p>Expression evaluation cannot define functions or classes. <code>EvalScript()</code> uses the interpreter's include machinery directly from memory: the text is encoded as UTF-16, a minimal <code>TextMem</code>-compatible <code>TextStream</code> is built in a scratch buffer, and it is passed straight to <code>LoadIncludedFile(TextStream*)</code>. No temporary <code>.ahk</code> file is created. New lines run through <code>PreparseExpressions</code>, new functions through <code>PreprocessLocalVars</code>, and the last non-declaration line is evaluated with <code>EvalNative()</code>.</p>
         <p>Each entry point is located at runtime:</p>
         <ul>
@@ -267,6 +272,11 @@ MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
           </tbody>
         </table>
         <p>The probe runs once per process and restores the Script object afterwards, so it does not leave a hidden test function behind. A build whose layout differs will make the probe fail explicitly instead of falling back to a guessed offset.</p>
+        <h3>7.1 Why these methods can read version parameters</h3>
+        <p>Addresses are discoverable because stable strings create stable cross-references. The interpreter references error strings such as <code>"Missing operand."</code> with RIP-relative <code>lea</code> instructions in every build; the function that owns that reference can be found by walking back to the prologue. Global variables are similar: the compiler materializes their addresses with <code>lea reg,[rip+disp]</code>, so counting and filtering those references yields <code>g</code>, <code>gScript</code>, and the current-line slot.</p>
+        <p>Layout offsets are a different problem. Instead of hardcoding them, the probe makes the running interpreter reveal them: load a throwaway function, diff the live <code>Script</code> object to find <code>mFuncs</code>, <code>mFuncsCount</code>, and <code>mLastLine</code>, then walk the new function's line chain to find <code>mJumpLine</code>. Parser-state anchors are read from the <code>cmp</code> instructions in the <code>LoadIncludedFile</code> prologue. The <code>TextStream</code> layout is handled without choosing at all: both <code>mData</code> regions are populated, so the same object works for either layout. These techniques rely on structural invariants of the interpreter, not on per-version magic numbers.</p>
+        <h3>7.2 Multi-version compatibility</h3>
+        <p>Compatibility is a testable claim, not an assumption. The four-version matrix runs the same blob on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30. Stable offsets such as <code>Line</code>/<code>ArgStruct</code>/token layout have not changed in those builds; everything that did change is discovered at runtime. If a future build changes a layout in an unrecognized way, the probe or locator throws instead of proceeding with a guessed offset. That is the intended failure mode: explicit, isolated, and easy to debug.</p>
         <p>The optional cnumpy bridge applies the same idea to AHK <code>Array</code> objects. <code>AhkLayout</code> discovers <code>mItem</code>, <code>mLength</code>, <code>mCapacity</code>, and the <code>Variant</code> layout by diffing live objects, then cross-validates with a second independent probe set.</p>
       </section>
 
@@ -417,6 +427,8 @@ try {
 
       <section id="security">
         <h2>11. Security and usage rules</h2>
+        <h3>11.1 Is Eval safe?</h3>
+        <p>No. <code>Eval</code>, <code>EvalNative</code>, and <code>EvalScript</code> execute arbitrary code in the current process with the same privileges as the host script. They are not sandboxes. The in-process path also fabricates interpreter objects, so a wrong layout or a state-save mistake can corrupt memory instead of raising a clean exception. Treat every evaluated string as a script with full access to the host process.</p>
         <blockquote class="warn">This library allocates executable memory, executes machine code, and reads or writes interpreter internals directly. Treat it as a reverse-engineering research tool.</blockquote>
         <p>Operations fall into three categories:</p>
         <ul>
