@@ -99,11 +99,13 @@ MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
 MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7，同进程
 MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0，同进程
+MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5，同进程
 [/codebox]
 
 [c]EvalNative[/c] 会构造临时 [c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的
-[c]ExpressionToPostfix[/c] 和 [c]ExpandExpression[/c]。当前支持字面量与运算符表达式；
-变量/函数 deref 尚未接入，遇到会直接报错而不是悄悄降级。[c]Eval[/c] 仍保留为通用兜底。
+[c]ExpressionToPostfix[/c] 和 [c]ExpandExpression[/c]。稳定的 2.0.x 版本上支持
+字面量、运算符、全局变量与函数调用；不支持的语法会直接报错而不是悄悄降级。
+[c]Eval[/c] 仍保留为通用兜底。
 
 [color=#BF4000][b]4.4 重新构建机器码[/b][/color]
 
@@ -122,7 +124,8 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 [/codebox]
 
-已验证版本：2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10（均为 64 位）。
+扫描层已验证：2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10（均为 64 位）。
+[c]EvalNative[/c] 已验证：2.0.26、2.0.0、2.0-beta.10。
 
 
 [b]5. 安全性[/b]
@@ -158,14 +161,14 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 [b]7. 已知限制[/b]
 
 - 机器码块只支持 x64；
-- [c]EvalNative()[/c] 通过解释器内部的同进程表达式管线执行，当前覆盖字面量与运算符表达式；变量/函数 deref 尚未接入，遇到会直接报错。[c]Eval()[/c] 仍是任意表达式的子进程兜底；
+- [c]EvalNative()[/c] 通过解释器内部的同进程表达式管线执行，稳定的 2.0.x 版本上支持字面量、运算符、全局变量与函数调用；2.1-alpha.30 会显式报“不支持版本”。[c]Eval()[/c] 仍是任意表达式的子进程兜底；
 - [c]PatchBif()[/c] 对已经缓存的函数对象不追溯生效；
 - 原生构造依赖源码布局或运行时布局发现，跨版本使用前要验证。
 
 
 [b]8. 写在后面[/b]
 
-项目最后落在扫描上：把 exe 当作程序自身可以读取的结构化文档，先扫描出内部地图，再在地图上做实验。同进程 eval 目前已经支持字面量与运算符表达式；后续想做的方向包括给 [c]EvalNative[/c] 接入变量/函数 deref、自动生成 DLL 绑定，以及把更多解释器内部结构加进扫描范围。
+项目最后落在扫描上：把 exe 当作程序自身可以读取的结构化文档，先扫描出内部地图，再在地图上做实验。同进程 eval 目前已在稳定的 2.0.x 上支持字面量、运算符、全局变量与函数调用；后续想做的方向包括稳定 2.1-alpha.30 的 [c]EvalNative[/c]、自动生成 DLL 绑定，以及把更多解释器内部结构加进扫描范围。
 
 
 
@@ -488,11 +491,13 @@ class AhkMagic {
             "Int", 1,
             "Ptr", 0,
             "Ptr", 0,
+            "Ptr", AhkMagic.gScript,
+            "Ptr", AhkMagic.finalizeExpr,
+            "Ptr", AhkMagic.findOrAddVar,
+            "Ptr", AhkMagic.crtFree,
+            "Ptr", AhkMagic.freeInfix,
             "Int"
         )
-        infix := NumGet(out, 208, "Ptr")
-        if infix
-            DllCall(AhkMagic.crtFree, "Ptr", infix)
         if rc != 0
             throw Error("EvalNative harness failed with rc=" rc)
         status := NumGet(out, 0, "UInt")

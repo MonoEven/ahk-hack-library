@@ -101,14 +101,16 @@ MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
 MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7, in-process
 MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0, in-process
+MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5, in-process
 [/codebox]
 
 [c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls
 the running interpreter's own [c]ExpressionToPostfix[/c] and
 [c]ExpandExpression[/c] functions directly in this process. It currently
-covers literal and operator expressions; variable and function derefs are
-not wired yet and fail loudly instead of degrading silently. [c]Eval[/c]
-remains the general fallback for arbitrary expression strings.
+covers literals, operators, global variables, and function calls on the
+stable 2.0.x line. Unsupported syntax fails loudly instead of degrading
+silently. [c]Eval[/c] remains the general fallback for arbitrary expression
+strings.
 
 [color=#BF4000][b]4.4 Rebuilding the machine code[/b][/color]
 
@@ -127,7 +129,8 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 [/codebox]
 
-Verified versions: 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
+Scanner verified on 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
+[c]EvalNative[/c] is verified on 2.0.26, 2.0.0, and 2.0-beta.10.
 
 
 [b]5. Security[/b]
@@ -167,16 +170,16 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 
 - The machine-code blocks are x64 only;
 - [c]EvalNative()[/c] runs the interpreter's in-process expression pipeline
-  for literal and operator expressions; variable/function derefs are not
-  wired yet and fail loudly. [c]Eval()[/c] remains the subprocess fallback
-  for arbitrary expression strings;
+  for literals, operators, global variables, and function calls on stable
+  2.0.x builds. 2.1-alpha.30 raises an explicit unsupported-version error;
+  [c]Eval()[/c] remains the subprocess fallback for arbitrary expressions;
 - [c]PatchBif()[/c] does not retroactively affect already-cached function objects;
 - native construction relies on source-derived or runtime-discovered layout, so cross-version verification is mandatory.
 
 
 [b]8. Closing[/b]
 
-The project ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. In-process eval now works for literal/operator expressions. Future directions include wiring variable/function derefs into [c]EvalNative[/c], automatic DLL binding generation, and expanding the scan to more interpreter internals.
+The project ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. In-process eval now handles literals, operators, global variables, and function calls on stable 2.0.x builds. Future directions include stabilizing [c]EvalNative[/c] on 2.1-alpha.30, automatic DLL binding generation, and expanding the scan to more interpreter internals.
 
 
 
@@ -499,11 +502,13 @@ class AhkMagic {
             "Int", 1,
             "Ptr", 0,
             "Ptr", 0,
+            "Ptr", AhkMagic.gScript,
+            "Ptr", AhkMagic.finalizeExpr,
+            "Ptr", AhkMagic.findOrAddVar,
+            "Ptr", AhkMagic.crtFree,
+            "Ptr", AhkMagic.freeInfix,
             "Int"
         )
-        infix := NumGet(out, 208, "Ptr")
-        if infix
-            DllCall(AhkMagic.crtFree, "Ptr", infix)
         if rc != 0
             throw Error("EvalNative harness failed with rc=" rc)
         status := NumGet(out, 0, "UInt")

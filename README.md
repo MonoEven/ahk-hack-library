@@ -104,6 +104,8 @@ AhkMagic.RestoreBif("Abs", old)
 
 ```ahk
 MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7, in-process
+MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5, in-process
+MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)") ; "bc", in-process
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5, subprocess fallback
 ```
 
@@ -146,7 +148,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `PatchBif(name, newName)` / `RestoreBif(name, oldPtr)` | Temporarily redirect and restore a built-in |
 | `PatchBifObject(fnObj, newName)` / `RestoreBifObject(fnObj, state)` | Deep-redirect an already-resolved built-in so direct calls are affected |
 | `Eval(expr)` | Evaluates an expression string with the same interpreter |
-| `EvalNative(expr)` | Evaluates literals and operators through the interpreter's in-process expression pipeline |
+| `EvalNative(expr)` | Evaluates literals, operators, variables, and function calls through the interpreter's in-process expression pipeline |
 
 ### CnpBridge
 
@@ -200,8 +202,8 @@ Key risks:
   target exe first.
 - Never eval untrusted input. Never leave `PatchBif` enabled in production.
 - `EvalNative` builds a temporary `Line`/`ArgStruct` inside the interpreter.
-  It currently covers literal and operator expressions; variable/function
-  derefs are not wired yet and may fail loudly instead of degrading silently.
+  Variable/function derefs are resolved through the interpreter's own var
+  table; unsupported syntax fails loudly instead of degrading silently.
 - Never use `CnpView` after its owner reference is released.
 - Do not substitute external `Buffer` memory for the internal `mItem` of an
   `Array()`; it causes a double free.
@@ -233,9 +235,9 @@ the 100M measurement is the real figure.
 - AutoHotkey 2.0.0 (64-bit)
 - AutoHotkey 2.0-beta.10 (64-bit)
 
-`EvalNative` is verified on AutoHotkey 2.0.26 x64. Its internal function
-locators are fingerprint-based, but the temporary `Line`/`ArgStruct` layout
-is source-derived and may need verification on other builds.
+`EvalNative` is verified on AutoHotkey 2.0-beta.10, 2.0.0, and 2.0.26 x64.
+2.1-alpha.30 is supported by the scanner but not yet by `EvalNative`; it
+raises an explicit "version table missing" error instead of crashing.
 
 ## Project Layout
 
@@ -297,6 +299,9 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 # In-process expression eval
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
+
+# Per-version internal address probe
+& D:\...\AutoHotkey64.exe tests\version_probe.ahk
 
 # cnumpy integration, including 1D/2D/3D native construction
 & D:\...\AutoHotkey64.exe fork\cnumpy-ahk-bridge\tests\cnumpy_bridge.test.ahk
