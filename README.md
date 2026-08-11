@@ -238,6 +238,7 @@ lib/
 tools/
   build_mcode.py            compiles and embeds the machine code
   ahk_inspect.py            Python/PE cross-check analyzer
+  locate_internal_functions.py locates the internal expression parser/evaluator
 tests/                      core, export, and eval tests
 examples/                   export inventory and built-in probe demos
 fork/cnumpy-ahk-bridge/     cnumpy integration tests and benchmarks
@@ -258,6 +259,20 @@ python tools\build_mcode.py --embed-only --out lib\ahk_hack.ahk
 The build compiles all C sources under `lib/mcode/`, verifies that no
 relocation escapes the `.text` blob, and writes the machine code back into
 `lib/ahk_hack.ahk`.
+
+## Locating internal expression functions
+
+`tools/locate_internal_functions.py` finds the addresses of
+`Line::ExpressionToPostfix` and `Line::ExpandExpression` in a given
+AutoHotkey exe, using error-string fingerprints and RIP-relative xrefs:
+
+```powershell
+python tools\locate_internal_functions.py D:\...\AutoHotkey64.exe
+```
+
+These RVAs are the basis for a future in-process `Eval` harness that builds a
+temporary `Line`/`ArgStruct` and calls the interpreter's own compiler and
+evaluator, instead of launching a child process.
 
 ## Testing
 
