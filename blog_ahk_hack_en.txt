@@ -1,9 +1,8 @@
 [b]AutoHotkey Runtime Scanner (ahk-hack)[/b]
 
 Repository: [url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
-cnumpy practice integration: [url=https://github.com/MonoEven/cnumpy]https://github.com/MonoEven/cnumpy[/url]
 
-The project started from a simple idea: let AHK read the [c]AutoHotkey.exe[/c] that is running it, locate the interpreter's internal tables, and then experiment on those tables. The implementation embeds x64 machine code in an AutoHotkey v2 file, parses PE structures at runtime, and resolves the tables. cnumpy array conversion is the validation scenario for this scanning capability.
+This library solves one problem: let an AutoHotkey script read the [c]AutoHotkey.exe[/c] that is running it, locate the interpreter's internal tables, and then build on top of them with native array construction, built-in redirection, and expression evaluation. The implementation embeds x64 machine code in an AutoHotkey v2 file and scans PE structures at runtime.
 
 
 [b]1. Runtime scanning[/b]
@@ -16,7 +15,7 @@ The AutoHotkey 2 interpreter keeps several important tables in the [c].data[/c] 
 
 Locating a table takes two steps. First the scanner parses the DOS header, NT headers, and section table to get the memory range of each section. Then it checks pointer slots in [c].data[/c] and [c].rdata[/c] against three conditions: the name pointer resolves to a UTF-16 string, the function pointer lands in [c].text[/c], and the records are sorted alphabetically. The contiguous region that satisfies all three is the target table. After that, every entry's RVA, parameter counts, and ID are read out.
 
-Once this logic is in machine code, the same blob runs on 2.0-beta, 2.0.0, 2.0.26, and 2.1-alpha. The same approach was generalized to scan the export tables of arbitrary DLL/EXE modules, enumerating named exports, RVAs, and ordinals. The 1000+ exports of [c]cnumpy_ahk.dll[/c] are recognized this way.
+Once this logic is in machine code, the same blob runs on 2.0-beta, 2.0.0, 2.0.26, and 2.1-alpha. The same approach was generalized to scan the export tables of arbitrary DLL/EXE modules, enumerating named exports, RVAs, and ordinals.
 
 
 [b]2. How the machine code is made[/b]
@@ -43,7 +42,7 @@ The library ships four machine-code blocks:
 
 The scanning core is distilled into one file: [c]ahk_hack_single.ahk[/c]. It contains [c]MCode()[/c], [c]AhkMagic[/c], and all embedded machine code, so it can be copied anywhere and included directly. The repository also includes [c]ahk_hack_demo.ahk[/c], which runs a self-test showing the scan summary, built-in replacement, and Eval.
 
-Full library layout:
+Library layout:
 
 [codebox=text file=library layout]
 ahk_hack_single.ahk        single-file core
@@ -51,15 +50,11 @@ ahk_hack_demo.ahk          runnable demo
 lib/
   ahk_hack.ahk             library alias for the single-file core
   mcode/                   machine-code C sources
-  cnumpy/                  optional practice integration
-    init.ahk
-    ahk_layout.ahk         runtime AHK layout discovery
-    numpy.ahk
-    cnumpy_bridge.ahk      CnpBridge + CnpView
+  cnumpy/                  optional integration (see repo)
 tools/
   build_mcode.py           compiles and embeds the machine code
   ahk_inspect.py           Python/PE cross-check analyzer
-fork/cnumpy-ahk-bridge/    cnumpy integration tests and benchmarks
+tests/                     core, export scan, and eval tests
 [/codebox]
 
 
@@ -76,7 +71,7 @@ MsgBox AhkMagic.Summary()
 absRva  := AhkMagic.BifRva("Abs")
 absAddr := AhkMagic.BifAddr("Abs")
 
-hmod := DllCall("LoadLibraryW", "Str", "D:\path\cnumpy_ahk.dll", "Ptr")
+hmod := DllCall("LoadLibraryW", "Str", "D:\path\module.dll", "Ptr")
 exports := AhkMagic.ScanExports(hmod)
 MsgBox exports.Count
 [/codebox]
@@ -99,35 +94,7 @@ MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
 [/codebox]
 
-[color=#BF4000][b]4.4 Optional cnumpy integration[/b][/color]
-
-[codebox=autohotkey file=cnumpy integration usage]
-Numpy.DllPath := "D:\...\build\x64\Release\cnumpy_ahk.dll"
-#Include lib\cnumpy\init.ahk
-
-meta := CnpBridge.Metadata(arr)
-ahk  := CnpBridge.ToAhk(arr)
-fast := CnpBridge.ToAhkFast(arr)
-native := CnpBridge.ToAhkNative(arr)
-view := CnpBridge.View(arr)
-buf  := CnpBridge.ToBuffer(arr)
-
-back1 := CnpBridge.FromAhk(ahk, dtype)
-back2 := CnpBridge.FromAhkFast(ahk, dtype)
-back3 := CnpBridge.FromBuffer(buf, dtype)
-[/codebox]
-
-[color=#BF4000][b]4.5 Lifecycle and ownership[/b][/color]
-
-- Every conversion except [c]CnpView[/c] uses copy semantics; AHK and cnumpy each own their memory;
-- [c]CnpView[/c] is a zero-copy borrow that holds a strong reference to the owner [c]NdArray[/c]; the array is reclaimed only after both the view and the original reference are gone;
-- writes through the view require a writeable array ([c]CNP_ARRAY_WRITEABLE[/c]);
-- do not use [c]Ptr[/c] after the view is released;
-- native construction uses [c]Array().Capacity := n[/c] so the interpreter allocates [c]mItem[/c] itself; substituting an external Buffer causes a double free on exit.
-
-Full rules are in [c]fork/cnumpy-ahk-bridge/docs/lifecycle-and-ownership.md[/c].
-
-[color=#BF4000][b]4.6 Rebuilding the machine code[/b][/color]
+[color=#BF4000][b]4.4 Rebuilding the machine code[/b][/color]
 
 Requires LLVM clang (locally at [c]F:\Tech\LLVM\bin\clang.exe[/c]):
 
@@ -135,13 +102,12 @@ Requires LLVM clang (locally at [c]F:\Tech\LLVM\bin\clang.exe[/c]):
 python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk
 [/codebox]
 
-[color=#BF4000][b]4.7 Verification and tests[/b][/color]
+[color=#BF4000][b]4.5 Verification and tests[/b][/color]
 
 [codebox=text file=tests]
 python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
 & D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
-& D:\...\AutoHotkey64.exe fork\cnumpy-ahk-bridge\tests\cnumpy_bridge.test.ahk
 [/codebox]
 
 Verified versions: 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
@@ -153,8 +119,8 @@ Verified versions: 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
 
 Operations fall into three categories:
 
-- Read-only: [c]Init / Summary / BifRva / BifAddr / ScanExports / Metadata / CnpView reads[/c]. These do not modify process state; the main risk is compatibility;
-- Mutating: [c]PatchBif / RestoreBif / WriteRaw / CnpView.Set[/c]. These directly modify internal tables or data and can crash the interpreter if misused. During development this project hit [c]0xC0000374[/c] (heap corruption);
+- Read-only: [c]Init / Summary / BifRva / BifAddr / ScanExports[/c]. These do not modify process state; the main risk is compatibility;
+- Mutating: [c]PatchBif / RestoreBif[/c]. These directly modify internal tables and can crash the interpreter if misused. During development this project hit [c]0xC0000374[/c] (heap corruption);
 - Executing: [c]Eval[/c]. This is equivalent to running arbitrary scripts.
 
 Risks to keep in mind:
@@ -163,8 +129,6 @@ Risks to keep in mind:
 - Offsets are derived from the AutoHotkey 2.0.26 source; other versions, compilers, or architectures may differ. Run the test suite against the target exe first;
 - Always restore [c]PatchBif[/c]; do not leave it enabled;
 - Never eval untrusted input;
-- Never violate the [c]CnpView[/c] ownership rules;
-- Never substitute an external Buffer for [c]mItem[/c];
 - 32-bit AutoHotkey raises an explicit error.
 
 Recommended workflow: test in a VM or isolated environment, back up the exe, record its SHA256, and only analyze software you are authorized to research. This library is not intended to bypass licensing, DRM, or access controls.
@@ -172,29 +136,15 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 
 [b]6. Performance[/b]
 
-[codebox=text file=100M benchmark (QPC)]
-count=100000000
-Capacity only ms=0.059
-ToAhkNative ms=705.448
-ToBuffer ms=206.068
-View create ms=0.0111
-2D 1000x1000 ToAhkNative ms=14.892
-2D 1000x1000 ToAhk old ms=466.479
-[/codebox]
-
-The earlier "1M elements under 1 ms" figure was a timer-resolution artifact; [c]GetTickCount64[/c] only has 1 ms granularity. With QPC, 100M elements take about 705 ms, and a 2D 1000x1000 native construction takes about 15 ms versus 466 ms on the old AHK path.
+Native Array construction is a direct benefit of the scanning capability. A 100M-element scenario takes about 705 ms (QPC), and a 1000x1000 2D case takes about 15 ms; the same data through an AHK element loop takes about 466 ms. The earlier "1M elements under 1 ms" figure was a timer-resolution artifact; [c]GetTickCount64[/c] only has 1 ms granularity.
 
 
 [b]7. Update log[/b]
 
 2026-08-11:
 
-- cnumpy fixed a hardcoded-offset issue, and this library was updated to match. The hardcoded [c]CnpArray[/c] offsets in the bridge were removed; data pointers now come from [c]cnp_ahk_data_ptr[/c], and dtype kind comes from [c]cnp_dtype_kind[/c];
-- [c]ToAhkNative[/c] now uses the runtime-discovered [c]AhkLayout[/c] and cnumpy's native fillers [c]cnp_ahk_fill_array_flat[/c] / [c]cnp_ahk_fill_array_nd[/c];
-- added [c]lib/cnumpy/ahk_layout.ahk[/c]; the integration no longer depends on a hardcoded interpreter or CnpArray layout;
-- the scanning core was distilled into [c]ahk_hack_single.ahk[/c], with a runnable [c]ahk_hack_demo.ahk[/c].
-
-Verified: 1D/2D/3D native construction, roundtrip, view read/write, ownership, and cnumpy health all pass.
+- The scanning core was distilled into [c]ahk_hack_single.ahk[/c], with a runnable [c]ahk_hack_demo.ahk[/c];
+- Fixed hardcoded structural offsets in the optional integration layer by switching to runtime layout discovery and native fill interfaces.
 
 
 [b]8. Known limitations[/b]
@@ -202,13 +152,296 @@ Verified: 1D/2D/3D native construction, roundtrip, view read/write, ownership, a
 - The machine-code blocks are x64 only;
 - [c]Eval()[/c] evaluates expressions through a hidden child process of the same exe and returns strings/numbers; true in-process eval still requires locating the internal expression parser;
 - [c]PatchBif()[/c] does not retroactively affect already-cached function objects;
-- [c]ToAhkNative[/c] requires C-contiguous numeric arrays; string/structured dtypes fall back to the slow path;
-- native construction relies on runtime layout discovery, so cross-version verification is mandatory.
+- native construction relies on source-derived or runtime-discovered layout, so cross-version verification is mandatory.
 
 
 [b]9. Closing[/b]
 
-The project ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. The cnumpy integration validated the map with 100M-element conversion, bringing it from tens of seconds down to sub-second range. Future directions include in-process eval, automatic DLL binding generation, and expanding the scan to more interpreter internals.
+The project ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. Future directions include in-process eval, automatic DLL binding generation, and expanding the scan to more interpreter internals.
+
+
+
+[b]10. Appendix: single-file source[/b]
+
+[codebox=autohotkey file=ahk_hack_single.ahk]
+; ahk-hack standalone core.
+;
+; One-file AutoHotkey v2 scanner for AutoHotkey executables.  Copy this file
+; anywhere and #Include it, or run ahk_hack_demo.ahk for a self-test.
+; The x64 blob below is generated from lib/mcode/scanner.c by
+; tools/build_mcode.py; it locates g_BIF, sMdFunc and g_BIV_A inside the
+; running interpreter and copies entry metadata into a caller buffer.
+MC_PE_EXPORT_SCANNER_X64 := "4157415641545657534885c90f94c04885d2410f94c04108c0b8010000000f85fb0000006681394d5a0f85f0000000448b413c41813c08504500000f85de0000006641817c08180b020f85d0000000418b8408880000004885c00f84ab0000004183bc088c000000000f849c0000004c8d0408448b4c08108b7c0818448b540820448b5c08248b74081c4c890248c7421000000000b80800000085ff747881ff0010000041b800100000440f42c74801ce4901ca4901cb4a8d3cc500000000488d3c7f31db66662e0f1f840000000000458b32450fb73b468b24be4901ce4c89741a184c89641a204501cf44897c1a28c7441a2c000000004983c2044983c3024883c3184839df75c7eb0e0f57c00f1102b8100000004531c04c89040231c05b5f5e415c415e415fc3"
+MC_BIF_SCANNER_X64 := "415741565657534881ecb00100004885c90f94c04885d2410f94c04108c0be010000000f850b0500006681394d5a0f85000500008b413c813c08504500000f85f004000066817c08180b020f85e3040000440fb74c0806664183f91041b810000000450f42c1664585c90f841d010000440fb74c0814410fb7f84801c84c01c84c8d442442448d0cfd000000004f8d0c894531d26666662e0f1f840000000000468b5c10204585db460f445c1028428b5c10244801cb498958ee4c01db498958f642807c10182e7537460fb65c10194180fb74753b42807c101a65756242807c101b78755a42807c101c74410f94c3eb516666666666662e0f1f8400000000006641c740fe0000eb440f1f800000000041c640fe004180fb72754b42807c101a64752342807c101b61751b42807c101c74751342807c101d61410f94c3eb0a4531db458858fe4531db458858ff4531db4588184983c2284983c0184d39d10f853cffffffeb2941c640ff004180fb6475dc42807c101a6175d442807c101b7475cc42807c101c61410f94c3ebc331ff488d420848894424284989d74889542420488d4c243041b92000000089fa4531c0e89b03000085c00f84770300004d8d7720498d47184c897424284889442420488d4c2430be0100000041b92800000089fa41b801000000e86403000085c00f8440030000498d5f38498d473048895c24284889442420488d4c243041b91800000089fa41b802000000e83203000085c00f840e0300004c89f849c747102000000049c747282800000049c747401800000049c7474800000000418b570885d27e65ffca4881faff010000b9ff010000480f42ca488b10c1e1054883c1204531c04e8b0c024e894c00504e8b4c02084e894c0058460fb64c021046894c0060460fb64c021146894c0064460fb64c021246894c006842c744006c000000004983c0204c39c175ba418b0e85c90f8ea5010000ffc94881f9ff010000baff010000480f42d1488b4818488d1492488d14d5280000004531c0662e0f1f8400000000004e8b0c014e898c00504000004e8b4c01084e898c0058400000460fb64c011046888c0060400000460fb64c011146888c0061400000460fb64c011246888c0062400000460fb64c011346888c0063400000460fb64c011446888c0064400000460fb64c011546888c0065400000460fb64c011646888c0066400000460fb64c011746888c0067400000460fb64c011846888c0068400000460fb64c011946888c0069400000460fb64c011a46888c006a400000460fb64c011b46888c006b400000460fb64c011c46888c006c400000460fb64c011d46888c006d400000460fb64c011e46888c006e400000460fb64c011f46888c006f400000460fb64c012046888c0070400000460fb64c012146888c0071400000460fb64c012246888c0072400000460fb64c012346888c0073400000460fb64c012446888c0074400000460fb64c012546888c0075400000460fb64c012646888c0076400000460fb64c012746888c00774000004983c0284c39c20f858afeffff448b034585c00f8e8c00000041ffc84181f8ff000000baff000000410f42d0488b4830ffc231f64585c074704189d14181e1fe0100004531d24531c04e8b1c114e899c10509000004e8b5c11084e899c10589000004e8b5c11104e899c10609000004e8b5c11184e899c10689000004e8b5c11204e899c10709000004e8b5c11284e899c10789000004983c0024983c2304d39c175a6eb0731f6eb324531c0f6c201742a48055090000049c1e0034b8d14404c8b04114c8904104c8b4411084c89441008488b4c111048894c101089f04881c4b00100005b5f5e415e415fc366662e0f1f8400000000004157415641554154565755534883ec3085d20f8e76040000488bac24a00000004c8b94249800000089d6488d04f500000000488d3c4031db48c74424200000000048c744242800000000eb100f1f400048ffc34839f30f8417040000488d145b488d04d1807cd1110075068078120074df4c8b384c8b7008498d47104c39f077cf4d8b27eb434c8b9424980000004c8b0c244c8b5c2408488b4424284939c3490f47c34889442428488b442420490f47c54889442420662e0f1f8400000000004983c5184d39f577874d89fd4c89e04983c7084d8b650831d2eb0e0f1f4400004883c2184839d774d7807c1111007507807c11120074e9483944110876e24839041177dc31d2662e0f1f840000000000440fb71c10664585db74254183c381664183fba1729a4c8d5a024883fa7e4c89da75ddeb8b66662e0f1f84000000000031d2eb196666662e0f1f8400000000004883c2184839d70f8463ffffff807c11100074ec4c3964110876e54c39241177df0fb7104183f8010f840f0200004585c00f857d0200006683fa410f852fffffff66837802620f8524ffffffba0600000066837804730f8514ffffff66833c02000f8509ffffff4b8d04294883c01041bb010000004c39f00f87c9feffff4b8d14294c89e84c890c244c895c240848894424184889d04c8b124c8b5a084531c9eb1b66666666662e0f1f8400000000004983c1184c39cf0f8479feffff42807c091100750842807c09120074e34e3954090876dc4e39140977d631d20f1f4000450fb70c12664585c974214183c181664183f9a10f823cfeffff4c8d4a024883fa7e4c89ca75d9e92afeffff31d2eb0d4883c2184839d70f8419feffff807c11100074ec4c395c110876e54c391c1177df4183f802488944241075406641833a590f85bf0000006641837a02590f85b30000006641837a04590f85a70000006641837a06590f859b0000006641837a08000f858f000000e98e010000488b542418488b1248895424184531db488b542418460fb70c1a430fb7141a664585c974476685d274428d42bf8d6a203c1a400fb6c50f43c2418d51bf418d692080fa1a400fb6d5410f43d138c275274983c3024981fb80000000488bac24a0000000488b44241075a6eb1e664139d17618e943fdffff488bac24a0000000488b4424100f8330fdffff4c8b5c240849ffc34c8b0c244a8d1408488b4424104c01c84883c0104c39f0488b4424104c8b9424980000000f8651feffffe90afdffff6683fa420f8529fdffff668378026c0f851efdffff668378046f0f8513fdffff66837806630f8508fdffff668378086b0f85fdfcffff6683780a490f85f2fcffff6683780c6e0f85e7fcffff6683780e700f85dcfcffff66837810750f85d1fcffffba1400000066837812740f85c1fcffffe9a8fdffff6683fa410f85b2fcffff66837802680f85a7fcffff668378046b0f859cfcffff66837806500f8591fcffff66837808610f8586fcffff6683780a740f857bfcffffba0e0000006683780c680f856bfcffffe952fdffff4c8b5c240849ffc34c8b9424980000004c8b0c24e924fcffff4c8b4424204d85c00f94c0488b5424284883fa0a0f92c108c1740431c0eb0c4d890248895500b8010000004883c4305b5d5f5e415c415d415e415fc3"
+
+
+; Decode a raw hex machine-code blob and return an executable Buffer.
+MCode(hex) {
+    size := StrLen(hex) // 2
+    buf := Buffer(size)
+    loop size {
+        byte := Integer("0x" SubStr(hex, 2 * A_Index - 1, 2))
+        NumPut("UChar", byte, buf, A_Index - 1)
+    }
+    oldProtect := 0
+    if !DllCall("VirtualProtect", "Ptr", buf.Ptr, "UPtr", size, "UInt", 0x40, "UInt*", oldProtect)
+        throw Error("VirtualProtect failed", -1)
+    return buf
+}
+
+
+class AhkMagic {
+    static scanner := 0
+    static exportScanner := 0
+    static arrayBuilder := 0
+    static childrenBuilder := 0
+    static moduleBase := 0
+    static bifTablePtr := 0
+    static bifCount := 0
+    static bifStride := 0
+    static mdfuncTablePtr := 0
+    static mdfuncCount := 0
+    static mdfuncStride := 0
+    static bivTablePtr := 0
+    static bivCount := 0
+    static bivStride := 0
+    static bif := Map()
+    static mdfunc := Map()
+    static biv := Map()
+
+    static Init() {
+        if AhkMagic.scanner
+            return
+        if A_PtrSize != 8
+            throw Error("this mcode blob is x64 only", -1)
+        AhkMagic.scanner := MCode(MC_BIF_SCANNER_X64)
+        AhkMagic.moduleBase := DllCall("GetModuleHandle", "Str", A_AhkPath, "Ptr")
+        if !AhkMagic.moduleBase
+            throw Error("GetModuleHandle failed", -1)
+
+        out := Buffer(64 * 1024)
+        rc := DllCall(AhkMagic.scanner.Ptr, "Ptr", AhkMagic.moduleBase, "Ptr", out.Ptr, "Int")
+        if rc != 0
+            throw Error("AhkScanTables failed with rc=" rc, -1)
+
+        AhkMagic.bifTablePtr := NumGet(out, 0, "Ptr")
+        AhkMagic.bifCount := NumGet(out, 8, "Int64")
+        AhkMagic.bifStride := NumGet(out, 16, "Int64")
+        AhkMagic.mdfuncTablePtr := NumGet(out, 24, "Ptr")
+        AhkMagic.mdfuncCount := NumGet(out, 32, "Int64")
+        AhkMagic.mdfuncStride := NumGet(out, 40, "Int64")
+        AhkMagic.bivTablePtr := NumGet(out, 48, "Ptr")
+        AhkMagic.bivCount := NumGet(out, 56, "Int64")
+        AhkMagic.bivStride := NumGet(out, 64, "Int64")
+
+        bifBase := 80
+        bifStride := 32
+        loop AhkMagic.bifCount {
+            p := out.Ptr + bifBase + (A_Index - 1) * bifStride
+            namePtr := NumGet(p, 0, "Ptr")
+            fnPtr := NumGet(p, 8, "Ptr")
+            min := NumGet(p, 16, "UChar")
+            max := NumGet(p, 17, "UChar")
+            fid := NumGet(p, 18, "UChar")
+            name := StrGet(namePtr, "UTF-16")
+            AhkMagic.bif[name] := Map(
+                "index", A_Index - 1,
+                "rva", fnPtr - AhkMagic.moduleBase,
+                "min", min,
+                "max", max,
+                "fid", fid
+            )
+        }
+
+        mdfBase := 80 + 512 * 32
+        mdfStride := 40
+        loop AhkMagic.mdfuncCount {
+            p := out.Ptr + mdfBase + (A_Index - 1) * mdfStride
+            namePtr := NumGet(p, 0, "Ptr")
+            fnPtr := NumGet(p, 8, "Ptr")
+            retType := NumGet(p, 16, "UChar")
+            name := StrGet(namePtr, "UTF-16")
+            AhkMagic.mdfunc[name] := Map(
+                "index", A_Index - 1,
+                "rva", fnPtr - AhkMagic.moduleBase,
+                "ret", retType
+            )
+        }
+
+        bivBase := 80 + 512 * 32 + 512 * 40
+        bivStride := 24
+        loop AhkMagic.bivCount {
+            p := out.Ptr + bivBase + (A_Index - 1) * bivStride
+            namePtr := NumGet(p, 0, "Ptr")
+            getter := NumGet(p, 8, "Ptr")
+            setter := NumGet(p, 16, "Ptr")
+            name := StrGet(namePtr, "UTF-16")
+            AhkMagic.biv[name] := Map(
+                "index", A_Index - 1,
+                "getter_rva", getter ? getter - AhkMagic.moduleBase : 0,
+                "setter_rva", setter ? setter - AhkMagic.moduleBase : 0
+            )
+        }
+    }
+
+    static BifRva(name) {
+        AhkMagic.Init()
+        if !AhkMagic.bif.Has(name)
+            throw Error("builtin not found: " name)
+        return AhkMagic.bif[name]["rva"]
+    }
+
+    static BifAddr(name) {
+        AhkMagic.Init()
+        return AhkMagic.moduleBase + AhkMagic.BifRva(name)
+    }
+
+    static PatchBif(name, newName) {
+        AhkMagic.Init()
+        if !AhkMagic.bif.Has(name)
+            throw Error("builtin not found: " name)
+        if !AhkMagic.bif.Has(newName)
+            throw Error("builtin not found: " newName)
+        entryAddr := AhkMagic.bifTablePtr
+            + AhkMagic.bif[name]["index"] * AhkMagic.bifStride
+            + A_PtrSize
+        oldPtr := NumGet(entryAddr, 0, "Ptr")
+        expected := AhkMagic.moduleBase + AhkMagic.bif[name]["rva"]
+        if oldPtr != expected
+            throw Error("table pointer mismatch for " name
+                ": got 0x" Format("{:X}", oldPtr)
+                ", expected 0x" Format("{:X}", expected))
+        NumPut("Ptr", AhkMagic.moduleBase + AhkMagic.bif[newName]["rva"], entryAddr)
+        return oldPtr
+    }
+
+    static RestoreBif(name, oldPtr) {
+        AhkMagic.Init()
+        if !AhkMagic.bif.Has(name)
+            throw Error("builtin not found: " name)
+        entryAddr := AhkMagic.bifTablePtr
+            + AhkMagic.bif[name]["index"] * AhkMagic.bifStride
+            + A_PtrSize
+        NumPut("Ptr", oldPtr, entryAddr)
+    }
+
+    ; General PE export-table scanner (works for any loaded DLL/EXE module).
+    static ScanExports(moduleBase) {
+        if !AhkMagic.exportScanner
+            AhkMagic.exportScanner := MCode(MC_PE_EXPORT_SCANNER_X64)
+        out := Buffer(100 * 1024)
+        rc := DllCall(
+            AhkMagic.exportScanner.Ptr,
+            "Ptr", moduleBase,
+            "Ptr", out.Ptr,
+            "Int"
+        )
+        if rc != 0
+            throw Error("AhkScanExports failed with rc=" rc)
+        count := NumGet(out, 8, "Int64")
+        result := Map()
+        loop count {
+            p := out.Ptr + 24 + (A_Index - 1) * 24
+            namePtr := NumGet(p, 0, "Ptr")
+            fnRva := NumGet(p, 8, "Int64")
+            ordinal := NumGet(p, 16, "UInt")
+            result[StrGet(namePtr, "UTF-8")] := Map(
+                "rva", fnRva,
+                "ordinal", ordinal
+            )
+        }
+        return result
+    }
+
+    ; Fill an existing empty AHK Array() with values directly in machine code.
+    ; typeCode: 0=f64, 1=i64, 2=f32, 3=i32, 4=u64, 5=u32,
+    ;           6=i16, 7=u16, 8=i8, 9=u8/bool
+    static BuildArrayFlat(arrObjPtr, itemPtr, dataPtr, count, itemSize, typeCode) {
+        if !AhkMagic.arrayBuilder
+            AhkMagic.arrayBuilder := MCode(MC_ARRAY_BUILDER_X64)
+        rc := DllCall(
+            AhkMagic.arrayBuilder.Ptr,
+            "Ptr", arrObjPtr,
+            "Ptr", itemPtr,
+            "Ptr", dataPtr,
+            "Int64", count,
+            "Int", itemSize,
+            "Int", typeCode,
+            "Int"
+        )
+        if rc != 0
+            throw Error("AhkBuildArrayFlat failed with rc=" rc)
+    }
+
+    ; Fill a parent Array() with child Array pointers (ownership transferred,
+    ; no AddRef: the caller must drop its own reference to each child).
+    static BuildArrayChildren(arrObjPtr, childPtrs, count) {
+        if !AhkMagic.childrenBuilder
+            AhkMagic.childrenBuilder := MCode(MC_ARRAY_CHILDREN_BUILDER_X64)
+        rc := DllCall(
+            AhkMagic.childrenBuilder.Ptr,
+            "Ptr", arrObjPtr,
+            "Ptr", childPtrs.Ptr,
+            "Int64", count,
+            "Int"
+        )
+        if rc != 0
+            throw Error("AhkBuildArrayChildren failed with rc=" rc)
+    }
+
+    static Summary() {
+        AhkMagic.Init()
+        return Format(
+            "module=0x{:X}`nbif={} @0x{:X} (stride 0x{:X})`n"
+            . "mdfunc={} @0x{:X} (stride 0x{:X})`n"
+            . "biv={} @0x{:X} (stride 0x{:X})",
+            AhkMagic.moduleBase,
+            AhkMagic.bifCount, AhkMagic.bifTablePtr, AhkMagic.bifStride,
+            AhkMagic.mdfuncCount, AhkMagic.mdfuncTablePtr, AhkMagic.mdfuncStride,
+            AhkMagic.bivCount, AhkMagic.bivTablePtr, AhkMagic.bivStride
+        )
+    }
+
+    static Eval(expr) {
+        AhkMagic.Init()
+        if !(expr is String)
+            throw TypeError("expr must be a string", -1)
+        if expr = ""
+            throw ValueError("expr must not be empty", -1)
+
+        tag := Format("{:x}", A_TickCount) "-" Format("{:x}", Random(1, 0x7fffffff))
+        scriptFile := A_Temp "\ahk_mcode_eval_" tag ".ahk"
+        resultFile := A_Temp "\ahk_mcode_eval_" tag ".txt"
+
+        quote := expr
+        script := "try {`n"
+            . "    result := (" quote ")`n"
+            . "    FileAppend result, `"" resultFile "`", `"UTF-8`"`n"
+            . "} catch as e {`n"
+            . "    FileAppend `"ERROR: `" e.Message, `"" resultFile "`", `"UTF-8`"`n"
+            . "    ExitApp 1`n"
+            . "}`n"
+        FileAppend script, scriptFile, "UTF-8"
+        try {
+            RunWait Format('"{1}" /ErrorStdOut "{2}"', A_AhkPath, scriptFile), , "Hide"
+            if !FileExist(resultFile)
+                throw Error("eval child produced no result", -1)
+            result := FileRead(resultFile, "UTF-8")
+            if RegExMatch(result, "^ERROR: (.*)$", &m)
+                throw Error("eval failed: " m[1], -1)
+            return result
+        } finally {
+            if FileExist(scriptFile)
+                FileDelete(scriptFile)
+            if FileExist(resultFile)
+                FileDelete(resultFile)
+        }
+    }
+}
+
+MC_ARRAY_BUILDER_X64 := "4885c90f94c04885d2410f94c24108c24d85c90f98c04408d0b8010000000f85270100004d85c9410f95c24d85c0410f94c34584d30f8510010000448b5424284585d20f840301000048895120448949284489492c4d85c90f84eb0000008b4c2430b80300000083f9090f87db0000004489d0eb4366662e0f1f84000000000085c90f848700000083f9010f85af0000004d8b104c891241ba0100000044895208c7420c000000004901c04883c21049ffc90f849100000083f9037e2383f9057e3e83f906746783f907746b83f908756f4d0fbe10ebbd660f1f84000000000083f9017e9b83f902742c83f90375514d6310eba06666662e0f1f84000000000083f904748c83f9057536458b10eb85f2410f1000eb09f3410f1000f30f5ac0f20f110241ba02000000e96fffffff4d0fbf10e95dffffff450fb710e954ffffff450fb610e94bffffff31c0c3b802000000c3"
+MC_ARRAY_CHILDREN_BUILDER_X64 := "41565657534883ec28b8010000004885c974764c89c64889d74d85c00f95c24885ff410f94c04184d0755e4c8b71204d85f6744989712889712c31c04885f674486666666666662e0f1f840000000000488b1f4885db742c488b034889d9ff500849891e49c74608050000004883c7084983c61048ffce75d731c0eb0cb802000000eb05b8030000004883c4285b5f5e415ec3"
+
+[/codebox]
 
 GitHub: [url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
-cnumpy: [url=https://github.com/MonoEven/cnumpy]https://github.com/MonoEven/cnumpy[/url]
