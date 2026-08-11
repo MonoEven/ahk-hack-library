@@ -1,29 +1,27 @@
-[b]AutoHotkey 运行时扫描库（ahk-hack）：把 exe 变成可读的结构化文档[/b]
+[b]AutoHotkey 运行时扫描库（ahk-hack）[/b]
 
 仓库：[url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
 cnumpy 实践集成：[url=https://github.com/MonoEven/cnumpy]https://github.com/MonoEven/cnumpy[/url]
 
-[i]摘要：这个项目用嵌入 AHK v2 的 x64 机器码，在运行时扫描 AutoHotkey 可执行文件的内部结构，并在此基础上提供原生数组构造、内置函数重定向和表达式求值等能力。cnumpy 数组转换属于实践集成，用来验证这套扫描能力。[/i]
-
-项目最初的目标是“破解 autohotkey.exe”，做到后面留下来的是一套可复用的运行时结构扫描机制。解释器本身就是一份 PE 文件，程序可以自己读取它。扫描器把这份文件翻译成运行时地图，后续功能都建立在这张地图上。
+项目源起于一个想法：让 AHK 自己读取正在运行的 [c]AutoHotkey.exe[/c]，把解释器的内部表找出来，再在这些表上做实验。实现方式是往一个 AHK v2 文件里嵌入 x64 机器码，运行时解析 PE 结构并定位内部表。cnumpy 数组转换是这个扫描能力的验证场景，用来证明这张“内部地图”确实可用。
 
 
-[b]1. 核心能力：运行时扫描[/b]
+[b]1. 运行时扫描[/b]
 
-AutoHotkey 2 解释器在 [c].data[/c] 段维护了几张关键表。扫描器先解析 DOS 头、NT 头和节表，再按结构不变式定位这些表：
+AutoHotkey 2 解释器在 [c].data[/c] 段维护几张关键表：
 
-- [c]g_BIF[/c]：内置脚本函数表（[c]Abs[/c]、[c]Sin[/c] 等），x64 每条 0x20 字节；
+- [c]g_BIF[/c]：内置脚本函数表（[c]Abs[/c]、[c]Sin[/c] 等），x64 下每条记录 0x20 字节；
 - [c]sMdFunc[/c]：带类型签名的原生函数表（[c]MsgBox[/c]、[c]WinActivate[/c] 等），0x28 字节；
 - [c]g_BIV_A[/c]：以 [c]A_[/c] 开头的内置变量表（[c]A_AhkPath[/c]、[c]A_YYYY[/c] 等），0x18 字节。
 
-定位依据三个不变式：名字指针必须指向 UTF-16 字符串、函数指针必须落在 [c].text[/c]、表内记录必须按字典序排列。满足这些条件的连续记录区就是目标表。扫描完成后，每条记录的 RVA、参数个数、ID 都会被读出。
+定位过程分两步。先解析 DOS 头、NT 头、节表，拿到各段的内存范围；再对 [c].data[/c] 和 [c].rdata[/c] 里的指针槽做检查，看是否满足三个条件：名字指针指向一段 UTF-16 字符串、函数指针落在 [c].text[/c]、表内记录按字典序排列。满足条件的连续记录区就是目标表，随后把每条记录的 RVA、参数个数、ID 读出来。
 
-同一段机器码可以在 2.0-beta、2.0.0、2.0.26、2.1-alpha 上运行，不需要为每个版本单独维护偏移。这套思路还被泛化成通用 PE 导出表扫描器：给定任意已加载 DLL/EXE 的基址，就能枚举全部具名导出及其 RVA 和序号。[c]cnumpy_ahk.dll[/c] 的 1027 个导出就是这样自动识别的。
+这套逻辑写进机器码后，同一段代码可以跑在 2.0-beta、2.0.0、2.0.26、2.1-alpha 上。通用化之后，它还能扫任意 DLL/EXE 的导出表，枚举具名导出、RVA 和序号。[c]cnumpy_ahk.dll[/c] 的 1000 多个导出就是这样自动识别的。
 
 
-[b]2. 机器码从哪里来[/b]
+[b]2. 机器码生成[/b]
 
-机器码用 C 编写，经 clang 编译后从 COFF 对象的 [c].text[/c] 段提取：
+机器码用 C 编写，经 clang 编译后从 COFF 对象的 [c].text[/c] 段提取，再以十六进制字符串嵌进 AHK：
 
 [codebox=text file=tools\build_mcode.py 摘要]
 clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
@@ -31,9 +29,9 @@ clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
   -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
 [/codebox]
 
-构建脚本会检查重定位：只要有任何重定位逃出 [c].text[/c]，就拒绝嵌入。这保证嵌入 AHK 的是一段完全自包含、位置无关的代码。
+构建脚本会检查 [c].text[/c] 的重定位，只要有重定位逃出代码块就拒绝嵌入。这样做保证嵌入结果是自包含、位置无关的机器码。
 
-库包含四个机器码块：
+库里有四个机器码块：
 
 - [c]scanner.c[/c]：解释器三张内部表扫描；
 - [c]export_scanner.c[/c]：通用 PE 导出表扫描；
@@ -41,37 +39,36 @@ clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
 - [c]array_children_builder.c[/c]：父节点子引用填充。
 
 
-[b]3. 库结构[/b]
+[b]3. 单文件核心[/b]
+
+扫描核心被提炼成一个文件：[c]ahk_hack_single.ahk[/c]。它包含 [c]MCode()[/c]、[c]AhkMagic[/c] 和全部嵌入的机器码，复制到哪里都能用。仓库里另有一个 [c]ahk_hack_demo.ahk[/c]，直接运行就能看到扫描摘要、内置函数替换和 Eval 的效果。
+
+完整库结构：
 
 [codebox=text file=库结构]
+ahk_hack_single.ahk        单文件核心
+ahk_hack_demo.ahk          可直接运行的演示
 lib/
-  init.ahk                  核心入口，只引入扫描层
-  ahk_hack.ahk              MCode() + AhkMagic
-  mcode/                    机器码 C 源码
-  cnumpy/                   可选实践集成
+  ahk_hack.ahk             单文件核心的库别名
+  mcode/                   机器码 C 源码
+  cnumpy/                  可选实践集成
     init.ahk
-    ahk_layout.ahk          运行时 AHK 布局发现（无硬编码偏移）
+    ahk_layout.ahk         运行时 AHK 布局发现
     numpy.ahk
-    cnumpy_bridge.ahk       CnpBridge + CnpView
+    cnumpy_bridge.ahk      CnpBridge + CnpView
 tools/
-  build_mcode.py            编译并嵌入机器码
-  ahk_inspect.py            Python/PE 交叉验证
-fork/cnumpy-ahk-bridge/     cnumpy 集成测试与基准
+  build_mcode.py           编译并嵌入机器码
+  ahk_inspect.py           Python/PE 交叉验证
+fork/cnumpy-ahk-bridge/    cnumpy 集成测试与基准
 [/codebox]
-
-根目录 [c]ahk_mcode.ahk[/c] 保留为一行兼容别名。
 
 
 [b]4. 使用说明[/b]
 
 [color=#BF4000][b]4.1 核心扫描[/b][/color]
 
-[codebox=autohotkey file=lib\init.ahk]
-#Include ahk_hack.ahk
-[/codebox]
-
-[codebox=autohotkey file=核心扫描用法]
-#Include lib\init.ahk
+[codebox=autohotkey file=单文件核心用法]
+#Include ahk_hack_single.ahk
 
 AhkMagic.Init()
 MsgBox AhkMagic.Summary()
@@ -93,7 +90,7 @@ MsgBox %name%(1)              ; 首次动态调用返回 sin(1)
 AhkMagic.RestoreBif("Abs", old)
 [/codebox]
 
-AHK 可能缓存已经解析过的函数对象，因此“首次动态调用反映新指针”是预期行为；表指针本身一定会被还原。
+AHK 可能缓存已经解析过的函数对象，所以“首次动态调用反映新指针”符合预期；表指针本身会被还原。
 
 [color=#BF4000][b]4.3 表达式 Eval[/b][/color]
 
@@ -104,9 +101,7 @@ MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
 
 [color=#BF4000][b]4.4 可选 cnumpy 集成[/b][/color]
 
-先设置 DLL 路径，再引入集成入口：
-
-[codebox=autohotkey file=lib\cnumpy\init.ahk]
+[codebox=autohotkey file=cnumpy 集成用法]
 Numpy.DllPath := "D:\...\build\x64\Release\cnumpy_ahk.dll"
 #Include lib\cnumpy\init.ahk
 
@@ -124,11 +119,11 @@ back3 := CnpBridge.FromBuffer(buf, dtype)
 
 [color=#BF4000][b]4.5 生命周期与所有权[/b][/color]
 
-- 除 [c]CnpView[/c] 外的所有转换都是拷贝语义，AHK 与 cnumpy 各管各的内存；
-- [c]CnpView[/c] 是零拷贝借用，持有对 Owner [c]NdArray[/c] 的强引用；view 和原引用都释放后数组才回收；
-- view 写操作仅允许在数组可写（[c]CNP_ARRAY_WRITEABLE[/c]）时进行；
-- 不要保存 [c]view.Ptr[/c] 到全局并在 view 释放后使用；
-- 原生构造使用 [c]Array().Capacity := n[/c] 让解释器自己分配 [c]mItem[/c]，不要用外部 Buffer 顶替，否则退出时会双重释放。
+- 除 [c]CnpView[/c] 外的转换都是拷贝语义，AHK 与 cnumpy 各管各的内存；
+- [c]CnpView[/c] 是零拷贝借用，持有对 Owner [c]NdArray[/c] 的强引用，view 和原引用都释放后数组才回收；
+- view 写操作仅在数组可写（[c]CNP_ARRAY_WRITEABLE[/c]）时允许；
+- 不要在 view 释放后继续使用它的 [c]Ptr[/c]；
+- 原生构造使用 [c]Array().Capacity := n[/c] 让解释器自己分配 [c]mItem[/c]，用外部 Buffer 顶替会导致退出时双重释放。
 
 完整规则见 [c]fork/cnumpy-ahk-bridge/docs/lifecycle-and-ownership.md[/c]。
 
@@ -137,14 +132,14 @@ back3 := CnpBridge.FromBuffer(buf, dtype)
 需要 LLVM clang（本机在 [c]F:\Tech\LLVM\bin\clang.exe[/c]）：
 
 [codebox=text file=重新构建]
-python tools\build_mcode.py --embed-only --out lib\ahk_hack.ahk
+python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk
 [/codebox]
 
 [color=#BF4000][b]4.7 验证与测试[/b][/color]
 
 [codebox=text file=测试]
 python -m unittest discover -s tests -p 'test_*.py' -v
-& D:\...\AutoHotkey64.exe tests\ahk_mcode_test.ahk
+& D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
 & D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
 & D:\...\AutoHotkey64.exe fork\cnumpy-ahk-bridge\tests\cnumpy_bridge.test.ahk
 [/codebox]
@@ -152,27 +147,27 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 已验证版本：2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10（均为 64 位）。
 
 
-[b]5. 安全性（重要，请完整阅读）[/b]
+[b]5. 安全性[/b]
 
 [color=#BF4000]这个库会在你的进程里分配可执行内存、执行机器码，并直接读写解释器内部结构。请按逆向工程研究工具的标准来使用。[/color]
 
-操作分为三类：
+操作分三类：
 
-- 只读：[c]Init / Summary / BifRva / BifAddr / ScanExports / Metadata / CnpView 读[/c]，不修改进程状态，主要风险是兼容性；
-- 修改：[c]PatchBif / RestoreBif / WriteRaw / CnpView.Set[/c]，直接改内存中的内部表或数据，写错会崩溃。本项目开发中真实遇到 [c]0xC0000374[/c]（堆损坏）；
-- 执行：[c]Eval[/c]，等价于任意脚本执行。
+- 只读：[c]Init / Summary / BifRva / BifAddr / ScanExports / Metadata / CnpView 读[/c]，不修改进程状态，主要风险在兼容性；
+- 修改：[c]PatchBif / RestoreBif / WriteRaw / CnpView.Set[/c]，直接改内存里的内部表或数据，写错会崩溃。开发中实际遇到过 [c]0xC0000374[/c]（堆损坏）；
+- 执行：[c]Eval[/c]，等价于运行任意脚本。
 
-主要风险：
+需要留意的风险：
 
-- 可执行内存分配与内部函数调用可能被杀毒软件或 EDR 标记；
-- 偏移基于 AutoHotkey 2.0.26 源码推导，其他版本、编译器、架构可能不同，使用前必须对目标 exe 跑测试；
-- 不要长期保留 [c]PatchBif[/c]，用完必须还原；
-- 绝不 eval 未受信任输入；
-- 不要违反 [c]CnpView[/c] 所有权规则；
+- 可执行内存分配和内部函数调用可能被杀毒软件或 EDR 标记；
+- 偏移依据 AutoHotkey 2.0.26 源码推导，其他版本、编译器、架构可能不同，使用前要对目标 exe 跑测试；
+- [c]PatchBif[/c] 用完必须还原，不要长期保留；
+- 不要 eval 未受信任的输入；
+- 不要违反 [c]CnpView[/c] 的所有权规则；
 - 不要用外部 Buffer 顶替 [c]mItem[/c]；
-- 32 位不支持，[c]Init()[/c] 会显式报错。
+- 32 位版本会显式报错。
 
-建议在虚拟机或隔离环境验证，备份被分析的 exe 并记录 SHA256。本项目不用于绕过授权、DRM 或访问控制。
+建议在虚拟机或隔离环境里验证，备份被分析的 exe 并记录 SHA256。这个库不用于绕过授权、DRM 或访问控制。
 
 
 [b]6. 性能数据[/b]
@@ -187,33 +182,33 @@ View create ms=0.0111
 2D 1000x1000 ToAhk old ms=466.479
 [/codebox]
 
-早期“1M 元素 < 1ms”是计时分辨率假象（[c]GetTickCount64[/c] 粒度 1ms）。用 QPC 测 100M 元素，原生构造约 705ms；2D 1000x1000 约 15ms，旧 AHK 路径约 466ms。
+早期报告里“1M 元素小于 1ms”是计时分辨率造成的假象，[c]GetTickCount64[/c] 的粒度只有 1ms。改用 QPC 后，100M 元素原生构造约 705ms；2D 1000x1000 约 15ms，旧 AHK 路径约 466ms。
 
 
-[b]7. 更新：修复 cnumpy 硬编码偏移（2026-08-11）[/b]
+[b]7. 更新记录[/b]
 
-cnumpy 侧修复了写死偏移的问题，本库已同步更正：
+2026-08-11：
 
-- 移除 [c]CnpBridge[/c] 中写死的 [c]CnpArray[/c] 偏移（[c]_OFF_DATA=32[/c]、[c]_OFF_OFFSET=64[/c] 等）；
-- 数据指针改由 [c]cnp_ahk_data_ptr[/c] 提供，dtype kind 改由 [c]cnp_dtype_kind[/c] 提供；
+- cnumpy 修复了写死偏移的问题，本库同步更新。桥里的 [c]CnpArray[/c] 硬编码偏移全部移除，数据指针改由 [c]cnp_ahk_data_ptr[/c] 提供，dtype kind 改由 [c]cnp_dtype_kind[/c] 提供；
 - [c]ToAhkNative[/c] 改用运行时发现的 [c]AhkLayout[/c] 和 cnumpy 原生填充器 [c]cnp_ahk_fill_array_flat[/c] / [c]cnp_ahk_fill_array_nd[/c]；
-- 新增 [c]lib/cnumpy/ahk_layout.ahk[/c]，整个集成不再依赖任何写死的解释器或 CnpArray 布局。
+- 新增 [c]lib/cnumpy/ahk_layout.ahk[/c]，集成层不再依赖写死的解释器或 CnpArray 布局；
+- 扫描核心提炼成单文件 [c]ahk_hack_single.ahk[/c]，并附带可运行的 [c]ahk_hack_demo.ahk[/c]。
 
-验证：1D/2D/3D 原生构造、roundtrip、view 读写、所有权、cnumpy 未受影响，全部通过。
+验证结果：1D/2D/3D 原生构造、roundtrip、view 读写、所有权、cnumpy 未受影响，全部通过。
 
 
 [b]8. 已知限制[/b]
 
-- 机器码块仅支持 x64；
-- [c]Eval()[/c] 通过同 exe 的隐藏子进程执行，返回字符串/数字；同进程 eval 仍需定位内部表达式解析器；
-- [c]PatchBif()[/c] 不追溯已缓存函数对象；
-- [c]ToAhkNative[/c] 要求 C 连续、数值类型；字符串/结构化 dtype 走旧路径；
-- 原生构造依赖运行时布局发现，跨版本使用前必须验证。
+- 机器码块只支持 x64；
+- [c]Eval()[/c] 通过同 exe 的隐藏子进程执行，返回字符串/数字；同进程 eval 还需要定位内部表达式解析器；
+- [c]PatchBif()[/c] 对已经缓存的函数对象不追溯生效；
+- [c]ToAhkNative[/c] 要求 C 连续、数值类型，字符串/结构化 dtype 走旧路径；
+- 原生构造依赖运行时布局发现，跨版本使用前要验证。
 
 
-[b]9. 结语[/b]
+[b]9. 写在后面[/b]
 
-“破解 exe”这个目标最后落到了扫描上：把 exe 当作程序自身可以读取的结构化文档，先扫描出内部地图，再在地图上做实验。cnumpy 集成用 100M 元素转换验证了这张地图，耗时从几十秒压到亚秒级。核心还是扫描。
+项目最后落在扫描上：把 exe 当作程序自身可以读取的结构化文档，先扫描出内部地图，再在地图上做实验。cnumpy 集成用 100M 元素转换验证了这张地图，耗时从几十秒压到亚秒级。后续想做的方向包括同进程 eval、自动生成 DLL 绑定，以及把更多解释器内部结构加进扫描范围。
 
 GitHub：[url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
 cnumpy：[url=https://github.com/MonoEven/cnumpy]https://github.com/MonoEven/cnumpy[/url]

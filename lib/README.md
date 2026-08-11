@@ -16,7 +16,7 @@ Repository: https://github.com/MonoEven/ahk-hack-library
 ```text
 lib/
   init.ahk                  core entry: #Include ahk_hack.ahk only
-  ahk_hack.ahk              MCode() + AhkMagic (scanning and magic)
+  ahk_hack.ahk              alias for the standalone core ahk_hack_single.ahk
   mcode/
     scanner.c               AHK interpreter table scanner (g_BIF/sMdFunc/g_BIV_A)
     export_scanner.c        generic PE export-table scanner

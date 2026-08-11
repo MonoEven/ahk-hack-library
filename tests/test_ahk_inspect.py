@@ -26,7 +26,7 @@ KNOWN_V2_X64_EXES = [
 
 class AhkInspectTest(unittest.TestCase):
     def test_mcode_blob_is_embedded(self):
-        text = (ROOT / "lib" / "ahk_hack.ahk").read_text(encoding="utf-8")
+        text = (ROOT / "ahk_hack_single.ahk").read_text(encoding="utf-8")
         marker = 'MC_BIF_SCANNER_X64 := "'
         start = text.index(marker) + len(marker)
         end = text.index('"', start)

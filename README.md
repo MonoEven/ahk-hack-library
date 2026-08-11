@@ -54,6 +54,8 @@ Practice integration: [https://github.com/MonoEven/cnumpy](https://github.com/Mo
 - **Self-contained at runtime.** No Python, no external scanner, no
   interpreter source changes. clang is needed only to rebuild the embedded
   machine code.
+- **Single-file core.** `ahk_hack_single.ahk` contains the whole scanning
+  core; `ahk_hack_demo.ahk` runs a self-test.
 
 ## Architecture
 
@@ -231,6 +233,8 @@ tests/                      core, export, and eval tests
 fork/cnumpy-ahk-bridge/     cnumpy integration tests and benchmarks
 blog_ahk_hack.txt           blog post (ZH)
 blog_ahk_hack_en.txt        blog post (EN)
+ahk_hack_single.ahk         standalone single-file core
+ahk_hack_demo.ahk           runnable self-test demo
 ```
 
 ## Building from Source

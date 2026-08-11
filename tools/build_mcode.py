@@ -17,7 +17,7 @@ SCANNER_C = ROOT / "lib" / "mcode" / "scanner.c"
 EXPORT_SCANNER_C = ROOT / "lib" / "mcode" / "export_scanner.c"
 ARRAY_BUILDER_C = ROOT / "lib" / "mcode" / "array_builder.c"
 ARRAY_CHILDREN_BUILDER_C = ROOT / "lib" / "mcode" / "array_children_builder.c"
-AHK_OUT = ROOT / "lib" / "ahk_hack.ahk"
+AHK_OUT = ROOT / "ahk_hack_single.ahk"
 
 
 def parse_coff_text(obj: bytes):
