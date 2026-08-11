@@ -47,6 +47,8 @@ Practice integration: [https://github.com/MonoEven/cnumpy](https://github.com/Mo
 - **Expression eval.** `AhkMagic.Eval()` tries the interpreter's in-process
   expression pipeline first and falls back to `EvalSubprocess()` for
   expressions it cannot evaluate yet. `EvalNative()` is the in-process core.
+  `EvalScript()` loads multi-line script text through the interpreter's own
+  `LoadIncludedFile`, so function definitions work in-process.
 - **Optional cnumpy bridge.** `CnpBridge` converts `CnpArray` to native AHK
   values, supports zero-copy views, and is validated by 1D/2D/3D tests.
 - **Self-contained at runtime.** No Python, no external scanner, no
@@ -109,6 +111,9 @@ MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5, in-process
 MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)") ; "bc", in-process
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5, in-process first
 MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))") ; explicit subprocess
+
+script := "add(a, b)`n{`n    return a + b`n}`nadd(1, 2)`n"
+MsgBox AhkMagic.EvalScript(script)          ; 3, in-process
 ```
 
 ### Optional cnumpy integration
@@ -150,6 +155,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `PatchBif(name, newName)` / `RestoreBif(name, oldPtr)` | Temporarily redirect and restore a built-in |
 | `PatchBifObject(fnObj, newName)` / `RestoreBifObject(fnObj, state)` | Deep-redirect an already-resolved built-in so direct calls are affected |
 | `Eval(expr)` | Tries the in-process pipeline, then `EvalSubprocess()` for unsupported expressions |
+| `EvalScript(text)` | Loads multi-line script text in-process and evaluates the last expression |
 | `EvalSubprocess(expr)` | Evaluates an expression string in a hidden child process |
 | `EvalNative(expr)` | Evaluates literals, operators, variables, and function calls through the interpreter's in-process expression pipeline |
 
@@ -242,6 +248,9 @@ the 100M measurement is the real figure.
 
 `EvalNative` is verified on AutoHotkey 2.1-alpha.30, 2.0.26, 2.0.0, and
 2.0-beta.10 (all x64).
+
+`EvalScript` currently carries 2.0.26 x64 internal offsets. Other builds
+raise an explicit unsupported-version error instead of degrading silently.
 
 ## Project Layout
 

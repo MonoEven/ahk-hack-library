@@ -103,6 +103,9 @@ MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))") ; explicit subproce
 MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7, in-process
 MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0, in-process
 MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5, in-process
+
+script := "add(a, b)`n{`n    return a + b`n}`nadd(1, 2)`n"
+MsgBox AhkMagic.EvalScript(script)          ; 3, in-process
 [/codebox]
 
 [c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls
@@ -112,6 +115,8 @@ covers literals, operators, global variables, and function calls on all
 verified builds. Unsupported syntax fails loudly instead of degrading
 silently. [c]Eval[/c] tries the in-process pipeline first and uses
 [c]EvalSubprocess[/c] for expressions it cannot evaluate yet.
+[c]EvalScript[/c] loads multi-line text through the interpreter's own
+[c]LoadIncludedFile[/c], so function definitions work in-process.
 
 [color=#BF4000][b]4.4 Rebuilding the machine code[/b][/color]
 
@@ -455,6 +460,164 @@ class AhkMagic {
             ; back to the explicit subprocess implementation.
         }
         return AhkMagic.EvalSubprocess(expr)
+    }
+
+    static EvalScript(text) {
+        AhkMagic.Init()
+        if !(text is String)
+            throw TypeError("text must be a string", -1)
+        if Trim(text) = ""
+            throw ValueError("text must not be empty", -1)
+
+        entry := AhkMagic._EvalScriptOffsets().Get(A_AhkVersion, 0)
+        if !entry
+            throw Error("in-process EvalScript not adapted for " A_AhkVersion)
+        AhkMagic._LocateInternalFunctions()
+
+        last := ""
+        for line in StrSplit(text, "`n", "`r") {
+            t := Trim(line)
+            if t = ""
+                continue
+            if RegExMatch(t, "^(if|else|for|while|loop|try|catch|finally|return|break|continue|class|static|global|local|throw)\b")
+                continue
+            if SubStr(t, -1) = "{"
+                continue
+            last := t
+        }
+        if last = ""
+            throw ValueError("no expression result found in script text", -1)
+
+        tag := Format("{:x}", A_TickCount) "-" Format("{:x}", Random(1, 0x7fffffff))
+        tmp := A_Temp "\ahk_mcode_inproc_" tag ".ahk"
+        if FileExist(tmp)
+            FileDelete tmp
+        FileAppend text, tmp, "UTF-8"
+
+        savedDir := A_WorkingDir
+        gScript := AhkMagic.gScript
+        oldLast := NumGet(gScript, entry["mlastline"], "Ptr")
+        g := NumGet(AhkMagic.moduleBase + entry["gptr"], "Ptr")
+        savedCur := NumGet(g, entry["curr_off"], "Ptr")
+        try {
+            NumPut("Ptr", 0, gScript, entry["mopen"])
+            NumPut("Ptr", 0, gScript, entry["mpending_parent"])
+            NumPut("Ptr", 0, gScript, entry["mpending_related"])
+            NumPut("Ptr", 0, gScript, entry["mlast_param_init"])
+            NumPut("UChar", 0, gScript, entry["mnext_func_body"])
+            NumPut("Int", 0, gScript, entry["mclass_count"])
+            NumPut("Ptr", 0, g, entry["curr_off"])
+
+            rc := DllCall(AhkMagic.moduleBase + entry["load"]
+                , "Ptr", gScript
+                , "Str", tmp
+                , "Int", 1
+                , "Int", 0
+                , "Int")
+            if rc != 1
+                throw Error("LoadIncludedFile failed with rc=" rc)
+
+            funcsItem := NumGet(gScript, entry["mfuncs"], "Ptr")
+            funcCount := NumGet(gScript, entry["mfuncs_count"], "Int")
+            if funcCount < 1
+                throw Error("no functions registered")
+            newFunc := NumGet(funcsItem + (funcCount - 1) * 8, "Ptr")
+            jump := NumGet(newFunc, entry["mjumpline"], "Ptr")
+            if !jump
+                throw Error("new function has no body")
+
+            rc2 := DllCall(AhkMagic.moduleBase + entry["preparse"]
+                , "Ptr", gScript
+                , "Ptr", jump
+                , "Int")
+            if rc2 != 1
+                throw Error("PreparseExpressions failed with rc=" rc2)
+
+            NumPut("Ptr", newFunc, g, entry["curr_off"])
+            line := jump
+            while line {
+                if NumGet(line, entry["line_action"], "UChar") = 3
+                    and NumGet(line, entry["line_attribute"], "Ptr")
+                    NumPut("Ptr", NumGet(line, entry["line_attribute"], "Ptr")
+                        , g, entry["curr_off"])
+                argc := NumGet(line, entry["line_argc"], "UChar")
+                if argc {
+                    arg := NumGet(line, entry["line_arg"], "Ptr")
+                    if arg and NumGet(arg, 1, "UChar") {
+                        postfix := NumGet(arg, entry["arg_postfix"], "Ptr")
+                        if postfix {
+                            while NumGet(postfix, entry["token_symbol"], "UInt") != AhkMagic.symInvalid {
+                                if NumGet(postfix, entry["token_symbol"], "UInt") = 4
+                                    and NumGet(postfix, entry["token_usage"], "UInt") < 3 {
+                                    deref := NumGet(postfix, entry["token_value"], "Ptr")
+                                    if deref {
+                                        var := DllCall(AhkMagic.findOrAddVar
+                                            , "Ptr", gScript
+                                            , "Ptr", NumGet(deref, entry["deref_marker"], "Ptr")
+                                            , "UPtr", NumGet(deref, entry["deref_len"], "UInt")
+                                            , "UInt", 0x103
+                                            , "Ptr")
+                                        if var
+                                            NumPut("Ptr", var, postfix, entry["token_value"])
+                                    }
+                                }
+                                postfix += 24
+                            }
+                        }
+                    }
+                }
+                line := NumGet(line, entry["line_next"], "Ptr")
+            }
+            NumPut("Ptr", savedCur, g, entry["curr_off"])
+            rc4 := DllCall(AhkMagic.moduleBase + entry["preproc"]
+                , "Ptr", gScript
+                , "Ptr", newFunc
+                , "Int")
+            if rc4 != 1
+                throw Error("PreprocessLocalVars failed with rc=" rc4)
+            NumPut("Ptr", 0, g, entry["curr_off"])
+            r := AhkMagic.EvalNative(last)
+            NumPut("Ptr", savedCur, g, entry["curr_off"])
+            return r
+        } finally {
+            if FileExist(tmp)
+                FileDelete tmp
+            try
+                SetWorkingDir savedDir
+        }
+    }
+
+    static _EvalScriptOffsets() {
+        return Map(
+            "2.0.26", Map(
+                "load", 0x47840,
+                "preparse", 0x58370,
+                "preproc", 0x620e0,
+                "gptr", 0x1221d8,
+                "curr_off", 0x28,
+                "mopen", 112,
+                "mpending_parent", 120,
+                "mpending_related", 128,
+                "mlast_param_init", 136,
+                "mnext_func_body", 144,
+                "mclass_count", 148,
+                "mlastline", 8,
+                "mfuncs", 32,
+                "mfuncs_count", 40,
+                "mjumpline", 0x40,
+                "line_action", 0,
+                "line_argc", 1,
+                "line_arg", 8,
+                "line_attribute", 16,
+                "line_next", 32,
+                "arg_postfix", 24,
+                "token_symbol", 16,
+                "token_usage", 8,
+                "token_value", 0,
+                "deref_marker", 0,
+                "deref_len", 20
+            )
+        )
     }
 
     static EvalSubprocess(expr) {
