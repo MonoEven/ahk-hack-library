@@ -24,7 +24,7 @@ Once this logic is in machine code, the same blob runs on 2.0-beta, 2.0.0, 2.0.2
 
 The machine code is written in C, compiled with clang, extracted from the [c].text[/c] section of the COFF object, and embedded into AHK as a hex string:
 
-[codebox=text file=tools\build_mcode.py excerpt]
+[codebox=text file=mcode-build]
 clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
   -fno-builtin -fno-stack-protector -fno-unwind-tables \
   -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
@@ -44,7 +44,7 @@ The scanning core is distilled into one file: [c]ahk_hack_single.ahk[/c]. It con
 
 Library layout:
 
-[codebox=text file=library layout]
+[codebox=text file=library-layout]
 ahk_hack_single.ahk        single-file core
 ahk_hack_demo.ahk          runnable demo
 lib/
@@ -61,7 +61,7 @@ tests/                     core, export scan, and eval tests
 
 [color=#BF4000][b]4.1 Core scanning[/b][/color]
 
-[codebox=autohotkey file=single-file core usage]
+[codebox=autohotkey file=single-file-core-usage]
 #Include ahk_hack_single.ahk
 
 AhkMagic.Init()
@@ -77,7 +77,7 @@ MsgBox exports.Count
 
 [color=#BF4000][b]4.2 Built-in redirection[/b][/color]
 
-[codebox=autohotkey file=built-in pointer replacement]
+[codebox=autohotkey file=built-in-pointer-replacement]
 #Include ahk_hack_single.ahk
 
 old := AhkMagic.PatchBif("Abs", "Sin")
@@ -96,7 +96,7 @@ in source also returns `sin(1)`, and is restored to 1 afterwards.
 
 [color=#BF4000][b]4.3 Expression Eval[/b][/color]
 
-[codebox=autohotkey file=Eval usage]
+[codebox=autohotkey file=eval-usage]
 #Include ahk_hack_single.ahk
 
 MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
