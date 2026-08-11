@@ -50,7 +50,6 @@ ahk_hack_demo.ahk          runnable demo
 lib/
   ahk_hack.ahk             library alias for the single-file core
   mcode/                   machine-code C sources
-  cnumpy/                  optional integration (see repo)
 tools/
   build_mcode.py           compiles and embeds the machine code
   ahk_inspect.py           Python/PE cross-check analyzer
@@ -79,6 +78,8 @@ MsgBox exports.Count
 [color=#BF4000][b]4.2 Built-in redirection[/b][/color]
 
 [codebox=autohotkey file=built-in pointer replacement]
+#Include ahk_hack_single.ahk
+
 old := AhkMagic.PatchBif("Abs", "Sin")
 name := "Abs"
 MsgBox %name%(1)              ; first dynamic call returns sin(1)
@@ -90,6 +91,8 @@ AutoHotkey may cache already-resolved function objects, so "the first dynamic ca
 [color=#BF4000][b]4.3 Expression Eval[/b][/color]
 
 [codebox=autohotkey file=Eval usage]
+#Include ahk_hack_single.ahk
+
 MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
 [/codebox]

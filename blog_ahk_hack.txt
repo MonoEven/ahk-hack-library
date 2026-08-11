@@ -50,7 +50,6 @@ ahk_hack_demo.ahk          可直接运行的演示
 lib/
   ahk_hack.ahk             单文件核心的库别名
   mcode/                   机器码 C 源码
-  cnumpy/                  可选集成（细节见仓库）
 tools/
   build_mcode.py           编译并嵌入机器码
   ahk_inspect.py           Python/PE 交叉验证
@@ -79,6 +78,8 @@ MsgBox exports.Count
 [color=#BF4000][b]4.2 内置函数重定向[/b][/color]
 
 [codebox=autohotkey file=内置函数指针替换]
+#Include ahk_hack_single.ahk
+
 old := AhkMagic.PatchBif("Abs", "Sin")
 name := "Abs"
 MsgBox %name%(1)              ; 首次动态调用返回 sin(1)
@@ -90,6 +91,8 @@ AHK 可能缓存已经解析过的函数对象，所以“首次动态调用反�
 [color=#BF4000][b]4.3 表达式 Eval[/b][/color]
 
 [codebox=autohotkey file=Eval 用法]
+#Include ahk_hack_single.ahk
+
 MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
 [/codebox]
