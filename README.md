@@ -116,7 +116,7 @@ MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
 Numpy.DllPath := "D:\...\build\x64\Release\cnumpy_ahk.dll"
 #Include lib\cnumpy\init.ahk
 
-ahk := CnpBridge.ToAhkNative(arr)   ; N-D deep copy filled by machine code
+ahk := CnpBridge.ToAhkNative(arr)   ; N-D deep copy, runtime-discovered layout
 view := CnpBridge.View(arr)         ; zero-copy read/write view
 ```
 
@@ -157,6 +157,11 @@ underlying array cannot be freed while the view is alive. Writes through the
 view require a writeable array. See
 [`docs/lifecycle-and-ownership.md`](fork/cnumpy-ahk-bridge/docs/lifecycle-and-ownership.md)
 for the full contract.
+
+The cnumpy bridge does not hardcode `CnpArray` offsets. Data pointers come
+from `cnp_ahk_data_ptr`, dtype kind from `cnp_dtype_kind`, and native Array
+construction uses `AhkLayout.Discover()` with cnumpy's own
+`cnp_ahk_fill_array_flat` / `cnp_ahk_fill_array_nd` fillers.
 
 ## Security
 

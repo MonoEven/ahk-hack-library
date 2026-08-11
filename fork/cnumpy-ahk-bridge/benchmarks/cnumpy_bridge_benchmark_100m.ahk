@@ -1,8 +1,7 @@
 #SingleInstance Force
 #NoTrayIcon
 
-#Include ..\..\..\lib\cnumpy\numpy.ahk
-#Include ..\..\..\lib\cnumpy\cnumpy_bridge.ahk
+#Include ..\..\..\lib\cnumpy\init.ahk
 
 out := ""
 outFile := A_ScriptDir "\cnumpy_bridge_benchmark_100m.out"

@@ -45,6 +45,10 @@ enables.
 
 ## Optional cnumpy integration
 
+The bridge does not hardcode `CnpArray` offsets. It uses `cnp_ahk_data_ptr`,
+`cnp_dtype_kind`, and the runtime-discovered `AhkLayout` with cnumpy's native
+fillers.
+
 ```ahk
 Numpy.DllPath := "D:\...\cnumpy_ahk.dll"
 #Include lib\cnumpy\init.ahk

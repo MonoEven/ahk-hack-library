@@ -8,5 +8,6 @@
 ; default location expected by numpy.ahk.
 
 #Include ..\ahk_hack.ahk
+#Include ahk_layout.ahk
 #Include numpy.ahk
 #Include cnumpy_bridge.ahk

@@ -136,7 +136,7 @@ Numpy.DllPath := "D:\...\build\x64\Release\cnumpy_ahk.dll"
 meta := CnpBridge.Metadata(arr)            ; read CnpArray metadata (read-only)
 ahk  := CnpBridge.ToAhk(arr)               ; deep copy to nested AHK Array
 fast := CnpBridge.ToAhkFast(arr)           ; deep copy via raw bytes
-native := CnpBridge.ToAhkNative(arr)       ; mcode fills Array internals, fastest
+native := CnpBridge.ToAhkNative(arr)       ; runtime-discovered layout, fastest
 view := CnpBridge.View(arr)                ; zero-copy read/write view
 buf  := CnpBridge.ToBuffer(arr)            ; raw bytes into an AHK Buffer
 

@@ -137,7 +137,7 @@ Numpy.DllPath := "D:\...\build\x64\Release\cnumpy_ahk.dll"
 meta := CnpBridge.Metadata(arr)            ; 读 CnpArray 元数据（只读）
 ahk  := CnpBridge.ToAhk(arr)               ; 深拷贝成嵌套 AHK Array
 fast := CnpBridge.ToAhkFast(arr)           ; 原始字节读取的深拷贝
-native := CnpBridge.ToAhkNative(arr)       ; mcode 直接填 Array 内部，最快
+native := CnpBridge.ToAhkNative(arr)       ; 运行时布局发现，最快
 view := CnpBridge.View(arr)                ; 零拷贝读/写视图
 buf  := CnpBridge.ToBuffer(arr)            ; 原始字节拷进 AHK Buffer
 

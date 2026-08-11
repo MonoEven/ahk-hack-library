@@ -1,25 +1,17 @@
 ; cnumpy_bridge.ahk - CnpArray <-> native AHK value bridge.
 ;
-; This is a read-only adapter over the existing numpy.ahk wrapper.  It never
-; modifies cnumpy internals; the raw CnpArray peek is used only to read
-; metadata and to copy data out into AHK-owned buffers.
+; No hardcoded CnpArray offsets.  Metadata comes from the public NdArray
+; wrapper and native exports (cnp_ahk_data_ptr, cnp_dtype_kind), and native
+; Array construction uses the runtime-discovered AHK layout (AhkLayout) with
+; cnumpy's own fillers.
 ;
-; Caller must #Include the fork copy of numpy.ahk before this file.
+; Caller must #Include ahk_layout.ahk and numpy.ahk before this file
+; (lib/cnumpy/init.ahk does this).
 
 #Include ..\ahk_hack.ahk
 
 class CnpBridge {
     static DllPath := ""
-
-    ; CnpArray struct offsets on x64.  Read-only metadata peek.
-    static _OFF_NDIM := 0
-    static _OFF_SHAPE := 8
-    static _OFF_STRIDES := 16
-    static _OFF_SIZE := 24
-    static _OFF_DATA := 32
-    static _OFF_DTYPE := 40
-    static _OFF_FLAGS := 48
-    static _OFF_OFFSET := 64
 
     static EnsureDll() {
         if Numpy.DllHandle
@@ -33,42 +25,28 @@ class CnpBridge {
         CnpBridge.EnsureDll()
         if !(ndarray is Numpy.NdArray)
             throw TypeError("expected Numpy.NdArray, got " Type(ndarray))
-        if A_PtrSize != 8
-            throw Error("CnpBridge currently requires x64 AutoHotkey")
         handle := ndarray.Handle
         if !handle
             throw Error("NdArray handle is null")
-        ndim := NumGet(handle, CnpBridge._OFF_NDIM, "Int")
-        shapePtr := NumGet(handle, CnpBridge._OFF_SHAPE, "Ptr")
-        stridesPtr := NumGet(handle, CnpBridge._OFF_STRIDES, "Ptr")
-        size := NumGet(handle, CnpBridge._OFF_SIZE, "Int64")
-        dataPtr := NumGet(handle, CnpBridge._OFF_DATA, "Ptr")
-        dtypePtr := NumGet(handle, CnpBridge._OFF_DTYPE, "Ptr")
-        flags := NumGet(handle, CnpBridge._OFF_FLAGS, "UInt")
-        offset := NumGet(handle, CnpBridge._OFF_OFFSET, "Int64")
-        shape := []
-        strides := []
-        loop ndim {
-            shape.Push(NumGet(shapePtr, (A_Index - 1) * 8, "Int64"))
-            strides.Push(NumGet(stridesPtr, (A_Index - 1) * 8, "Int64"))
-        }
-        dtype := dtypePtr ? NumGet(dtypePtr, 0, "Int") : 0
-        itemSize := dtypePtr ? NumGet(dtypePtr, 4, "Int") : 0
-        kind := dtypePtr ? Chr(NumGet(dtypePtr, 12, "UChar")) : ""
-        byteorder := dtypePtr ? Chr(NumGet(dtypePtr, 13, "UChar")) : ""
+        dataPtr := DllCall(Numpy.Proc("cnp_ahk_data_ptr"),
+            "Ptr", handle, "Ptr")
+        if !dataPtr
+            throw Error("cnp_ahk_data_ptr returned null")
+        dtype := ndarray.Dtype
+        kindCode := DllCall(Numpy.Proc("cnp_dtype_kind"),
+            "Int", dtype, "Char")
+        flags := ndarray.Flags
         return Map(
-            "ndim", ndim,
-            "shape", shape,
-            "strides", strides,
-            "size", size,
+            "ndim", ndarray.Ndim,
+            "shape", ndarray.Shape,
+            "strides", ndarray.Strides,
+            "size", ndarray.Size,
             "data", dataPtr,
-            "offset", offset,
             "dtype", dtype,
-            "item_size", itemSize,
-            "kind", kind,
-            "byteorder", byteorder,
+            "item_size", ndarray.ItemSize,
+            "kind", Chr(kindCode),
             "flags", flags,
-            "c_contiguous", (flags & 0x0001) != 0,
+            "c_contiguous", ndarray.CContiguous,
             "writeable", (flags & 0x0400) != 0
         )
     }
@@ -91,62 +69,65 @@ class CnpBridge {
             throw Error("ToAhkFast supports numeric dtypes only")
         if !meta["c_contiguous"]
             throw Error("ToAhkFast requires a C-contiguous array")
-        if !meta["data"]
-            throw Error("array data pointer is null")
-        base := meta["data"] + meta["offset"]
         flat := []
         loop meta["size"] {
             flat.Push(NumGet(
-                base + (A_Index - 1) * meta["item_size"], typeName))
+                meta["data"] + (A_Index - 1) * meta["item_size"], typeName))
         }
         pos := 0
         return CnpBridge._Reshape(flat, meta["shape"], &pos)
     }
 
-    ; Native deep copy: mcode fills the internal Variant array of a real AHK
-    ; Array() object, so there is no AHK element loop at all.
+    ; Native deep copy using the runtime-discovered interpreter layout and
+    ; cnumpy's own fillers.  No hardcoded Array or CnpArray offsets.
     static ToAhkNative(ndarray) {
-        meta := CnpBridge.Metadata(ndarray)
-        typeCode := CnpBridge._TypeCode(meta)
+        CnpBridge.EnsureDll()
+        if !ndarray.CContiguous
+            throw ValueError("ToAhkNative requires a C-contiguous array")
+        typeCode := CnpBridge._TypeCode(CnpBridge.Metadata(ndarray))
         if typeCode < 0
-            throw Error("ToAhkNative supports numeric dtypes only")
-        if !meta["c_contiguous"]
-            throw Error("ToAhkNative requires a C-contiguous array")
-        if !meta["data"]
-            throw Error("array data pointer is null")
-        if meta["ndim"] = 0
+            throw TypeError("ToAhkNative supports numeric dtypes only")
+        if ndarray.Ndim = 0
             return ndarray.GetItem(0)
-        return CnpBridge._BuildNativeNode(meta, meta["shape"], 0, 0, typeCode)
+
+        layout := AhkLayout.Discover()
+        layoutBuf := AhkLayout.ToBuffer(layout)
+        dataPtr := DllCall(Numpy.Proc("cnp_ahk_data_ptr"),
+            "Ptr", ndarray.Handle, "Ptr")
+        if !dataPtr
+            throw Error("cnp_ahk_data_ptr returned null")
+
+        shape := ndarray.Shape
+        root := CnpBridge._BuildEmptyNativeTree(shape)
+        if ndarray.Ndim = 1 {
+            status := DllCall(Numpy.Proc("cnp_ahk_fill_array_flat"),
+                "Ptr", ObjPtr(root), "Ptr", dataPtr,
+                "Int64", shape[1], "Int", ndarray.ItemSize,
+                "Int", typeCode, "Ptr", layoutBuf.Ptr, "Int")
+        } else {
+            shapeBuf := Numpy.ShapeBuffer(shape)
+            status := DllCall(Numpy.Proc("cnp_ahk_fill_array_nd"),
+                "Ptr", ObjPtr(root), "Ptr", dataPtr,
+                "Int", ndarray.Ndim, "Ptr", shapeBuf,
+                "Int", ndarray.ItemSize, "Int", typeCode,
+                "Ptr", layoutBuf.Ptr, "Int")
+        }
+        Numpy.CheckStatus(status, "CnpBridge.ToAhkNative")
+        return root
     }
 
-    static _BuildNativeNode(meta, shape, dim, leafOffset, typeCode) {
-        count := shape[dim + 1]
-        if dim = meta["ndim"] - 1 {
-            result := Array()
-            result.Capacity := count
-            itemPtr := NumGet(ObjPtr(result), 32, "Ptr")
-            dataPtr := meta["data"] + meta["offset"] + leafOffset * meta["item_size"]
-            AhkMagic.BuildArrayFlat(
-                ObjPtr(result), itemPtr, dataPtr,
-                count, meta["item_size"], typeCode)
-            return result
-        }
+    ; Build the empty nested Array tree.  Parents hold children through the
+    ; public Push API; cnumpy's fillers read the object variants.
+    static _BuildEmptyNativeTree(shape, dim := 1) {
+        count := shape[dim]
         result := Array()
         result.Capacity := count
-        childStride := 1
-        loop meta["ndim"] - dim - 1
-            childStride *= shape[dim + 1 + A_Index]
-        childPtrs := Buffer(count * 8, 0)
-        children := []
+        if dim = shape.Length
+            return result
         loop count {
-            child := CnpBridge._BuildNativeNode(
-                meta, shape, dim + 1,
-                leafOffset + (A_Index - 1) * childStride, typeCode)
-            children.Push(child)
-            NumPut("Ptr", ObjPtr(child), childPtrs, (A_Index - 1) * 8)
+            child := CnpBridge._BuildEmptyNativeTree(shape, dim + 1)
+            result.Push(child)
         }
-        AhkMagic.BuildArrayChildren(ObjPtr(result), childPtrs, count)
-        children := 0
         return result
     }
 
@@ -159,11 +140,8 @@ class CnpBridge {
         meta := CnpBridge.Metadata(ndarray)
         if meta["size"] = 0
             return Buffer(0)
-        if !meta["data"]
-            throw Error("array data pointer is null")
         buf := Buffer(meta["size"] * meta["item_size"])
-        src := meta["data"] + meta["offset"]
-        DllCall("msvcrt\memcpy", "Ptr", buf.Ptr, "Ptr", src,
+        DllCall("msvcrt\memcpy", "Ptr", buf.Ptr, "Ptr", meta["data"],
             "UPtr", buf.Size)
         return buf
     }
@@ -210,8 +188,7 @@ class CnpBridge {
             NumPut(typeName, flat[A_Index], buf,
                 (A_Index - 1) * meta["item_size"])
         }
-        dest := meta["data"] + meta["offset"]
-        DllCall("msvcrt\memcpy", "Ptr", dest, "Ptr", buf.Ptr,
+        DllCall("msvcrt\memcpy", "Ptr", meta["data"], "Ptr", buf.Ptr,
             "UPtr", buf.Size)
         return arr
     }
@@ -377,8 +354,8 @@ class CnpView {
 
     ToBuffer() {
         buf := Buffer(this.Size)
-        DllCall("msvcrt\memcpy", "Ptr", buf.Ptr, "Ptr",
-            this.Ptr + this.Meta["offset"], "UPtr", this.Size)
+        DllCall("msvcrt\memcpy", "Ptr", buf.Ptr, "Ptr", this.Ptr,
+            "UPtr", this.Size)
         return buf
     }
 
@@ -389,8 +366,7 @@ class CnpView {
             throw Error("CnpView.ToAhk supports numeric dtypes only")
         loop this.Meta["size"] {
             flat.Push(NumGet(
-                this.Ptr + this.Meta["offset"]
-                + (A_Index - 1) * this.Meta["item_size"], typeName))
+                this.Ptr + (A_Index - 1) * this.Meta["item_size"], typeName))
         }
         pos := 0
         return CnpBridge._Reshape(flat, this.Meta["shape"], &pos)
@@ -401,8 +377,7 @@ class CnpView {
             throw Error("flat index out of range")
         typeName := CnpBridge._TypeFor(this.Meta)
         return NumGet(
-            this.Ptr + this.Meta["offset"] + flatIndex * this.Meta["item_size"],
-            typeName)
+            this.Ptr + flatIndex * this.Meta["item_size"], typeName)
     }
 
     Set(flatIndex, value) {
@@ -412,7 +387,7 @@ class CnpView {
             throw Error("flat index out of range")
         typeName := CnpBridge._TypeFor(this.Meta)
         NumPut(typeName, value,
-            this.Ptr + this.Meta["offset"] + flatIndex * this.Meta["item_size"])
+            this.Ptr + flatIndex * this.Meta["item_size"])
     }
 
     __Delete() {
