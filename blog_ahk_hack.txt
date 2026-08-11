@@ -129,6 +129,7 @@ class Point {
 Point(1, 2).x
 )"
 MsgBox AhkMagic.EvalScript(classScript)     ; 1，类定义并实例化
+MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2，类已加载并在进程内使用
 [/codebox]
 
 [c]EvalNative[/c]会构造临时[c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的[c]ExpressionToPostfix[/c]和[c]ExpandExpression[/c]。已验证的四个版本上都支持字面量、运算符、全局变量与函数调用；不支持的语法会直接报错。

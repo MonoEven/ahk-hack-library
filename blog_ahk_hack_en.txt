@@ -129,6 +129,7 @@ class Point {
 Point(1, 2).x
 )"
 MsgBox AhkMagic.EvalScript(classScript)     ; 1, class loaded and used in-process
+MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2, class loaded and used in-process
 [/codebox]
 
 [c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls the interpreter's own [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c] in this process. It covers literals, operators, global variables, and function calls on the verified builds. Unsupported syntax fails loudly.
