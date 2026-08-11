@@ -1,0 +1,246 @@
+[b]AutoHotkey 运行时扫描库（ahk-hack）：不“破解”exe，而是读懂它[/b]
+
+仓库地址：[url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
+
+这个项目最早的目标听起来像“破解 autohotkey.exe”，但做下来真正有价值的东西不是爆破，而是一套可以在运行时自动读懂 AutoHotkey 可执行文件的扫描库。它把机器码直接嵌进一个 AHK v2 文件里，让脚本在运行时定位解释器内部结构，并在这些结构之上做一些“魔法操作”。cnumpy 数组转换只是用来验证这套扫描能力的实践成果，不是核心。
+
+核心只有一句话：拿到 exe，扫出它的内部地图，剩下的操作都建立在这张地图上。
+
+
+[b]一、核心能力：扫描[/b]
+
+AutoHotkey 2 的解释器在 `.data` 段里维护着几张关键表。扫描器通过 PE 解析找到它们：
+
+- [c]g_BIF[/c]：内置脚本函数表，例如 [c]Abs[/c]、[c]Sin[/c]，x64 下每条记录 0x20 字节；
+- [c]sMdFunc[/c]：带类型签名的原生函数表，例如 [c]MsgBox[/c]、[c]WinActivate[/c]，0x28 字节；
+- [c]g_BIV_A[/c]：以 [c]A_[/c] 开头的内置变量表，例如 [c]A_AhkPath[/c]、[c]A_YYYY[/c]，0x18 字节。
+
+扫描不是靠猜偏移。机器码先解析 DOS/NT/节表，再按“名字指针指向 UTF-16 字符串、函数指针落在 .text、表内按字典序排列”这些不变式定位表，最后把每条记录的 RVA、参数、ID 全部读出来。同一个机器码可以跑在 2.0-beta、2.0.0、2.0.26、2.1-alpha 上，不需要为每个版本改一行。
+
+同样的思路还泛化成了通用 PE 导出表扫描器。给任意一个已加载的 DLL/EXE 基址，它就能把导出表里的函数名、RVA、序号全部枚举出来。[c]cnumpy_ahk.dll[/c] 的 1027 个导出就是这样被自动识别的。
+
+
+[b]二、机器码从哪里来[/b]
+
+机器码不是手写汇编，而是用 C 写、clang 编译、再从 COFF 对象的 [c].text[/c] 段提取出来的：
+
+[codebox=text file=tools\build_mcode.py 摘要]
+clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
+  -fno-builtin -fno-stack-protector -fno-unwind-tables \
+  -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
+[/codebox]
+
+构建脚本会检查 [c].text[/c] 里的重定位：如果任何重定位逃出了代码块，就拒绝嵌入。这样保证嵌入 AHK 的是一段完全自包含、位置无关的机器码。
+
+库里的四个机器码块分别是：
+
+- [c]scanner.c[/c]：AutoHotkey 解释器三张内部表扫描；
+- [c]export_scanner.c[/c]：通用 PE 导出表扫描；
+- [c]array_builder.c[/c]：直接填充 AHK [c]Array()[/c] 内部 [c]mItem[/c]，用于数值叶子节点；
+- [c]array_children_builder.c[/c]：把子 Array 指针写入父节点的 [c]SYM_OBJECT[/c] Variant，并正确 AddRef。
+
+
+[b]三、库结构[/b]
+
+[codebox=text file=库结构]
+lib/
+  init.ahk                  核心入口，只引入扫描层
+  ahk_hack.ahk              MCode() + AhkMagic
+  mcode/
+    scanner.c               解释器表扫描
+    export_scanner.c        通用 PE 导出扫描
+    array_builder.c         原生 Array 数值填充
+    array_children_builder.c 原生 Array 子节点填充
+  cnumpy/                   可选的实践集成
+    init.ahk
+    numpy.ahk
+    cnumpy_bridge.ahk       CnpBridge + CnpView
+tools/
+  build_mcode.py            编译并嵌入机器码
+  ahk_inspect.py            Python/PE 交叉验证分析器
+fork/cnumpy-ahk-bridge/     cnumpy 集成测试与基准
+[/codebox]
+
+根目录的 [c]ahk_mcode.ahk[/c] 只保留了一行兼容别名，旧脚本仍可继续 [c]#Include[/c]。
+
+
+[b]四、使用说明[/b]
+
+[color=#BF4000][b]4.1 引入核心扫描库[/b][/color]
+
+[codebox=autohotkey file=lib\init.ahk]
+; ahk-hack library entry point.
+;
+; The core of the library is the scanning layer: MCode + AhkMagic, which
+; locates AutoHotkey interpreter tables (g_BIF / sMdFunc / g_BIV_A) and
+; scans the PE export tables of arbitrary DLL/EXE modules.
+
+#Include ahk_hack.ahk
+[/codebox]
+
+脚本里这样使用：
+
+[codebox=autohotkey file=核心扫描用法]
+#Include lib\init.ahk
+
+AhkMagic.Init()
+MsgBox AhkMagic.Summary()
+
+; 解析某个内置函数的 C 函数 RVA / 绝对地址
+absRva  := AhkMagic.BifRva("Abs")
+absAddr := AhkMagic.BifAddr("Abs")
+
+; 扫描任意已加载模块的导出表
+hmod := DllCall("LoadLibraryW", "Str", "D:\path\cnumpy_ahk.dll", "Ptr")
+exports := AhkMagic.ScanExports(hmod)
+MsgBox exports.Count
+[/codebox]
+
+[color=#BF4000][b]4.2 修改性魔法操作[/b][/color]
+
+[codebox=autohotkey file=内置函数指针替换]
+old := AhkMagic.PatchBif("Abs", "Sin")   ; 把 Abs 的 C 函数指针临时换成 Sin
+name := "Abs"
+MsgBox %name%(1)                          ; 第一次动态调用会得到 sin(1)
+AhkMagic.RestoreBif("Abs", old)           ; 还原表指针
+[/codebox]
+
+注意：AHK 对已解析过的函数对象可能缓存旧目标，所以“首次动态调用反映新指针”是预期行为；内存层面表指针一定被改回去了。
+
+[color=#BF4000][b]4.3 表达式 Eval[/b][/color]
+
+[codebox=autohotkey file=Eval 用法]
+MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
+MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
+[/codebox]
+
+[color=#BF4000][b]4.4 可选 cnumpy 集成[/b][/color]
+
+先设置 DLL 路径，再引入集成入口：
+
+[codebox=autohotkey file=lib\cnumpy\init.ahk]
+; Optional cnumpy integration for the ahk-hack library.
+;
+; Set Numpy.DllPath before first use when the cnumpy DLL is not at the
+; default location expected by numpy.ahk.
+
+#Include ..\ahk_hack.ahk
+#Include numpy.ahk
+#Include cnumpy_bridge.ahk
+[/codebox]
+
+[codebox=autohotkey file=cnumpy 转换用法]
+Numpy.DllPath := "D:\...\build\x64\Release\cnumpy_ahk.dll"
+#Include lib\cnumpy\init.ahk
+
+meta := CnpBridge.Metadata(arr)            ; 读 CnpArray 元数据（只读）
+ahk  := CnpBridge.ToAhk(arr)               ; 深拷贝成嵌套 AHK Array
+fast := CnpBridge.ToAhkFast(arr)           ; 原始字节读取的深拷贝
+native := CnpBridge.ToAhkNative(arr)       ; mcode 直接填 Array 内部，最快
+view := CnpBridge.View(arr)                ; 零拷贝读/写视图
+buf  := CnpBridge.ToBuffer(arr)            ; 原始字节拷进 AHK Buffer
+
+back1 := CnpBridge.FromAhk(ahk, dtype)     ; 嵌套数组 -> cnumpy
+back2 := CnpBridge.FromAhkFast(ahk, dtype) ; 精确 dtype 快速回填
+back3 := CnpBridge.FromBuffer(buf, dtype)  ; Buffer -> cnumpy（拷贝语义）
+[/codebox]
+
+[color=#BF4000][b]4.5 生命周期与所有权（必须遵守）[/b][/color]
+
+- [c]ToAhk / ToAhkFast / ToAhkNative / ToBuffer / FromAhk / FromAhkFast / FromBuffer[/c] 全部是拷贝语义，AHK 与 cnumpy 各管各的内存；
+- [c]CnpView[/c] 是零拷贝借用。它持有对 Owner [c]NdArray[/c] 的强引用，所以只要 view 还活着，cnumpy 数组就不会被释放；view 和原引用都释放后，数组才正常回收；
+- view 的写操作只在数组可写（[c]CNP_ARRAY_WRITEABLE[/c]）时允许；
+- 不要保存 [c]view.Ptr[/c] 到全局再在 view 释放后使用；
+- 原生构造使用 [c]Array().Capacity := n[/c] 让解释器自己分配 [c]mItem[/c]，不要用外部 Buffer 顶替，否则退出时会双重释放。
+
+完整规则见 [c]fork/cnumpy-ahk-bridge/docs/lifecycle-and-ownership.md[/c]。
+
+[color=#BF4000][b]4.6 重新构建机器码[/b][/color]
+
+需要 LLVM clang（本机在 [c]F:\Tech\LLVM\bin\clang.exe[/c]）：
+
+[codebox=text file=重新构建]
+python tools\build_mcode.py --embed-only --out lib\ahk_hack.ahk
+[/codebox]
+
+构建脚本会编译 [c]lib/mcode/*.c[/c]，检查重定位后把四个机器码块写回 [c]lib/ahk_hack.ahk[/c]。
+
+[color=#BF4000][b]4.7 验证与测试[/b][/color]
+
+[codebox=text file=测试]
+python -m unittest discover -s tests -p 'test_*.py' -v
+
+; 核心扫描/补丁
+& D:\...\AutoHotkey64.exe tests\ahk_mcode_test.ahk
+; 通用导出扫描
+& D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
+; cnumpy 集成（含 1D/2D/3D 原生构造）
+& D:\...\AutoHotkey64.exe fork\cnumpy-ahk-bridge\tests\cnumpy_bridge.test.ahk
+[/codebox]
+
+已验证版本：2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10（均为 64 位）。
+
+
+[b]五、安全性（重要，请完整阅读）[/b]
+
+[color=#BF4000]这个库会在你的进程里分配可执行内存、执行机器码、并直接读写解释器内部结构。它不是玩具，请把它当成逆向工程研究工具对待。[/color]
+
+[b]5.1 只读操作与修改操作要分开看待[/b]
+
+- 只读操作（[c]Init / Summary / BifRva / BifAddr / ScanExports / Metadata / View 读[/c]）：不修改任何状态，风险主要是兼容性；
+- 修改操作（[c]PatchBif / RestoreBif / WriteRaw / View.Set[/c]）：直接改进程内存中的内部表或数据。写错偏移、写错类型、时序不对，都可能直接崩溃。本项目在开发中真实遇到过 [c]0xC0000374[/c]（堆损坏）和解释器 Critical Error；
+- 执行操作（[c]Eval[/c]）：任意表达式/代码执行，等同运行任意脚本。
+
+[b]5.2 具体风险清单[/b]
+
+- [b]机器码注入[/b]：mcode 使用可执行内存并调用进程内部函数，行为上非常接近木马/加载器，杀毒软件、EDR 可能误报或拦截。只能在可信、受控的环境里使用；
+- [b]内部布局假设[/b]：偏移来自 AutoHotkey 2.0.26 源码。不同版本、不同编译器、32/64 位都可能不同。使用前必须对目标 exe 跑一遍测试，不能直接信任；
+- [b]PatchBif[/b]：改的是 [c]g_BIF[/c] 表。不要在生产脚本里长期保留；用完必须还原；
+- [b]Eval[/b]：绝不 eval 未受信任的字符串、网络输入、用户输入。任何 eval 都是一次任意代码执行；
+- [b]零拷贝视图[/b]：违反所有权规则会得到悬空指针。保持 Owner 引用存活，禁止在 view 释放后使用其指针；
+- [b]对象内存[/b]：原生 Array 填充依赖解释器自己的 [c]Capacity[/c] 分配，外部 Buffer 顶替 [c]mItem[/c] 会导致双重 free；
+- [b]32 位不支持[/b]：[c]AhkMagic.Init()[/c] 会显式报错；
+- [b]多脚本冲突[/b]：不要同时跑多个会 PatchBif 或写内部表的脚本。
+
+[b]5.3 建议的防护流程[/b]
+
+- 只在虚拟机、隔离环境或你不介意崩溃的测试机上验证；
+- 修改性功能默认关闭，只有显式调用才生效；
+- 对要分析的 exe 做备份，记录 SHA256；
+- 不要用它绕过软件授权、DRM、系统保护或任何访问控制；
+- 只分析你合法拥有或有权研究的 AutoHotkey 版本。
+
+
+[b]六、性能数据[/b]
+
+[codebox=text file=100M 基准（QPC）]
+count=100000000
+Capacity only ms=0.059
+ToAhkNative ms=705.448
+ToBuffer ms=206.068
+View create ms=0.0111
+2D 1000x1000 ToAhkNative ms=14.892
+2D 1000x1000 ToAhk old ms=466.479
+[/codebox]
+
+需要说明：早期“1M 元素 < 1ms”是计时分辨率造成的假象（[c]GetTickCount64[/c] 只有 1ms 粒度）。用 QPC 测 100M 元素，真实耗时约 705ms；2D 1000x1000 原生构造约 15ms，旧 AHK 路径约 466ms。零拷贝 [c]View[/c] 和 [c]ToBuffer[/c] 仍是最快的“拿到同一块字节”的方式。
+
+
+[b]七、已知限制[/b]
+
+- 机器码块目前只支持 x64；
+- [c]AhkMagic.Eval()[/c] 通过同 exe 的隐藏子进程执行表达式，返回字符串/数字；真正的同进程 eval 需要继续定位内部表达式解析器；
+- [c]PatchBif()[/c] 对解释器已缓存的函数对象不追溯生效；首次动态调用反映新指针；
+- cnumpy 的 [c]ToAhkNative[/c] 要求 C 连续、数值类型；字符串/结构化 dtype 走旧路径；
+- 原生 Array 构造基于源码布局，跨版本必须先验证。
+
+
+[b]八、结语[/b]
+
+“破解 autohotkey.exe”这个目标最后长成了一个更干净的形态：把 exe 当成一份可以被程序自身读取的结构化文档，扫描出内部地图，再在地图上做实验。cnumpy 转换是验证这张地图好不好用的试金石：它能直接构造原生 AHK 数组，把 100M 元素的转换从几十秒量级压到亚秒量级。核心价值始终是扫描本身。
+
+项目源码位于：
+- [c]lib/[/c]：核心扫描库与可选 cnumpy 集成；
+- [c]lib/mcode/[/c]：机器码 C 源码；
+- [c]tools/build_mcode.py[/c]：构建嵌入工具；
+- [c]tests/[/c] 与 [c]fork/cnumpy-ahk-bridge/benchmarks/[/c]：测试与基准。

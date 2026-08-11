@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+tests/*.out
+tests/*_stdout.txt
+tests/*_stderr.txt
+tests/*_err.txt
+build/
+temp.txt

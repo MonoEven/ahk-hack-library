@@ -1,0 +1,246 @@
+[b]AutoHotkey Runtime Scanner (ahk-hack): Don't "crack" the exe, understand it[/b]
+
+Repository: [url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
+
+The original goal of this project sounded like "crack autohotkey.exe", but what turned out to be valuable was not patching the binary: it is a runtime scanner that can read the internal structure of an AutoHotkey executable on the fly. Machine code is embedded directly into an AHK v2 file, so a script can locate interpreter internals at runtime and perform "magic operations" on top of them. cnumpy array conversion is only a practice integration used to validate the scanner; it is not the core.
+
+The core is one sentence: take the exe, scan out its internal map, and build everything else on that map.
+
+
+[b]1. Core capability: scanning[/b]
+
+The AutoHotkey 2 interpreter keeps several critical tables in the [c].data[/c] section. The scanner finds them by parsing the PE headers:
+
+- [c]g_BIF[/c]: built-in script functions ([c]Abs[/c], [c]Sin[/c], ...), 0x20 bytes per entry on x64;
+- [c]sMdFunc[/c]: typed native functions ([c]MsgBox[/c], [c]WinActivate[/c], ...), 0x28 bytes;
+- [c]g_BIV_A[/c]: built-in variables starting with [c]A_[/c] ([c]A_AhkPath[/c], [c]A_YYYY[/c], ...), 0x18 bytes.
+
+The scan does not guess offsets. Machine code first parses the DOS header, NT headers and section table, then locates each table using invariants: the name pointer must resolve to a UTF-16 string, the function pointer must land in [c].text[/c], and the table must be sorted alphabetically. Every entry's RVA, parameter counts and ID are read out. The same blob runs on 2.0-beta, 2.0.0, 2.0.26 and 2.1-alpha without changing a single line per version.
+
+The same approach was generalized into a universal PE export scanner. Given the base address of any loaded DLL/EXE, it enumerates every named export with its function RVA and ordinal. All 1027 exports of [c]cnumpy_ahk.dll[/c] are recognized this way, with no hardcoded binding table.
+
+
+[b]2. Where the machine code comes from[/b]
+
+The machine code is not hand-written assembly. It is written in C, compiled with clang, and extracted from the [c].text[/c] section of the COFF object:
+
+[codebox=text file=tools\build_mcode.py excerpt]
+clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
+  -fno-builtin -fno-stack-protector -fno-unwind-tables \
+  -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
+[/codebox]
+
+The build script checks the relocations in [c].text[/c]: if any relocation escapes the blob, embedding is refused. That guarantees the bytes embedded in AHK form a fully self-contained, position-independent machine-code block.
+
+The library ships four machine-code blocks:
+
+- [c]scanner.c[/c]: scans the three interpreter tables;
+- [c]export_scanner.c[/c]: generic PE export-table scan;
+- [c]array_builder.c[/c]: fills the internal [c]mItem[/c] of an AHK [c]Array()[/c] for numeric leaves;
+- [c]array_children_builder.c[/c]: writes child Array pointers into a parent's [c]SYM_OBJECT[/c] variants with correct AddRef.
+
+
+[b]3. Library layout[/b]
+
+[codebox=text file=library layout]
+lib/
+  init.ahk                  core entry, scanning only
+  ahk_hack.ahk              MCode() + AhkMagic
+  mcode/
+    scanner.c               interpreter table scanner
+    export_scanner.c        generic PE export scanner
+    array_builder.c         native Array numeric fill
+    array_children_builder.c native Array child fill
+  cnumpy/                   optional practice integration
+    init.ahk
+    numpy.ahk
+    cnumpy_bridge.ahk       CnpBridge + CnpView
+tools/
+  build_mcode.py            compiles and embeds the machine code
+  ahk_inspect.py            Python/PE cross-check analyzer
+fork/cnumpy-ahk-bridge/     cnumpy integration tests and benchmarks
+[/codebox]
+
+The root [c]ahk_mcode.ahk[/c] is a one-line compatibility alias, so old scripts can keep using [c]#Include ahk_mcode.ahk[/c].
+
+
+[b]4. Usage[/b]
+
+[color=#BF4000][b]4.1 Include the core scanner[/b][/color]
+
+[codebox=autohotkey file=lib\init.ahk]
+; ahk-hack library entry point.
+;
+; The core of the library is the scanning layer: MCode + AhkMagic, which
+; locates AutoHotkey interpreter tables (g_BIF / sMdFunc / g_BIV_A) and
+; scans the PE export tables of arbitrary DLL/EXE modules.
+
+#Include ahk_hack.ahk
+[/codebox]
+
+[codebox=autohotkey file=core scanning usage]
+#Include lib\init.ahk
+
+AhkMagic.Init()
+MsgBox AhkMagic.Summary()
+
+; Resolve the internal C function RVA / absolute address of a built-in.
+absRva  := AhkMagic.BifRva("Abs")
+absAddr := AhkMagic.BifAddr("Abs")
+
+; Scan the exports of any loaded module.
+hmod := DllCall("LoadLibraryW", "Str", "D:\path\cnumpy_ahk.dll", "Ptr")
+exports := AhkMagic.ScanExports(hmod)
+MsgBox exports.Count
+[/codebox]
+
+[color=#BF4000][b]4.2 Mutating magic[/b][/color]
+
+[codebox=autohotkey file=built-in pointer replacement]
+old := AhkMagic.PatchBif("Abs", "Sin")   ; temporarily point Abs at Sin
+name := "Abs"
+MsgBox %name%(1)                          ; first dynamic call returns sin(1)
+AhkMagic.RestoreBif("Abs", old)           ; restore the table pointer
+[/codebox]
+
+Note that AHK may cache already-resolved function objects, so "the first dynamic call reflects the new pointer" is expected; the table itself is always restored.
+
+[color=#BF4000][b]4.3 Expression Eval[/b][/color]
+
+[codebox=autohotkey file=Eval usage]
+MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
+MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
+[/codebox]
+
+[color=#BF4000][b]4.4 Optional cnumpy integration[/b][/color]
+
+Set the DLL path first, then include the integration entry:
+
+[codebox=autohotkey file=lib\cnumpy\init.ahk]
+; Optional cnumpy integration for the ahk-hack library.
+;
+; Set Numpy.DllPath before first use when the cnumpy DLL is not at the
+; default location expected by numpy.ahk.
+
+#Include ..\ahk_hack.ahk
+#Include numpy.ahk
+#Include cnumpy_bridge.ahk
+[/codebox]
+
+[codebox=autohotkey file=cnumpy conversion usage]
+Numpy.DllPath := "D:\...\build\x64\Release\cnumpy_ahk.dll"
+#Include lib\cnumpy\init.ahk
+
+meta := CnpBridge.Metadata(arr)            ; read CnpArray metadata (read-only)
+ahk  := CnpBridge.ToAhk(arr)               ; deep copy to nested AHK Array
+fast := CnpBridge.ToAhkFast(arr)           ; deep copy via raw bytes
+native := CnpBridge.ToAhkNative(arr)       ; mcode fills Array internals, fastest
+view := CnpBridge.View(arr)                ; zero-copy read/write view
+buf  := CnpBridge.ToBuffer(arr)            ; raw bytes into an AHK Buffer
+
+back1 := CnpBridge.FromAhk(ahk, dtype)     ; nested array -> cnumpy
+back2 := CnpBridge.FromAhkFast(ahk, dtype) ; exact-dtype fast reverse
+back3 := CnpBridge.FromBuffer(buf, dtype)  ; Buffer -> cnumpy (copy semantics)
+[/codebox]
+
+[color=#BF4000][b]4.5 Lifecycle and ownership (must follow)[/b][/color]
+
+- [c]ToAhk / ToAhkFast / ToAhkNative / ToBuffer / FromAhk / FromAhkFast / FromBuffer[/c] are all copy semantics; AHK and cnumpy each own their own memory;
+- [c]CnpView[/c] is a zero-copy borrow. It holds a strong reference to the owner [c]NdArray[/c], so the cnumpy array cannot be freed while the view lives; once both the view and the original reference are gone, the array is reclaimed normally;
+- writes through the view are allowed only when the array is writeable ([c]CNP_ARRAY_WRITEABLE[/c]);
+- never store [c]view.Ptr[/c] in a global and use it after the view is released;
+- native construction uses [c]Array().Capacity := n[/c] so the interpreter allocates [c]mItem[/c] itself; never substitute an external Buffer, or you get a double free on exit.
+
+Full rules are in [c]fork/cnumpy-ahk-bridge/docs/lifecycle-and-ownership.md[/c].
+
+[color=#BF4000][b]4.6 Rebuilding the machine code[/b][/color]
+
+Requires LLVM clang (locally at [c]F:\Tech\LLVM\bin\clang.exe[/c]):
+
+[codebox=text file=rebuild]
+python tools\build_mcode.py --embed-only --out lib\ahk_hack.ahk
+[/codebox]
+
+The build compiles [c]lib/mcode/*.c[/c], checks relocations, and writes the four machine-code blocks back into [c]lib/ahk_hack.ahk[/c].
+
+[color=#BF4000][b]4.7 Verification and tests[/b][/color]
+
+[codebox=text file=tests]
+python -m unittest discover -s tests -p 'test_*.py' -v
+
+; core scan / patch
+& D:\...\AutoHotkey64.exe tests\ahk_mcode_test.ahk
+; generic export scan
+& D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
+; cnumpy integration (1D/2D/3D native construction)
+& D:\...\AutoHotkey64.exe fork\cnumpy-ahk-bridge\tests\cnumpy_bridge.test.ahk
+[/codebox]
+
+Verified versions: 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
+
+
+[b]5. Security (important, read fully)[/b]
+
+[color=#BF4000]This library allocates executable memory in your process, executes machine code, and reads/writes interpreter internals directly. Treat it as a reverse-engineering research tool, not a toy.[/color]
+
+[b]5.1 Read-only vs mutating operations[/b]
+
+- Read-only operations ([c]Init / Summary / BifRva / BifAddr / ScanExports / Metadata / View reads[/c]): they do not modify state; the main risk is compatibility;
+- Mutating operations ([c]PatchBif / RestoreBif / WriteRaw / View.Set[/c]): they directly modify internal tables or data in process memory. Wrong offsets, wrong types, or wrong ordering can crash the interpreter. During development this project actually hit [c]0xC0000374[/c] (heap corruption) and interpreter Critical Errors;
+- Executing operations ([c]Eval[/c]): arbitrary expression/code execution, equivalent to running arbitrary scripts.
+
+[b]5.2 Concrete risk list[/b]
+
+- [b]Machine-code injection[/b]: mcode uses executable memory and calls process-internal functions. Behaviorally this is very close to a loader/trojan, so antivirus and EDR may flag or block it. Use it only in trusted, controlled environments;
+- [b]Internal layout assumptions[/b]: offsets come from the AutoHotkey 2.0.26 source. Different versions, compilers, or 32/64-bit builds may differ. Always run the tests against the target exe before trusting it;
+- [b]PatchBif[/b]: modifies the [c]g_BIF[/c] table. Do not leave it enabled in production scripts; always restore it;
+- [b]Eval[/b]: never eval untrusted strings, network input, or user input. Any eval is arbitrary code execution;
+- [b]Zero-copy views[/b]: violating ownership rules produces dangling pointers. Keep the Owner reference alive and never use the view pointer after release;
+- [b]Object memory[/b]: native Array filling relies on the interpreter's own [c]Capacity[/c] allocation; substituting an external Buffer for [c]mItem[/c] causes a double free;
+- [b]32-bit is unsupported[/b]: [c]AhkMagic.Init()[/c] raises an explicit error;
+- [b]Multi-script conflicts[/b]: do not run multiple scripts that PatchBif or write internal tables at the same time.
+
+[b]5.3 Recommended protection workflow[/b]
+
+- Only verify in a VM, an isolated environment, or a machine where crashes are acceptable;
+- Keep mutating features disabled by default; only explicit calls activate them;
+- Back up the exe you are analyzing and record its SHA256;
+- Do not use this to bypass software licensing, DRM, system protections, or any access control;
+- Only analyze AutoHotkey versions you legally own or are authorized to research.
+
+
+[b]6. Performance[/b]
+
+[codebox=text file=100M benchmark (QPC)]
+count=100000000
+Capacity only ms=0.059
+ToAhkNative ms=705.448
+ToBuffer ms=206.068
+View create ms=0.0111
+2D 1000x1000 ToAhkNative ms=14.892
+2D 1000x1000 ToAhk old ms=466.479
+[/codebox]
+
+A note on measurement: the early "1M elements under 1 ms" figure was an artifact of timer resolution ([c]GetTickCount64[/c] has 1 ms granularity). With QPC, 100M elements take about 705 ms; a 2D 1000x1000 native construction takes about 15 ms versus 466 ms on the old AHK path. Zero-copy [c]View[/c] and [c]ToBuffer[/c] remain the fastest way to hold the same bytes.
+
+
+[b]7. Known limitations[/b]
+
+- The machine-code blocks are x64 only;
+- [c]AhkMagic.Eval()[/c] evaluates expressions through a hidden child process of the same exe and returns strings/numbers; true in-process eval still requires locating the internal expression parser;
+- [c]PatchBif()[/c] does not retroactively affect already-cached function objects; the first dynamic call reflects the new pointer;
+- cnumpy [c]ToAhkNative[/c] requires C-contiguous numeric arrays; string/structured dtypes fall back to the slow path;
+- Native Array construction is based on the source layout, so cross-version verification is mandatory.
+
+
+[b]8. Conclusion[/b]
+
+"Crack autohotkey.exe" ended up growing into a cleaner shape: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. cnumpy conversion is the test stone that proves the map works: it can build native AHK arrays directly and push 100M-element conversion from tens of seconds down to sub-second range. The core value is always the scanning itself.
+
+Project source:
+- [c]lib/[/c]: core scanning library and optional cnumpy integration;
+- [c]lib/mcode/[/c]: machine-code C sources;
+- [c]tools/build_mcode.py[/c]: build and embedding tool;
+- [c]tests/[/c] and [c]fork/cnumpy-ahk-bridge/benchmarks/[/c]: tests and benchmarks.
+
+GitHub: [url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
