@@ -26,14 +26,8 @@
     <section class="hero">
       <div class="kicker">技术笔记 · 2026-08-12</div>
       <h1>深入 AutoHotkey64.exe：运行时扫描、机器码重建与进程内 Eval</h1>
-      <p class="lede">
-        一个 AutoHotkey v2 脚本如何读取正在运行它的解释器、重建内嵌的 x64
-        机器码，并在不启动子进程的情况下直接使用解释器自己的表达式管线求值。
-      </p>
-      <p class="meta">
-        仓库：<a href="https://github.com/MonoEven/ahk-hack-library">MonoEven/ahk-hack-library</a>
-        · 实践项目：<a href="https://github.com/MonoEven/cnumpy">cnumpy</a>
-      </p>
+      <p class="lede">一个 AutoHotkey v2 脚本如何读取正在运行它的解释器、重建内嵌的 x64 机器码，并在不启动子进程的情况下直接使用解释器自己的表达式管线求值。</p>
+      <p class="meta">仓库：<a href="https://github.com/MonoEven/ahk-hack-library">MonoEven/ahk-hack-library</a> · 实践项目：<a href="https://github.com/MonoEven/cnumpy">cnumpy</a></p>
       <div class="links">
         <a href="https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk">单文件核心</a>
         <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode">机器码 C 源码</a>
@@ -45,13 +39,13 @@
       <nav class="toc" aria-label="目录">
         <h2>目录</h2>
         <ol>
-          <li><a href="#why">为什么要读取正在运行的 exe</a></li>
-          <li><a href="#pe">PE 地图</a></li>
+          <li><a href="#why">为什么在运行时扫描</a></li>
+          <li><a href="#pe">PE 结构</a></li>
           <li><a href="#tables">三张解释器内部表</a></li>
           <li><a href="#rebuild">重新构建机器码</a></li>
           <li><a href="#evalnative">EvalNative：进程内表达式求值</a></li>
           <li><a href="#evalscript">EvalScript：长文本、函数与类</a></li>
-          <li><a href="#boundary">运行时发现与布局常量的边界</a></li>
+          <li><a href="#boundary">运行时发现与布局常量</a></li>
           <li><a href="#examples">完整示例</a></li>
           <li><a href="#verification">验证矩阵</a></li>
           <li><a href="#debugging">调试与故障</a></li>
@@ -62,47 +56,29 @@
       </nav>
 
       <section id="why">
-        <h2>1. 为什么要读取正在运行的 exe</h2>
-        <p>
-          AutoHotkey v2 通过内置函数和 <code>A_AhkPath</code> 这类系统变量暴露
-          脚本可见的表面，但不会公开稳定的 C API 给内部结构。真正有意思的部分
-          - 内置函数表、带类型签名的原生函数表、<code>A_*</code> 变量表 -
-          都放在 <code>AutoHotkey64.exe</code> 自己里面。
-        </p>
-        <p>
-          可执行文件是 PE 镜像。运行在解释器里的脚本本来就能拿到模块基址，
-          解析镜像头，然后把解释器自己的段当作数据来读。核心思路是：先扫描，
-          只有明确的操作才改写；扫描结果无法被证明时就直接报错，绝不猜测。
-        </p>
+        <h2>1. 为什么在运行时扫描</h2>
+        <p>AutoHotkey v2 对外提供的是内置函数和 <code>A_AhkPath</code> 这类系统变量，没有稳定的 C API 可以拿到解释器内部结构。本库用到的三张表 <code>g_BIF</code>、<code>sMdFunc</code>、<code>g_BIV_A</code> 都放在 <code>AutoHotkey64.exe</code> 里。</p>
+        <p>运行在解释器里的脚本可以用 <code>GetModuleHandle</code> 加 <code>A_AhkPath</code> 拿到模块基址，解析 PE 头，再直接读 <code>.text</code>、<code>.rdata</code> 和 <code>.data</code>。库的做法是先读镜像，只有显式操作才写内存，定位失败时直接抛错。</p>
       </section>
 
       <section id="pe">
-        <h2>2. PE 地图</h2>
-        <p>
-          64 位 AutoHotkey v2 可执行文件的开头是固定的：<code>MZ</code>
-          DOS 头、由 <code>e_lfanew</code>（偏移 <code>0x3C</code>）指向的
-          <code>PE\0\0</code> 签名、魔数为 <code>0x20B</code> 的 PE32+
-          可选头，以及紧随其后的节表。每个节记录名称、虚拟大小、虚拟地址、
-          原始大小和属性。
-        </p>
+        <h2>2. PE 结构</h2>
+        <p>64 位 AutoHotkey v2 可执行文件的头部布局是固定的：<code>MZ</code> DOS 头、由 <code>e_lfanew</code> 指向的 <code>PE\0\0</code> 签名、魔数 <code>0x20B</code> 的 PE32+ 可选头，后面是节表。每个节包含名称、虚拟大小、虚拟地址、原始大小和属性。</p>
         <pre><code>peOff := NumGet(base, 0x3C, "UInt")
 numSections := NumGet(base + peOff + 6, "UShort")
 optSize := NumGet(base + peOff + 20, "UShort")
 secTable := base + peOff + 24 + optSize</code></pre>
-        <p>
-          库用 <code>AhkMagic._ModuleSections()</code> 把节表封装成
-          <code>名称 -> {rva, size, ptr}</code> 的 Map。最常用的是三节：
-        </p>
+        <p><code>AhkMagic._ModuleSections()</code> 把节表封装成按节名索引的 <code>Map</code>，每项包含 <code>{rva, size, ptr}</code>。扫描器主要使用三个节：</p>
         <ul>
-          <li><code>.text</code>：可执行代码，函数指针必须落在这里；</li>
-          <li><code>.rdata</code>：只读数据，UTF-16 名字通常在这里；</li>
-          <li><code>.data</code>：读写数据，解释器表在这里构建。</li>
+          <li><code>.text</code> 存放可执行代码，是函数指针唯一合法的目标。</li>
+          <li><code>.rdata</code> 存放只读数据，UTF-16 名字通常在这里。</li>
+          <li><code>.data</code> 存放可写全局量，解释器表在这里构建。</li>
         </ul>
       </section>
 
       <section id="tables">
         <h2>3. 三张解释器内部表</h2>
-        <p>扫描器在 x64 上定位三张记录结构稳定的表：</p>
+        <p>扫描器在 x64 上定位三张记录布局稳定的表：</p>
         <table>
           <thead>
             <tr>
@@ -129,28 +105,14 @@ secTable := base + peOff + 24 + optSize</code></pre>
             </tr>
           </tbody>
         </table>
-        <p>
-          候选记录必须同时满足三个不变量：名字指针指向
-          <code>.rdata</code>/<code>.data</code> 中可打印的 UTF-16 字符串，
-          函数指针落在 <code>.text</code>，并且相邻记录按名字排序。扫描器按
-          指针对齐的位置遍历，以 <code>Abs</code>、<code>BlockInput</code>、
-          <code>AhkPath</code> 为锚点，保留满足条件的最长连续区，然后为每条
-          记录读出 RVA、参数个数和 ID。
-        </p>
-        <p>
-          这是刻意的签名扫描，不是 RVA 表。同一段机器码已经在 2.0-beta.10、
-          2.0.0、2.0.26、2.1-alpha.30 上跑通，没有使用任何按版本写死的地址。
-        </p>
+        <p>每条候选记录必须满足三个条件：名字指针指向 <code>.rdata</code> 或 <code>.data</code> 中的可打印 UTF-16 字符串；函数指针落在 <code>.text</code>；相邻记录按名字排序。扫描器按指针对齐的位置遍历，以 <code>Abs</code>、<code>BlockInput</code>、<code>AhkPath</code> 为锚点，保留满足全部条件的最长连续区，然后读出每条记录的 RVA、参数个数和 ID。</p>
+        <p>这里用签名扫描而不是 RVA 表，是为了让同一段机器码能直接跑在 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30 上。</p>
       </section>
 
       <section id="rebuild">
         <h2>4. 重新构建机器码</h2>
-        <p>
-          “重新构建机器码”是把 C 源码变成 <code>ahk_hack_single.ahk</code>
-          内嵌十六进制常量的可复现过程。这些 blob 不是手写汇编，而是由
-          <code>tools/build_mcode.py</code> 编译、校验并嵌入的。
-        </p>
-        <p><code>lib/mcode/</code> 下的源码分别是：</p>
+        <p>“重新构建机器码”指从 <code>lib/mcode/</code> 里的 C 源码重新生成 <code>ahk_hack_single.ahk</code> 中的十六进制常量。这些 blob 由 <code>tools/build_mcode.py</code> 编译并校验，不是手工写出来的汇编。</p>
+        <p>源码文件如下：</p>
         <table>
           <thead>
             <tr>
@@ -181,72 +143,29 @@ secTable := base + peOff + 24 + optSize</code></pre>
         <pre><code>clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
   -fno-builtin -fno-stack-protector -fno-unwind-tables \
   -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c</code></pre>
-        <p>
-          <code>-ffreestanding</code> 表示不依赖 CRT、不链接标准库，也不假设
-          任何启动状态。<code>-fno-*</code> 选项去掉栈保护、展开元数据和编译器
-          生成的跳转表，让输出保持小而确定。
-        </p>
+        <p><code>-ffreestanding</code> 去掉 CRT 启动逻辑和标准库依赖。<code>-fno-*</code> 选项关闭栈保护、展开元数据和编译器生成的跳转表，让输出保持小而确定。</p>
         <h3>4.2 提取 <code>.text</code> 并处理重定位</h3>
-        <p>
-          构建脚本解析 COFF 对象：读节表，取出原始 <code>.text</code>，再遍历
-          每条重定位记录。它只接受 <code>IMAGE_REL_AMD64_REL32</code>
-          （类型 4），并且要求目标符号仍然落在 <code>.text</code> 内。其他情况
-          直接抛错，拒绝嵌入。
-        </p>
-        <p>
-          原因来自运行时契约。<code>MCode()</code> 把十六进制解码成 AHK
-          <code>Buffer</code>，改成可执行保护后返回；这个 blob 必须是位置无关的：
-          不能有绝对数据地址、外部导入，也不能引用自己的 <code>.rdata</code>。
-          如果逃逸的重定位混进来，复制后的字节会去解引用原目标文件里的地址，
-          而不是当前进程的地址。
-        </p>
+        <p>构建脚本解析 COFF 对象，取出 <code>.text</code>，逐条检查重定位记录。只有目标符号仍然落在 <code>.text</code> 内的 <code>IMAGE_REL_AMD64_REL32</code>（类型 4）会被接受，其他情况直接终止构建。</p>
+        <p>原因和运行时放置有关。<code>MCode()</code> 把十六进制字符串解码成 AHK <code>Buffer</code>，改成可执行保护后交给 <code>DllCall</code> 使用。这个 blob 不能有绝对地址、导入或 <code>.rdata</code> 引用，所以能在任意地址运行。一旦有逃出 <code>.text</code> 的重定位，复制后的字节就会指向原目标文件里的地址，而不是当前进程。</p>
         <h3>4.3 嵌入与验证</h3>
         <pre><code>python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk</code></pre>
-        <p>
-          脚本替换四个 <code>MC_*_X64</code> 常量并打印大小。当前源码树完全可
-          复现：从 <code>lib/mcode/</code> 重新生成能得到与仓库内完全一致的
-          常量。目前解释器扫描器是 <code>2559</code> 字节，导出扫描器
-          <code>297</code> 字节，进程内求值器 <code>1784</code> 字节，内部定位器
-          <code>1537</code> 字节。
-        </p>
-        <p>
-          重建后正确的检查不是“看起来像汇编”，而是完整矩阵是否仍然通过，包括
-          Python 测试、演示脚本和四个解释器上的 AHK 探针。
-        </p>
+        <p>脚本替换四个 <code>MC_*_X64</code> 常量并打印大小。当前从 <code>lib/mcode/</code> 重新生成可以得到与仓库内完全一致的常量。各 blob 大小为：解释器扫描器 <code>2559</code> 字节、导出扫描器 <code>297</code> 字节、进程内求值器 <code>1784</code> 字节、内部定位器 <code>1537</code> 字节。</p>
+        <p>重建之后要跑四个解释器上的完整测试矩阵。十六进制本身不适合肉眼审查，测试通过才是有效验证。</p>
       </section>
 
       <section id="evalnative">
         <h2>5. EvalNative：进程内表达式求值</h2>
-        <p>
-          <code>EvalNative()</code> 在 scratch 缓冲区里构造临时
-          <code>Line</code> 和 <code>ArgStruct</code>，然后直接调用当前进程
-          解释器自己的表达式函数。没有子进程，所以表达式能看到调用者同一张全局
-          变量表和同一个模块状态。
-        </p>
-        <p>
-          第一步是找到这些函数。库在 <code>.text</code> 里搜索对两个稳定错误
-          字符串的 RIP 相对引用：<code>"Missing operand."</code> 和
-          <code>"Error evaluating expression."</code>，再回退到所在函数开头，
-          得到 <code>ExpressionToPostfix</code> 与 <code>ExpandExpression</code>。
-        </p>
-        <p>
-          第二个机器码定位器继续按结构签名发现支撑地址：
-        </p>
+        <p><code>EvalNative()</code> 分配一块 scratch 缓冲区，构造临时 <code>Line</code> 和 <code>ArgStruct</code>，然后原地调用解释器的表达式管线。整个过程不启动子进程，表达式能直接看到调用者的全局变量表和模块状态。</p>
+        <p>第一步是定位函数。库在 <code>.text</code> 里搜索对两个稳定错误字符串 <code>"Missing operand."</code> 和 <code>"Error evaluating expression."</code> 的 RIP 相对引用，再回退到所在函数开头，得到 <code>ExpressionToPostfix</code> 和 <code>ExpandExpression</code>。</p>
+        <p>其余支撑地址由第二个机器码定位器发现：</p>
         <ul>
-          <li><code>gScript</code>：<code>ExpressionToPostfix</code> 中出现次数最多的 <code>lea rcx,[rip+disp]</code> 目标；</li>
-          <li><code>FindVar</code>/<code>FindOrAddVar</code>：六参数 prologue 加空名比较模式；</li>
-          <li><code>FinalizeExpression</code>：两个主函数之间带标准 <code>ArgStruct</code> prologue 的函数；</li>
-          <li>CRT <code>free</code>：直接调用 <code>ExpressionToPostfix</code> 的调用点之后紧跟的调用；</li>
-          <li><code>SYM_INVALID</code>：<code>ExpandExpression</code> 内后缀终结立即数。</li>
+          <li><code>gScript</code>：<code>ExpressionToPostfix</code> 中出现次数最多的 <code>lea rcx,[rip+disp]</code> 目标。</li>
+          <li><code>FindVar</code>/<code>FindOrAddVar</code>：六参数 prologue 加空名比较模式。</li>
+          <li><code>FinalizeExpression</code>：两个主函数之间带标准 <code>ArgStruct</code> prologue 的函数。</li>
+          <li>CRT <code>free</code>：直接调用 <code>ExpressionToPostfix</code> 的调用点之后紧跟的调用。</li>
+          <li><code>SYM_INVALID</code>：<code>ExpandExpression</code> 内的后缀终结立即数。</li>
         </ul>
-        <p>
-          调用编译器之前，求值器会对 UTF-16 表达式做一次轻量 deref 扫描：跳过
-          引号字符串，记录标识符起始和长度，并且跳过 <code>.</code> 后面的标识符，
-          这样 <code>Point(1,2).x</code> 这类成员表达式不会被当成变量。真正的
-          工作仍由解释器自己的管线完成：<code>ExpressionToPostfix</code> ->
-          <code>FindOrAddVar</code> 解析变量/函数 -> 可选
-          <code>FinalizeExpression</code> -> <code>ExpandExpression</code>。
-        </p>
+        <p>调用 <code>ExpressionToPostfix</code> 之前，求值器会扫描 UTF-16 表达式并标记需要解析的标识符。引号字符串和 <code>.</code> 后面的标识符会被跳过，所以 <code>Point(1,2).x</code> 这类成员表达式不会被当成变量。后缀生成之后，<code>FindOrAddVar</code> 解析变量和函数引用；构建里有独立 <code>FinalizeExpression</code> 时先执行它；最后 <code>ExpandExpression</code> 求值。</p>
         <pre><code>#Include ahk_hack_single.ahk
 AhkMagic.Init()
 
@@ -257,37 +176,22 @@ MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)") ; "bc"
 
 myVar := 42
 MsgBox AhkMagic.EvalNative("myVar + 1")          ; 43</code></pre>
-        <p>
-          当前在四个已验证版本上支持字面量、运算符、全局变量和函数调用。不支持
-          的语法会带着管线状态抛出错误，而不是返回一个猜出来的结果。
-        </p>
+        <p>已验证的版本支持字面量、运算符、全局变量和函数调用。不支持的输入会带着管线状态抛出错误。</p>
       </section>
 
       <section id="evalscript">
         <h2>6. EvalScript：长文本、函数与类</h2>
-        <p>
-          表达式求值器自己无法定义函数或类。<code>EvalScript()</code> 走另一条
-          管线：把文本写到临时 <code>.ahk</code>，用
-          <code>OpenIncludedFile</code> 打开，用
-          <code>LoadIncludedFile(TextStream*)</code> 加载，对新加入的行执行
-          <code>PreparseExpressions</code>，再对每个新函数执行
-          <code>PreprocessLocalVars</code>，最后用
-          <code>EvalNative()</code> 求值最后一个表达式。
-        </p>
-        <p>所有入口都在运行时定位：</p>
+        <p>表达式求值本身无法定义函数或类。<code>EvalScript()</code> 改走解释器的 include 流程：把文本写入临时文件，调用 <code>OpenIncludedFile</code>，用 <code>LoadIncludedFile(TextStream*)</code> 加载，对新行执行 <code>PreparseExpressions</code>，对每个新函数执行 <code>PreprocessLocalVars</code>，最后用 <code>EvalNative()</code> 求值最后一个非声明行。</p>
+        <p>这些入口都在运行时定位：</p>
         <ul>
-          <li><code>PreparseExpressions</code>：通过 <code>ExpressionToPostfix</code> 的调用者加 <code>cmp byte ptr [rbx], 3/4</code> 模式；</li>
-          <li><code>PreprocessLocalVars</code>：独特的 <code>movzx</code> 加 <code>cmp byte ptr [rax+0x23], 2</code> 签名；</li>
-          <li><code>OpenIncludedFile</code>：分别覆盖 2.0 系列和 2.1 的两段 prologue 特征；</li>
-          <li><code>LoadIncludedFile(TextStream*)</code>：在 <code>OpenIncludedFile</code> 调用者的 <code>cmp eax,3</code> 附近找标准 prologue 的 call；</li>
-          <li><code>Line::sSourceFileCount</code>：向前回溯找取值合理的小整数的 RIP 相对 load；</li>
+          <li><code>PreparseExpressions</code>：通过 <code>ExpressionToPostfix</code> 的调用者加 <code>cmp byte ptr [rbx], 3/4</code> 模式定位。</li>
+          <li><code>PreprocessLocalVars</code>：用 <code>movzx</code> 加 <code>cmp byte ptr [rax+0x23], 2</code> 签名定位。</li>
+          <li><code>OpenIncludedFile</code>：用分别覆盖 2.0 系列和 2.1 的两段 prologue 特征定位。</li>
+          <li><code>LoadIncludedFile(TextStream*)</code>：在 <code>OpenIncludedFile</code> 调用者的 <code>cmp eax,3</code> 附近定位。</li>
+          <li><code>Line::sSourceFileCount</code>：向前回溯找取值合理的小整数的 RIP 相对 load。</li>
           <li><code>g</code> 全局：在 <code>PreparseExpressions</code> 调用者里找 <code>mov rax,[rip+disp]</code> 后接偏移 <code>0x28</code> 的 store。</li>
         </ul>
-        <p>
-          加载前保存脚本状态，在 <code>finally</code> 里恢复：pending 父/关联行、
-          pending 参数初始化、当前模块、表达式函数状态、类计数。这样多行定义和
-          类能生效，又不会把临时解析器状态泄漏给调用者。
-        </p>
+        <p>加载前保存脚本状态，并在 <code>finally</code> 中恢复：pending 父/关联行、pending 参数初始化、当前模块、表达式函数状态和类计数。临时解析器状态不会泄漏给调用者。</p>
         <pre><code>script := "
 (
 add(a, b) {
@@ -313,10 +217,8 @@ MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
       </section>
 
       <section id="boundary">
-        <h2>7. 运行时发现与布局常量的边界</h2>
-        <p>
-          “硬编码”有两种含义，这个区别值得说清楚。
-        </p>
+        <h2>7. 运行时发现与布局常量</h2>
+        <p>“硬编码”需要先定义清楚。本库没有任何按版本维护的函数 RVA 或全局地址表；表地址、函数入口、全局量和枚举值都在运行时发现。按版本保留的只是一组 C++ 结构体字段偏移，包括 <code>Script</code>、<code>ScriptModule</code>、<code>UserFunc</code>、<code>Line</code>、<code>ArgStruct</code> 和表达式 token。</p>
         <table>
           <thead>
             <tr>
@@ -347,18 +249,8 @@ MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
             </tr>
           </tbody>
         </table>
-        <p>
-          所以地址层面的答案是肯定的：没有任何函数 RVA、全局地址或表指针来自
-          按版本列表。剩下的常量描述字段在 C++ 对象里的位置，是更小也更稳定的
-          兼容面。四条构建的矩阵会逐一覆盖这些入口；如果目标构建的布局不同，
-          探针会显式失败，而不是猜一个结果。
-        </p>
-        <p>
-          可选 cnumpy 桥接把同一思路再推进一步：<code>AhkLayout</code> 通过对
-          存活对象做变更 diff 来发现 <code>Array</code> 的 <code>mItem</code>、
-          <code>mLength</code>、<code>mCapacity</code> 和 <code>Variant</code>
-          布局，再用第二组独立探针交叉验证。
-        </p>
+        <p>字段偏移和地址是两个不同的问题。它们描述成员在 C++ 对象里的位置，由四构建测试矩阵逐项覆盖；如果目标构建的布局不同，探针会显式失败。</p>
+        <p>可选 cnumpy 桥接把同一思路用在 AHK <code>Array</code> 对象上。<code>AhkLayout</code> 通过 diff 存活对象发现 <code>mItem</code>、<code>mLength</code>、<code>mCapacity</code> 和 <code>Variant</code> 布局，再用第二组独立探针交叉验证。</p>
       </section>
 
       <section id="examples">
@@ -388,11 +280,7 @@ AhkMagic.RestoreBif("Abs", old)
 state := AhkMagic.PatchBifObject(Abs, "Sin")
 MsgBox Abs(1)                 ; 源码里的直接调用也返回 sin(1)
 AhkMagic.RestoreBifObject(Abs, state)</code></pre>
-        <p>
-          <code>PatchBif</code> 改表槽，影响之后发生的动态查找。
-          <code>PatchBifObject</code> 还会改写已经解析的函数对象里的 C 函数指针，
-          所以源码里写死的 <code>Abs(1)</code> 也被重定向。上面的例子都会还原。
-        </p>
+        <p><code>PatchBif</code> 改表槽，影响之后发生的动态查找。<code>PatchBifObject</code> 还会改写已经解析的函数对象里的 C 函数指针，所以源码里写死的 <code>Abs(1)</code> 也被重定向。上面的例子都会还原。</p>
         <h3>8.4 表达式求值</h3>
         <pre><code>MsgBox AhkMagic.Eval("1 + 2 * 3")                  ; 7
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")            ; 5
@@ -433,10 +321,7 @@ try {
 } catch as e {
     MsgBox "FAIL " e.Message
 }</code></pre>
-        <p>
-          当前机器上探针输出类似下面的地址。这些值只属于具体构建，放在这里用于
-          展示形态，不是通用常量：
-        </p>
+        <p>当前机器上探针输出类似下面的地址。这些值只属于具体构建，放在这里展示形态：</p>
         <table>
           <thead>
             <tr>
@@ -505,47 +390,21 @@ try {
       <section id="debugging">
         <h2>10. 调试与故障</h2>
         <ul>
-          <li>
-            <code>0xC0000005</code>（访问冲突）通常意味着指针或结构偏移错误。
-            隔离探针、记录版本，并在解引用前检查每个定位出来的地址。
-          </li>
-          <li>
-            <code>0xC0000374</code>（堆损坏）可能来自解析器状态的保存/恢复顺序
-            错误。开发中实际遇到过；修复方式是让所有被改写的
-            <code>Script</code> 字段都在 <code>finally</code> 中恢复。
-          </li>
-          <li>
-            <code>"X not found"</code> 表示定位器无法证明某个签名，这是故意的：
-            不支持的构建会显式失败，而不是用猜出来的地址继续。
-          </li>
-          <li>
-            可执行内存分配加内部调用可能被杀毒软件或 EDR 标记。在虚拟机里做实验、
-            使用一次性解释器，并备份被分析的 exe。
-          </li>
+          <li><code>0xC0000005</code> 通常意味着指针或结构偏移错误。隔离探针、记录版本，并在解引用前确认每个定位出来的地址。</li>
+          <li><code>0xC0000374</code> 可能来自解析器状态的保存或恢复顺序错误。开发中实际遇到过；修复方式是让所有被改写的 <code>Script</code> 字段都在 <code>finally</code> 中恢复。</li>
+          <li><code>"X not found"</code> 表示定位器签名没有匹配。这是有意设计：不支持的构建直接失败，不会用猜出来的地址继续。</li>
+          <li>可执行内存分配和内部调用可能被杀毒软件或 EDR 标记。在虚拟机里测试、使用一次性解释器，并备份被分析的 exe。</li>
         </ul>
       </section>
 
       <section id="security">
         <h2>11. 安全与使用规则</h2>
-        <blockquote class="warn">
-          这个库会分配可执行内存、执行机器码，并直接读写解释器内部结构。
-          请按逆向工程研究工具的标准来使用。
-        </blockquote>
+        <blockquote class="warn">这个库会分配可执行内存、执行机器码，并直接读写解释器内部结构。请按逆向工程研究工具的标准来使用。</blockquote>
         <p>操作分三类：</p>
         <ul>
-          <li>
-            <strong>只读</strong>：<code>Init</code>、<code>Summary</code>、
-            <code>BifRva</code>、<code>BifAddr</code>、<code>ScanExports</code>。
-            不修改进程状态。
-          </li>
-          <li>
-            <strong>修改</strong>：<code>PatchBif</code> 和
-            <code>RestoreBif</code>。用错可能让解释器崩溃。
-          </li>
-          <li>
-            <strong>执行</strong>：<code>Eval</code>、<code>EvalNative</code>、
-            <code>EvalScript</code>。等于在当前进程执行任意代码。
-          </li>
+          <li><strong>只读</strong>：<code>Init</code>、<code>Summary</code>、<code>BifRva</code>、<code>BifAddr</code>、<code>ScanExports</code>。不修改进程状态。</li>
+          <li><strong>修改</strong>：<code>PatchBif</code> 和 <code>RestoreBif</code>。用错可能让解释器崩溃。</li>
+          <li><strong>执行</strong>：<code>Eval</code>、<code>EvalNative</code>、<code>EvalScript</code>。等于在当前进程执行任意代码。</li>
         </ul>
         <p>每次实验都要遵守的规则：</p>
         <ul>
@@ -578,11 +437,7 @@ try {
 
       <section id="appendix">
         <h2>附录：单文件源码</h2>
-        <p>
-          完整核心就是一个文件：<code>ahk_hack_single.ahk</code>。把它复制到
-          脚本旁边并 <code>#Include</code>，或从仓库下载。下面内嵌的副本由构建
-          脚本根据仓库内文件生成。
-        </p>
+        <p>完整核心就是一个文件：<code>ahk_hack_single.ahk</code>。把它复制到脚本旁边并 <code>#Include</code>，或从仓库下载。下面内嵌的副本由构建脚本根据仓库内文件生成。</p>
         <details>
           <summary>ahk_hack_single.ahk（完整源码）</summary>
           <pre><code><!--AHK_SINGLE_FILE--></code></pre>
