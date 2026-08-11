@@ -9,6 +9,7 @@ if FileExist(outFile)
 try {
     AhkMagic.Init()
     AhkMagic._LocateInternalFunctions()
+    AhkMagic._LocateEvalScriptFunctions()
     FileAppend "version=" A_AhkVersion "`n"
         . "slot=0x" Format("{:X}", AhkMagic.currLineSlot) "`n"
         . "gscript=0x" Format("{:X}", AhkMagic.gScript) "`n"
@@ -18,6 +19,12 @@ try {
         . "findvar=0x" Format("{:X}", AhkMagic.findOrAddVar) "`n"
         . "free=0x" Format("{:X}", AhkMagic.crtFree) "`n"
         . "symInvalid=" AhkMagic.symInvalid "`n"
+        . "preparse=0x" Format("{:X}", AhkMagic.evalPreparse) "`n"
+        . "preprocess=0x" Format("{:X}", AhkMagic.evalPreprocess) "`n"
+        . "openInclude=0x" Format("{:X}", AhkMagic.evalOpenInclude) "`n"
+        . "loadTs=0x" Format("{:X}", AhkMagic.evalLoadTs) "`n"
+        . "gptr=0x" Format("{:X}", AhkMagic.evalGptr) "`n"
+        . "srcCount=0x" Format("{:X}", AhkMagic.evalSrcCount) "`n"
         , outFile
     ExitApp 0
 } catch as e {

@@ -28,6 +28,14 @@
       <h1>深入 AutoHotkey64.exe：运行时扫描、机器码重建与进程内 Eval</h1>
       <p class="lede">一个 AutoHotkey v2 脚本如何读取正在运行它的解释器、重建内嵌的 x64 机器码，并在不启动子进程的情况下直接使用解释器自己的表达式管线求值。</p>
       <p class="meta">仓库：<a href="https://github.com/MonoEven/ahk-hack-library">MonoEven/ahk-hack-library</a> · 实践项目：<a href="https://github.com/MonoEven/cnumpy">cnumpy</a></p>
+      <div class="key-points">
+        <h2>本文重点</h2>
+        <ul>
+          <li>运行时 PE 解析与解释器内部表扫描。</li>
+          <li>从 C 源码重建位置无关的机器码。</li>
+          <li>进程内表达式求值与内存脚本加载。</li>
+        </ul>
+      </div>
       <div class="links">
         <a href="https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk">单文件核心</a>
         <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode">机器码 C 源码</a>
@@ -195,7 +203,7 @@ MsgBox AhkMagic.EvalNative("myVar + 1")          ; 43</code></pre>
           <li><code>Line::sSourceFileCount</code>：向前回溯找取值合理的小整数的 RIP 相对 load。</li>
           <li><code>g</code> 全局：在 <code>PreparseExpressions</code> 调用者里找 <code>mov rax,[rip+disp]</code> 后接偏移 <code>0x28</code> 的 store。</li>
         </ul>
-        <p>内存 <code>TextStream</code> 的布局按版本不同：2.0.26 之前 <code>mData</code> 在 <code>0x40</code>，2.0.26 起在 <code>0x50</code>，所以加载器把偏移作为参数传入，不假设固定布局。加载前保存脚本状态，并在 <code>finally</code> 中恢复：pending 父/关联行、pending 参数初始化、当前模块、表达式函数状态和类计数。临时解析器状态不会泄漏给调用者。</p>
+        <p>内存 <code>TextStream</code> 会同时填充两个可能的 <code>mData</code> 区域，所以加载器不需要区分 2.0 与 2.1 的布局。加载前保存脚本状态，并在 <code>finally</code> 中恢复：pending 父/关联行、pending 参数初始化、当前模块、表达式函数状态和类计数。临时解析器状态不会泄漏给调用者。</p>
         <pre><code>script := "
 (
 add(a, b) {
@@ -222,7 +230,7 @@ MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
 
       <section id="boundary">
         <h2>7. 运行时发现与布局常量</h2>
-        <p>“硬编码”需要先定义清楚。本库没有任何按版本维护的函数 RVA 或全局地址表；表地址、函数入口、全局量和枚举值都在运行时发现。按版本保留的只是一组 C++ 结构体字段偏移，包括 <code>Script</code>、<code>ScriptModule</code>、<code>UserFunc</code>、<code>Line</code>、<code>ArgStruct</code> 和表达式 token。</p>
+        <p>“硬编码”需要先定义清楚。本库现在已经没有任何按版本维护的表。表地址、函数入口、全局量和枚举值都在运行时发现；EvalScript 用到的 Script 字段偏移也是运行时发现：一次性探针从内存加载一个函数，diff 存活 Script 对象找到 <code>mFuncs</code>、<code>mFuncsCount</code>、<code>mLastLine</code>，沿新函数的行链找到 <code>mJumpLine</code>，再从 <code>LoadIncludedFile</code> 的 prologue 读取解析器状态锚点。<code>Line</code>/<code>ArgStruct</code>/token 这类稳定偏移是固定常量，在已验证的构建中没有变化。</p>
         <table>
           <thead>
             <tr>
@@ -248,12 +256,12 @@ MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
               <td>运行时由内部定位器发现</td>
             </tr>
             <tr>
-              <td>C++ 结构体字段偏移（<code>Script</code>、<code>ScriptModule</code>、<code>UserFunc</code>、<code>Line</code>、<code>ArgStruct</code>、token）</td>
-              <td>按版本保留的布局常量，由测试矩阵验证</td>
+              <td>Script/UserFunc/TextStream 布局偏移</td>
+              <td>运行时通过探针 diff 与机器码锚点发现</td>
             </tr>
           </tbody>
         </table>
-        <p>字段偏移和地址是两个不同的问题。它们描述成员在 C++ 对象里的位置，由四构建测试矩阵逐项覆盖；如果目标构建的布局不同，探针会显式失败。</p>
+        <p>探针每个进程只运行一次，结束后恢复 Script 对象，不会留下隐藏测试函数。如果目标构建的布局不同，探针会显式失败，不会用猜出来的偏移继续。</p>
         <p>可选 cnumpy 桥接把同一思路用在 AHK <code>Array</code> 对象上。<code>AhkLayout</code> 通过 diff 存活对象发现 <code>mItem</code>、<code>mLength</code>、<code>mCapacity</code> 和 <code>Variant</code> 布局，再用第二组独立探针交叉验证。</p>
       </section>
 

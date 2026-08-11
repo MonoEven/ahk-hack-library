@@ -232,9 +232,10 @@ Key risks:
 - All `EvalScript` entry points and globals (`PreparseExpressions`,
   `PreprocessLocalVars`, `OpenIncludedFile`, `LoadIncludedFile`,
   `g`, `Line::sSourceFileCount`) are located at runtime. The only remaining
-  per-version table is C++ struct layout (`Script`/`ScriptModule`/`UserFunc`).
-  Other versions, compilers, or architectures may still differ. Run the
-  test suite against the target exe first.
+  hardcoded axis was C++ struct layout; that is now also discovered at
+  runtime by a one-time probe (`_DiscoverEvalLayout`). Other versions,
+  compilers, or architectures may still differ. Run the test suite against
+  the target exe first.
 - Never eval untrusted input. Never leave `PatchBif` enabled in production.
 - `EvalNative` builds a temporary `Line`/`ArgStruct` inside the interpreter.
   Variable/function derefs are resolved through the interpreter's own var
@@ -277,11 +278,10 @@ the 100M measurement is the real figure.
 
 `EvalScript` is verified on all four builds. Every function entry point and
 global used by the pipeline is located at runtime, including
-`LoadIncludedFile(TextStream*)` and `Line::sSourceFileCount`. A small
-per-version table covers only the C++ struct layout differences
-(`Script`/`ScriptModule`/`UserFunc`) between 2.1 and the 2.0 line, plus the
-`TextStream::mData` offset used by the in-memory script loader
-(`0x40` before 2.0.26, `0x50` from 2.0.26 onward).
+`LoadIncludedFile(TextStream*)` and `Line::sSourceFileCount`. There is no
+per-version table: `mFuncs`, `mFuncsCount`, `mLastLine`, `mJumpLine`, the
+parser-state anchors, and the `TextStream` layout are all discovered at
+runtime by a one-time probe.
 
 ## Project Layout
 

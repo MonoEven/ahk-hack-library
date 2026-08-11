@@ -32,6 +32,14 @@ class AhkMagic {
     static internalLocator := 0
     static internalLocated := false
     static evalScriptLocated := false
+    static evalLayoutLocated := false
+    static evalMFuncsOff := 0
+    static evalMFuncsCountOff := 0
+    static evalMLastLineOff := 0
+    static evalMJumpLineOff := 0
+    static evalCurrOff := 0
+    static evalParserLocated := false
+    static evalParser := Map()
     static evalPreparse := 0
     static evalPreprocess := 0
     static evalOpenInclude := 0
@@ -723,6 +731,245 @@ class AhkMagic {
         AhkMagic.evalScriptLocated := true
     }
 
+    static _EvalStructOffsets() {
+        return Map(
+            "line_action", 0,
+            "line_argc", 1,
+            "line_arg", 8,
+            "line_attribute", 16,
+            "line_next", 32,
+            "arg_postfix", 24,
+            "token_symbol", 16,
+            "token_usage", 8,
+            "token_value", 0,
+            "deref_marker", 0,
+            "deref_len", 20
+        )
+    }
+
+    static _DiscoverCurrOff() {
+        if AhkMagic.evalCurrOff
+            return AhkMagic.evalCurrOff
+        secs := AhkMagic._ModuleSections()
+        text := secs[".text"]
+        preparseRva := AhkMagic.evalPreparse - AhkMagic.moduleBase
+        callers := AhkMagic._FindCallers(text, preparseRva)
+        for caller in callers {
+            p := text["ptr"]
+            base := text["rva"]
+            off := AhkMagic._FnStart(text, caller) - base
+            limit := Min(text["size"] - 16, off + 0x4000)
+            i := off
+            while i < limit {
+                if NumGet(p + i, "UChar") = 0xCC
+                    and NumGet(p + i + 1, "UChar") = 0xCC
+                    break
+                if NumGet(p + i, "UChar") = 0x48
+                    and NumGet(p + i + 1, "UChar") = 0x8B
+                    and NumGet(p + i + 2, "UChar") = 0x05 {
+                    j := i + 7
+                    while j < Min(i + 24, limit) {
+                        if NumGet(p + j, "UChar") = 0x48
+                            and (NumGet(p + j + 1, "UChar") = 0x89)
+                            and (NumGet(p + j + 2, "UChar") = 0x58
+                                or NumGet(p + j + 2, "UChar") = 0x50) {
+                            AhkMagic.evalCurrOff := NumGet(p + j + 3, "UChar")
+                            return AhkMagic.evalCurrOff
+                        }
+                        j += 1
+                    }
+                }
+                i += 1
+            }
+        }
+        throw Error("g->curr offset not found")
+    }
+
+    static _DiscoverEvalLayout() {
+        if AhkMagic.evalLayoutLocated
+            return
+        AhkMagic._LocateEvalScriptFunctions()
+        AhkMagic._DiscoverCurrOff()
+        gScript := AhkMagic.gScript
+        g := NumGet(AhkMagic.evalGptr, "Ptr")
+        savedProbeCur := NumGet(g, AhkMagic.evalCurrOff, "Ptr")
+        gSnap := Buffer(0x100)
+        DllCall("RtlMoveMemory", "Ptr", gSnap.Ptr, "Ptr", g, "UPtr", 0x100)
+        NumPut("Ptr", 0, g, AhkMagic.evalCurrOff)
+        snap := Buffer(0x200)
+        DllCall("RtlMoveMemory", "Ptr", snap.Ptr, "Ptr", gScript, "UPtr", 0x200)
+        oldSrcCount := AhkMagic.evalSrcCount ? NumGet(AhkMagic.evalSrcCount, "Int") : 0
+
+        probe := "
+(
+ahkHackLayoutProbe() {
+    return 1
+}
+)"
+        AhkMagic._LoadScriptMemory(probe)
+
+        countOff := 0
+        loop 0x200 // 4 {
+            off := (A_Index - 1) * 4
+            before := NumGet(snap, off, "Int")
+            after := NumGet(gScript, off, "Int")
+            if after = before + 1 and before >= 0 and after > 0 {
+                countOff := off
+                break
+            }
+        }
+        if !countOff
+            throw Error("mFuncsCount offset not found")
+        oldCount := NumGet(snap, countOff, "Int")
+
+        funcsOff := 0
+        loop 0x200 // 8 {
+            off := (A_Index - 1) * 8
+            p := NumGet(gScript, off, "Ptr")
+            if p > 0x10000 and p < 0x7fffffffffff
+                and !DllCall("IsBadReadPtr", "Ptr", p, "UPtr", 0x100) {
+                newFunc := NumGet(p, oldCount * 8, "Ptr")
+                if newFunc > 0x10000 and newFunc < 0x7fffffffffff {
+                    funcsOff := off
+                    break
+                }
+            }
+        }
+        if !funcsOff
+            throw Error("mFuncs offset not found")
+
+        lastOff := -1
+        loop 0x200 // 8 {
+            off := (A_Index - 1) * 8
+            if off = funcsOff
+                continue
+            before := NumGet(snap, off, "Ptr")
+            after := NumGet(gScript, off, "Ptr")
+            if before != after and after > 0x10000 {
+                lastOff := off
+                break
+            }
+        }
+        if lastOff < 0 {
+            detail := "count=" countOff " funcs=" funcsOff
+            loop 0x200 // 8 {
+                off := (A_Index - 1) * 8
+                b := NumGet(snap, off, "Ptr")
+                a := NumGet(gScript, off, "Ptr")
+                if b != a
+                    detail .= " @" Format("{:X}", off) " " b "->" a
+                        . " bad=" DllCall("IsBadReadPtr", "Ptr", a, "UPtr", 0x40)
+            }
+            throw Error("mLastLine offset not found: " detail)
+        }
+
+        arrPtr := NumGet(gScript, funcsOff, "Ptr")
+        newFunc := NumGet(arrPtr, oldCount * 8, "Ptr")
+        oldLast := NumGet(snap, lastOff, "Ptr")
+        newLast := NumGet(gScript, lastOff, "Ptr")
+        lineSet := Map()
+        line := oldLast ? NumGet(oldLast, 32, "Ptr") : 0
+        loop 10000 {
+            if !line
+                break
+            lineSet[line] := true
+            if line = newLast
+                break
+            line := NumGet(line, 32, "Ptr")
+        }
+        jumpOff := 0
+        loop 0x100 // 8 {
+            off := (A_Index - 1) * 8
+            p := NumGet(newFunc, off, "Ptr")
+            if p > 0x10000 and lineSet.Has(p) {
+                jumpOff := off
+                break
+            }
+        }
+        if !jumpOff
+            throw Error("mJumpLine offset not found")
+
+        DllCall("RtlMoveMemory", "Ptr", gScript, "Ptr", snap.Ptr, "UPtr", 0x200)
+        if AhkMagic.evalSrcCount
+            NumPut("Int", oldSrcCount, AhkMagic.evalSrcCount)
+        DllCall("RtlMoveMemory", "Ptr", g, "Ptr", gSnap.Ptr, "UPtr", 0x100)
+        NumPut("Ptr", savedProbeCur, g, AhkMagic.evalCurrOff)
+
+        AhkMagic.evalMFuncsOff := funcsOff
+        AhkMagic.evalMFuncsCountOff := countOff
+        AhkMagic.evalMLastLineOff := lastOff
+        AhkMagic.evalMJumpLineOff := jumpOff
+        AhkMagic._DiscoverParserOffsets()
+        AhkMagic.evalLayoutLocated := true
+    }
+
+    static _DiscoverParserOffsets() {
+        if AhkMagic.evalParserLocated
+            return
+        secs := AhkMagic._ModuleSections()
+        text := secs[".text"]
+        p := text["ptr"]
+        base := text["rva"]
+        off := AhkMagic.evalLoadTs - AhkMagic.moduleBase - base
+        limit := Min(text["size"] - 8, off + 0x100)
+        qCmp := -1
+        dCmp := -1
+        i := off
+        while i < limit {
+            b0 := NumGet(p + i, "UChar")
+            if b0 = 0x48 and NumGet(p + i + 1, "UChar") = 0x83 {
+                modrm := NumGet(p + i + 2, "UChar")
+                if modrm = 0x79 and NumGet(p + i + 4, "UChar") = 0 {
+                    if qCmp < 0 {
+                        qCmp := NumGet(p + i + 3, "UChar")
+                    }
+                } else if modrm = 0xB9 and NumGet(p + i + 7, "UChar") = 0 {
+                    if qCmp < 0 {
+                        qCmp := NumGet(p + i + 3, "Int")
+                    }
+                }
+            }
+            if b0 = 0x83 and NumGet(p + i + 1, "UChar") = 0xB9
+                and (i = off or NumGet(p + i - 1, "UChar") != 0x48)
+                and NumGet(p + i + 6, "UChar") = 0 {
+                if dCmp < 0
+                    dCmp := NumGet(p + i + 2, "Int")
+            }
+            if qCmp >= 0 and dCmp >= 0
+                break
+            i += 1
+        }
+        if qCmp < 0 or dCmp < 0
+            throw Error("parser state anchors not found")
+
+        parser := Map()
+        if dCmp > 0x100 {
+            ; 2.1 layout: ScriptModule/parser state sits below mClassObjectCount.
+            parser["mclass_count"] := dCmp
+            parser["mline_parent"] := dCmp - 0x30
+            parser["mpending_related"] := dCmp - 0x28
+            parser["mlast_param_init"] := dCmp - 0x20
+            parser["mpending_hotkey"] := dCmp - 0x18
+            parser["mexpr_func"] := dCmp - 0x10
+            parser["mexpr_func_index"] := dCmp - 8
+            parser["mnext_func_body"] := dCmp - 4
+            parser["mignore_block"] := dCmp - 3
+            parser["mbackcompat"] := dCmp - 2
+            parser["mcurrent_module"] := dCmp - 0x50
+            parser["mlast_module"] := dCmp - 0x48
+        } else {
+            ; 2.0 layout: parser fields grow upward from mOpenBlock.
+            parser["mopen"] := qCmp
+            parser["mpending_parent"] := qCmp + 8
+            parser["mpending_related"] := qCmp + 16
+            parser["mlast_param_init"] := qCmp + 24
+            parser["mnext_func_body"] := qCmp + 32
+            parser["mclass_count"] := dCmp
+        }
+        AhkMagic.evalParser := parser
+        AhkMagic.evalParserLocated := true
+    }
+
     ; Evaluate an expression inside this interpreter process.
     ; Returns a number or string.  Throws on unsupported/invalid input.
     static EvalNative(expr) {
@@ -809,10 +1056,13 @@ class AhkMagic {
         if Trim(text) = ""
             throw ValueError("text must not be empty", -1)
 
-        entry := AhkMagic._EvalScriptOffsets().Get(A_AhkVersion, 0)
-        if !entry
-            throw Error("in-process EvalScript not adapted for " A_AhkVersion)
-        AhkMagic._LocateEvalScriptFunctions()
+        AhkMagic._DiscoverEvalLayout()
+        off := AhkMagic._EvalStructOffsets()
+        currOff := AhkMagic.evalCurrOff
+        mfuncsOff := AhkMagic.evalMFuncsOff
+        mfuncsCountOff := AhkMagic.evalMFuncsCountOff
+        mlastLineOff := AhkMagic.evalMLastLineOff
+        mjumpLineOff := AhkMagic.evalMJumpLineOff
 
         last := ""
         for line in StrSplit(text, "`n", "`r") {
@@ -829,50 +1079,51 @@ class AhkMagic {
             throw ValueError("no expression result found in script text", -1)
 
         gScript := AhkMagic.gScript
-        oldLast := NumGet(gScript, entry["mlastline"], "Ptr")
-        oldFuncCount := NumGet(gScript, entry["mfuncs_count"], "Int")
+        oldLast := NumGet(gScript, mlastLineOff, "Ptr")
+        oldFuncCount := NumGet(gScript, mfuncsCountOff, "Int")
         g := NumGet(AhkMagic.evalGptr, "Ptr")
-        savedCur := NumGet(g, entry["curr_off"], "Ptr")
+        savedCur := NumGet(g, currOff, "Ptr")
+        parser := AhkMagic.evalParser
         savedState := []
         for key in ["mopen", "mpending_parent", "mline_parent", "mpending_related"
             , "mlast_param_init", "mpending_hotkey", "mexpr_func", "mcurrent_module"] {
-            if entry.Has(key)
-                savedState.Push([key, "Ptr", NumGet(gScript, entry[key], "Ptr")])
+            if parser.Has(key)
+                savedState.Push([key, "Ptr", NumGet(gScript, parser[key], "Ptr")])
         }
         for key in ["mexpr_func_index", "mclass_count"] {
-            if entry.Has(key)
-                savedState.Push([key, "Int", NumGet(gScript, entry[key], "Int")])
+            if parser.Has(key)
+                savedState.Push([key, "Int", NumGet(gScript, parser[key], "Int")])
         }
         for key in ["mnext_func_body", "mignore_block", "mbackcompat"] {
-            if entry.Has(key)
-                savedState.Push([key, "UChar", NumGet(gScript, entry[key], "UChar")])
+            if parser.Has(key)
+                savedState.Push([key, "UChar", NumGet(gScript, parser[key], "UChar")])
         }
         try {
-            if entry.Has("mopen")
-                NumPut("Ptr", 0, gScript, entry["mopen"])
-            if entry.Has("mpending_parent")
-                NumPut("Ptr", 0, gScript, entry["mpending_parent"])
-            if entry.Has("mline_parent")
-                NumPut("Ptr", 0, gScript, entry["mline_parent"])
-            if entry.Has("mpending_related")
-                NumPut("Ptr", 0, gScript, entry["mpending_related"])
-            if entry.Has("mlast_param_init")
-                NumPut("Ptr", 0, gScript, entry["mlast_param_init"])
-            if entry.Has("mpending_hotkey")
-                NumPut("Ptr", 0, gScript, entry["mpending_hotkey"])
-            if entry.Has("mexpr_func")
-                NumPut("Ptr", 0, gScript, entry["mexpr_func"])
-            if entry.Has("mexpr_func_index")
-                NumPut("Int", 0x7fffffff, gScript, entry["mexpr_func_index"])
-            if entry.Has("mnext_func_body")
-                NumPut("UChar", 0, gScript, entry["mnext_func_body"])
-            if entry.Has("mignore_block")
-                NumPut("UChar", 0, gScript, entry["mignore_block"])
-            if entry.Has("mbackcompat")
-                NumPut("UChar", 1, gScript, entry["mbackcompat"])
-            if entry.Has("mclass_count")
-                NumPut("Int", 0, gScript, entry["mclass_count"])
-            NumPut("Ptr", 0, g, entry["curr_off"])
+            if parser.Has("mopen")
+                NumPut("Ptr", 0, gScript, parser["mopen"])
+            if parser.Has("mpending_parent")
+                NumPut("Ptr", 0, gScript, parser["mpending_parent"])
+            if parser.Has("mline_parent")
+                NumPut("Ptr", 0, gScript, parser["mline_parent"])
+            if parser.Has("mpending_related")
+                NumPut("Ptr", 0, gScript, parser["mpending_related"])
+            if parser.Has("mlast_param_init")
+                NumPut("Ptr", 0, gScript, parser["mlast_param_init"])
+            if parser.Has("mpending_hotkey")
+                NumPut("Ptr", 0, gScript, parser["mpending_hotkey"])
+            if parser.Has("mexpr_func")
+                NumPut("Ptr", 0, gScript, parser["mexpr_func"])
+            if parser.Has("mexpr_func_index")
+                NumPut("Int", 0x7fffffff, gScript, parser["mexpr_func_index"])
+            if parser.Has("mnext_func_body")
+                NumPut("UChar", 0, gScript, parser["mnext_func_body"])
+            if parser.Has("mignore_block")
+                NumPut("UChar", 0, gScript, parser["mignore_block"])
+            if parser.Has("mbackcompat")
+                NumPut("UChar", 1, gScript, parser["mbackcompat"])
+            if parser.Has("mclass_count")
+                NumPut("Int", 0, gScript, parser["mclass_count"])
+            NumPut("Ptr", 0, g, currOff)
 
             if !AhkMagic.memScriptLoader
                 AhkMagic.memScriptLoader := MCode(MC_MEM_SCRIPT_X64)
@@ -886,15 +1137,14 @@ class AhkMagic {
                 , "Ptr", textBuf.Ptr
                 , "UInt", StrLen(text) * 2
                 , "Ptr", scratch.Ptr
-                , "UInt", entry["mem_data_off"]
                 , "Int")
             if rc != 0
                 throw Error("LoadIncludedFile(memory) failed with rc=" rc)
 
-            funcsItem := NumGet(gScript, entry["mfuncs"], "Ptr")
-            funcCount := NumGet(gScript, entry["mfuncs_count"], "Int")
+            funcsItem := NumGet(gScript, mfuncsOff, "Ptr")
+            funcCount := NumGet(gScript, mfuncsCountOff, "Int")
             if funcCount > oldFuncCount {
-                firstNew := oldLast ? NumGet(oldLast, entry["line_next"], "Ptr") : 0
+                firstNew := oldLast ? NumGet(oldLast, off["line_next"], "Ptr") : 0
                 if firstNew {
                     rcTail := DllCall(AhkMagic.evalPreparse
                         , "Ptr", gScript
@@ -906,7 +1156,7 @@ class AhkMagic {
                 loop funcCount - oldFuncCount {
                     idx := oldFuncCount + A_Index - 1
                     newFunc := NumGet(funcsItem + idx * 8, "Ptr")
-                    jump := NumGet(newFunc, entry["mjumpline"], "Ptr")
+                    jump := NumGet(newFunc, mjumpLineOff, "Ptr")
                     if !jump
                         continue
 
@@ -917,30 +1167,30 @@ class AhkMagic {
                     if rc2 != 1
                         throw Error("PreparseExpressions failed with rc=" rc2)
 
-                    NumPut("Ptr", newFunc, g, entry["curr_off"])
+                    NumPut("Ptr", newFunc, g, currOff)
                     line := jump
                     while line {
-                        if NumGet(line, entry["line_action"], "UChar") = 3
-                            and NumGet(line, entry["line_attribute"], "Ptr")
-                            NumPut("Ptr", NumGet(line, entry["line_attribute"], "Ptr")
-                                , g, entry["curr_off"])
-                        argc := NumGet(line, entry["line_argc"], "UChar")
+                        if NumGet(line, off["line_action"], "UChar") = 3
+                            and NumGet(line, off["line_attribute"], "Ptr")
+                            NumPut("Ptr", NumGet(line, off["line_attribute"], "Ptr")
+                                , g, currOff)
+                        argc := NumGet(line, off["line_argc"], "UChar")
                         if argc {
-                            arg := NumGet(line, entry["line_arg"], "Ptr")
+                            arg := NumGet(line, off["line_arg"], "Ptr")
                             if arg and NumGet(arg, 1, "UChar") {
-                                postfix := NumGet(arg, entry["arg_postfix"], "Ptr")
+                                postfix := NumGet(arg, off["arg_postfix"], "Ptr")
                                 if postfix {
-                                    while NumGet(postfix, entry["token_symbol"], "UInt") != AhkMagic.symInvalid {
-                                        if NumGet(postfix, entry["token_symbol"], "UInt") = 4
-                                            and NumGet(postfix, entry["token_usage"], "UInt") < 3 {
-                                            deref := NumGet(postfix, entry["token_value"], "Ptr")
+                                    while NumGet(postfix, off["token_symbol"], "UInt") != AhkMagic.symInvalid {
+                                        if NumGet(postfix, off["token_symbol"], "UInt") = 4
+                                            and NumGet(postfix, off["token_usage"], "UInt") < 3 {
+                                            deref := NumGet(postfix, off["token_value"], "Ptr")
                                             if deref {
                                                 derefType := NumGet(deref, 16, "UChar")
-                                                marker := NumGet(deref, entry["deref_marker"], "Ptr")
-                                                len := NumGet(deref, entry["deref_len"], "UInt")
+                                                marker := NumGet(deref, off["deref_marker"], "Ptr")
+                                                len := NumGet(deref, off["deref_len"], "UInt")
                                                 if derefType = 7 {
                                                     NumPut("Ptr", NumGet(deref, 8, "Ptr")
-                                                        , postfix, entry["token_value"])
+                                                        , postfix, off["token_value"])
                                                 } else if derefType = 0 and marker and len > 0 and len <= 64 {
                                                     var := DllCall(AhkMagic.findOrAddVar
                                                         , "Ptr", gScript
@@ -949,7 +1199,7 @@ class AhkMagic {
                                                         , "UInt", 0x103
                                                         , "Ptr")
                                                     if var
-                                                        NumPut("Ptr", var, postfix, entry["token_value"])
+                                                        NumPut("Ptr", var, postfix, off["token_value"])
                                                 }
                                             }
                                         }
@@ -958,9 +1208,9 @@ class AhkMagic {
                                 }
                             }
                         }
-                        line := NumGet(line, entry["line_next"], "Ptr")
+                        line := NumGet(line, off["line_next"], "Ptr")
                     }
-                    NumPut("Ptr", savedCur, g, entry["curr_off"])
+                    NumPut("Ptr", savedCur, g, currOff)
                     rc4 := DllCall(AhkMagic.evalPreprocess
                         , "Ptr", gScript
                         , "Ptr", newFunc
@@ -972,126 +1222,36 @@ class AhkMagic {
             ; Detach the newly added lines from the running line list so the
             ; active execution cannot continue into them.  The new function
             ; remains reachable through mFuncs.
-            ; NumPut("Ptr", 0, oldLast, entry["line_next"])
-            ; NumPut("Ptr", oldLast, gScript, entry["mlastline"])
-            NumPut("Ptr", 0, g, entry["curr_off"])
+            ; NumPut("Ptr", 0, oldLast, off["line_next"])
+            ; NumPut("Ptr", oldLast, gScript, mlastLineOff)
+            NumPut("Ptr", 0, g, currOff)
             r := AhkMagic.EvalNative(last)
-            NumPut("Ptr", savedCur, g, entry["curr_off"])
+            NumPut("Ptr", savedCur, g, currOff)
             return r
         } finally {
             for item in savedState
-                NumPut(item[2], item[3], gScript, entry[item[1]])
-            NumPut("Ptr", savedCur, g, entry["curr_off"])
+                NumPut(item[2], item[3], gScript, parser[item[1]])
+            NumPut("Ptr", savedCur, g, currOff)
         }
     }
 
-    static _EvalScriptOffsets() {
-        return Map(
-            "2.0.26", Map(
-                "curr_off", 0x28,
-                "mlastline", 8,
-                "mfuncs", 32,
-                "mfuncs_count", 40,
-                "mopen", 112,
-                "mpending_parent", 120,
-                "mpending_related", 128,
-                "mlast_param_init", 136,
-                "mnext_func_body", 144,
-                "mclass_count", 148,
-                "mjumpline", 0x40,
-                "line_action", 0,
-                "line_argc", 1,
-                "line_arg", 8,
-                "line_attribute", 16,
-                "line_next", 32,
-                "arg_postfix", 24,
-                "token_symbol", 16,
-                "token_usage", 8,
-                "token_value", 0,
-                "deref_marker", 0,
-                "deref_len", 20,
-                "mem_data_off", 0x50
-            ),
-            "2.0.0", Map(
-                "curr_off", 0x28,
-                "mlastline", 8,
-                "mfuncs", 32,
-                "mfuncs_count", 40,
-                "mopen", 112,
-                "mpending_parent", 120,
-                "mpending_related", 128,
-                "mnext_func_body", 136,
-                "mclass_count", 140,
-                "mjumpline", 0x40,
-                "line_action", 0,
-                "line_argc", 1,
-                "line_arg", 8,
-                "line_attribute", 16,
-                "line_next", 32,
-                "arg_postfix", 24,
-                "token_symbol", 16,
-                "token_usage", 8,
-                "token_value", 0,
-                "deref_marker", 0,
-                "deref_len", 20,
-                "mem_data_off", 0x40
-            ),
-            "2.0-beta.10", Map(
-                "curr_off", 0x28,
-                "mlastline", 8,
-                "mfuncs", 32,
-                "mfuncs_count", 40,
-                "mopen", 112,
-                "mpending_parent", 120,
-                "mpending_related", 128,
-                "mnext_func_body", 136,
-                "mclass_count", 140,
-                "mjumpline", 0x40,
-                "line_action", 0,
-                "line_argc", 1,
-                "line_arg", 8,
-                "line_attribute", 16,
-                "line_next", 32,
-                "arg_postfix", 24,
-                "token_symbol", 16,
-                "token_usage", 8,
-                "token_value", 0,
-                "deref_marker", 0,
-                "deref_len", 20,
-                "mem_data_off", 0x40
-            ),
-            "2.1-alpha.30", Map(
-                "curr_off", 0x28,
-                "mlastline", 0,
-                "mfuncs", 8,
-                "mfuncs_count", 16,
-                "mline_parent", 0x158,
-                "mpending_related", 0x160,
-                "mlast_param_init", 0x168,
-                "mpending_hotkey", 0x170,
-                "mexpr_func", 0x178,
-                "mexpr_func_index", 0x180,
-                "mnext_func_body", 0x184,
-                "mignore_block", 0x185,
-                "mbackcompat", 0x186,
-                "mclass_count", 0x188,
-                "mcurrent_module", 0x138,
-                "mlast_module", 0x140,
-                "mjumpline", 0x48,
-                "line_action", 0,
-                "line_argc", 1,
-                "line_arg", 8,
-                "line_attribute", 16,
-                "line_next", 32,
-                "arg_postfix", 24,
-                "token_symbol", 16,
-                "token_usage", 8,
-                "token_value", 0,
-                "deref_marker", 0,
-                "deref_len", 20,
-                "mem_data_off", 0x50
-            )
-        )
+    static _LoadScriptMemory(text) {
+        if !AhkMagic.memScriptLoader
+            AhkMagic.memScriptLoader := MCode(MC_MEM_SCRIPT_X64)
+        gScript := AhkMagic.gScript
+        textBuf := Buffer((StrLen(text) + 1) * 2, 0)
+        StrPut(text, textBuf, "UTF-16")
+        scratch := Buffer(0x400, 0)
+        rc := DllCall(AhkMagic.memScriptLoader.Ptr
+            , "Ptr", AhkMagic.evalLoadTs
+            , "Ptr", gScript
+            , "Ptr", AhkMagic.evalSrcCount
+            , "Ptr", textBuf.Ptr
+            , "UInt", StrLen(text) * 2
+            , "Ptr", scratch.Ptr
+            , "Int")
+        if rc != 0
+            throw Error("LoadIncludedFile(memory) failed with rc=" rc)
     }
 
     static EvalSubprocess(expr) {
@@ -1132,6 +1292,6 @@ class AhkMagic {
 }
 
 MC_INTERNAL_LOCATOR_X64 := "4157415641554154565755534881ec38030000488bb424a8030000c744242c000000004885c90f94c04885d2410f94c24108c24d85c0410f94c34508d34885f6410f94c2b8010000004508da0f854a0200004c8b9c24a00300004929d10f92c04929d3410f92c24108c2b8020000000f85270200004d8d9100000200b8030000004d39c20f8712020000498d41074c39d00f87000200004801ca4881c10000010031ff4c89c8eb180f1f840000000000488d58014883c0084c39d04889d8777c803c024875ea488d1c02807b018d75e0807b020d75da4c6373034c01f34883c3074839cb72ca4189ff4531f685ff74154a399cf430010000740b49ffc64d39f775ee4589fe4139fe400f95c583ff40410f93c44108ec75134a899cfc3001000042c744bc3000000000ffc74139fe73804489f3ff449c30e974ffffff85ff0f845301000089fb89d883e00383ff040f832202000031ff4531f631c94885c074384a8d1cf44881c3300100004e8d34b44983c6304531ffeb100f1f84000000000049ffc74c39f87410438b2cbe39cd76f04a8b3cfb89e9ebe84885ff0f84f6000000b8050000004981f8000100000f82e900000031c94889d3eb20660f1f4400004c8d71014881c10101000048ffc34c39c14c89f10f87c2000000803c0a4475e0807c0a018975d9807c0a024c75d2807c0a032475cb807c0a042075c441be04000000eb106666662e0f1f8400000000004983c60242807c33fc66752442807c33fd83751c42807c33fe3a751442807c33ff0074386666662e0f1f8400000000004981fe000100000f8473ffffff42807c33fd6675bb42807c33fe8375b342807c33ff3a75ab42803c330075a44c8d72ff4885c97418410fb6040e3dc3000000740e3dcc000000740748ffc975e831c94801d14531ffeb2eb8040000004881c4380300005b5d5f5e415c415d415e415fc3498d5f014983c706b8080000004d39c74989df77d742803c3ae875e44a8d043a486358014801d84883c0054839c875d04d85ff740f4c89fb41803c1ecc740748ffcb75f431db488d83000100004c39c077ae4801d3b804000000eb044883c002807c03fc667515807c03fd83750e807c03fe3a7507807c03ff007427483d000100000f8478ffffff807c03fd6675cd807c03fe8375c6807c03ff3a75bf803c030075b94d39d34d0f42d3498d41104c39d00f866d0100004531f6488d4a064531ffe99100000083e3fc31ff4531f631c9eb1b66666666662e0f1f8400000000004983c6044c39f30f84befdffff428b6cb43039cd760a4a8bbcf43001000089e9428b6cb43439cd760a4a8bbcf43801000089e9428b6cb43839cd760a4a8bbcf44001000089e9428b6cb43c39cd76b14a8bbcf44801000089e9eba54d8d5f014983c70648ffc1b8060000004d39c74d89df0f8795feffff42803c3ae875dd4a8d043a4c6360014c01e04829d04883c0054c39c875c64d8d5f05498d470a4c39c0400f97c5498d47654939c3410f93c34108eb75a741bb050000004d29e34531e442807c21ffe8750d4e632c214b8d2c234c01ed75264f8d2c274983c5064939c50f8375ffffff4f8d2c274983c50b49ffc44d39c576cae960ffffff4c8d4c242c4889d54889d14c89c24d89d0e80f01000085c00f84f90000004c01ed4c01fd498d042c4883c00a48893e4c89760848895e10488946188b44242c89462031c0e9c8fdffff4d89ceeb14498d46014983c6114d39d64989c60f877afeffff42803c324875e542807c32018975dd42807c32025475d542807c32032475cd42807c32041075c542807c32055575bd42807c32065675b542807c32075775ad42807c32084175a542807c320954759d42807c320a41759542807c320b55758d42807c320c41758542807c320d560f8579ffffff42807c320e410f856dffffff4983fe020f8263ffffff42807c320f570f8557ffffff42807c32ffcc0f854bffffff42807c32fecc0f853fffffff4901d6e9c8fdffffb807000000e9f0fcffff0f1f4000498d80000800004839d0480f42d04983c00431c0eb0d662e0f1f84000000000049ffc04939d0772842807c01fc8375f042807c01fe1075e8460fb65401ff458d5ace4180fb3277d8458911b801000000c3"
-MC_MEM_SCRIPT_X64 := "5657534883ec204c89c64989ca448b5c2470488b4c24684d85d20f94c04885d2410f94c04108c04d85c90f94c04408c04885c9410f94c04108c04585db0f94c3b8010000004408c30f85c40100008b4424600f57c00f11010f1141100f1141200f1141300f1141400f1141500f1141600f1141700f1181800000000f1181900000000f1181a00000000f1181b00000000f1181c00000000f1181d00000000f1181e00000000f1181f00000004c8d81000100000f1181000100000f1181100100000f1181200100000f1181400100000f1181500100000f1181600100000f1181700100000f1181800100000f1181900100000f1181a00100000f1181b00100000f1181c00100000f1181d00100000f1181e00100000f1181f0010000488d3dfd000000488939488d3d2301000048897908488d3d2801000048897910488d3d4d01000048897918488d3d7202000048897920488d3d7702000048897928488d3d7c02000048897930488d3d81020000488979384889890001000048c781080100000c00000048bf00000000b00400004889b910010000c78118010000020000004489992401000066c7812c01000000000f1181300100004589db4e898c1900010000428984190801000042c684190c010000004e898c19100100004885f674048b3eeb0231ff4885f60f94c34889d14c89c24189f841ffd289c131c083f9010f95c108cb740688c801c0eb06ffc7893e31c04883c4205b5f5ec3660f1f4400008b412448c7040800000000c744080800000000c644080c0048c744081000000000c366666666662e0f1f840000000000b001c3666666662e0f1f8400000000008b412448c7040800000000c744080800000000c644080c0048c744081000000000c366666666662e0f1f840000000000565753448b4924498b04094d8b540910458b5c09084c29d04c01d84589c34c39d8410f43c085c074254189c04531db83f8080f827e0000004889d64c29d64883fe20727283f820730d4531dbeb3e4531c0e9cd0000004589c34183e3e031f690410f100432410f104c32100f1104320f114c32104883c6204939f375e34539c30f849d00000041f6c018742a4c89de4589c34183e3f8662e0f1f840000000000498b3c3248893c324883c6084939f375ef4539c3746d4c89c74c89de4883e703741e4c89de66662e0f1f840000000000410fb61c32881c3248ffc648ffcf75f04d29c34983fbfc773a0f1f8000000000450fb61c3244881c32450fb65c320144885c3201450fb65c320244885c3202450fb65c320344885c32034883c6044939f075cd4d01c24d895409105b5f5ec39031c0c3666666662e0f1f84000000000031c0c3666666662e0f1f8400000000008b5124488b440a10482b040ac30f1f008b41248b440108c3"
+MC_MEM_SCRIPT_X64 := "5657534883ec204c89c64989ca488b4c24684d85d20f94c04885d2410f94c04108c04d85c9410f94c34508c34885c9410f94c0b8010000004508d80f85c80100008b4424600f57c00f11010f1141100f1141200f1141300f1141400f1141500f1141600f1141700f1181800000000f1181900000000f1181a00000000f1181b00000000f1181c00000000f1181d00000000f1181e00000000f1181f00000004c8d81000100000f1181000100000f1181100100000f1181200100000f1181400100000f1181500100000f1181600100000f1181700100000f1181800100000f1181900100000f1181a00100000f1181b00100000f1181c00100000f1181d00100000f1181e00100000f1181f00100004c8d1d0a0100004c89194c8d1d300100004c8959084c8d1d350100004c8959104c8d1d5a0100004c8959184c8d1d9f0200004c8959204c8d1da40200004c8959284c8d1da90200004c8959304c8d1dae0200004c8959384889890001000048c781080100000c00000049bb00000000b00400004c899910010000c781180100000200000066c7812c01000000000f1181300100004c898940010000898148010000c6814c010000004c898950010000898158010000c6815c010000004c8989600100004885f674048b3eeb0231ff4885f60f94c34889d14c89c24189f841ffd289c131c083f9010f95c108cb740688c801c0eb06ffc7893e31c04883c4205b5f5ec36666666666662e0f1f84000000000048c7414000000000c7414800000000c6414c0048c7415000000000c7415800000000c6415c0048c7416000000000c390b001c3666666662e0f1f84000000000048c7414000000000c7414800000000c6414c0048c7415000000000c7415800000000c6415c0048c7416000000000c390565753488b41404c8b51504c8b4960448b59484c29d04c01d84589c34c39d8410f43c085c074214189c083f808410f92c34889d64c29d64883fe200f92c34408db740d4531dbeb7e4531c0e9e300000083f82073054531dbeb424589c34183e3e031f6666666662e0f1f840000000000410f100432410f104c32100f1104320f114c32104883c6204939f375e34539c30f849d00000041f6c018742a4c89de4589c34183e3f8662e0f1f840000000000498b3c3248893c324883c6084939f375ef4539c3746d4c89c74c89de4883e703741e4c89de66662e0f1f840000000000410fb61c32881c3248ffc648ffcf75f04d29c34983fbfc773a0f1f8000000000450fb61c3244881c32450fb65c320144885c3201450fb65c320244885c3202450fb65c320344885c32034883c6044939f075cd4d01c24c8951504d01c14c8949605b5f5ec366662e0f1f84000000000031c0c3666666662e0f1f84000000000031c0c3666666662e0f1f840000000000488b4150482b4140c30f1f80000000008b4148c3"
 MC_INPROC_EVAL_X64 := "4157415641554154565755534881ec980000004c89cf4c89c34989cf4c8ba42408010000488b8c240001000048c78424800000000000400048c7442468000000004d85ff0f94c04885d2410f94c04108c04885db0f94c04d85c9410f94c14108c14508c14885c90f94c04408c84d85e4410f94c04883bc242801000000410f94c14508c14108c14883bc243801000000410f94c04883bc244001000000410f94c2b8010000004508c24508ca41f6c2010f851b060000488b8424200100004c8bac24180100004c8d87000100004885c04889c6490f44f04c8db7800100004c8d8f000300004c894c24704c898c24900000004d85ed4c0f44ef756e0f57c00f11070f1147100f1147200f1147300f1147400f1147500f1147600f1147700f1187800000000f1187900000000f1187a00000000f1187b00000000f1187c00000000f1187d00000000f1187e00000000f1187f0000000c6070341c645010141c7450401000000498975080f57c0410f1106410f114610410f114620410f114630410f114640410f114650410f114660410f1146706683390074164531c90f1f40006642837c4902004d8d490175f3eb034531c94885c04c897c24600f85fe010000488d870008100048894424500f57c0410f1100410f114010410f114020410f114030410f114040410f114050410f114060410f11407041c60000c646010144894e0448894e0849b800010000000100004c8946204531c04989cb4d89d9eb0c904983c1044084ed4d0f45cb450fb7114183fa22744b4183fa2774454585d20f8457010000418d429f6683f81a0f828e000000664183fa5f0f8483000000418d42a56683f8e57779410fb7c23d80000000736e4983c102ebb30f1f8400000000004d8d5902450fb77902664585ff400f94c5664539d70f94c04008e875830f1f00664183ff60750f66418379040074074983c1044d89cb4d89d94983c302450fb77902664585ff400f94c50f8450ffffff664539d775cae945ffffff0f1f44000031ed4d89cbeb14660f1f840000000000450fb753024983c302ffc5418d429f6683f81a72eb418d42bf6683f81a0f92c0664183fa5f410f94c74108c775d2410fb7c23d800000000f92c04183c2c6664183faf6410f92c24484d074b44939c9741f4181f8ff0000000f92c066418379fe2e410f95c24184c20f84bcfeffffeb0d4181f8fe0000000f87adfeffff4489c0488d04404c8b5424504d890cc249c744c208000000006641c744c210000041896cc21441ffc0e97ffeffff4585c04c8b7c2460741941c1e003438d0440488b4c245048c704010000000048894e10488954247849c70424010000000f57c0410f11442408488b0348894424504c892b4c8d4424684c89e94889f241ffd789c5488b4c24684885c97407ff94244001000083fd0175214883bc2410010000000f84e8010000488bac24480100004c8b7e18418b4710eb32488b44245048890341c7042402000000e994020000488b400849890766666666662e0f1f840000000000418b47284983c71839e8745083f80475ef41837f080277e8498b074885c074e08078100774c5448b4014488b10488b8c242801000041b903010000ff9424380100004885c075a8488b44245048890341c7042405000000e923020000488b8424300100004885c00f94c1483b4424600f94c208ca75114c89e94889f2ffd083f8010f854d010000488b4424704889842488000000c78790010000ffffffff48c78788010000ffffffff4889879801000048c787a001000000000000488d8700033f004889442438488d8424800000004889442430488d8424900000004889442428488d842488000000488944242048c744244000003f004c8d44245c4c89e931d24d89f1ff542478488b4c245048890b4885c00f84ae00000041c70424000000008b8f9001000041894c2404488b8f8001000049894c240849894c2410498d4c24204889ca4c29f24883fa0f0f8797000000ba05000000660f1f840000000000450fb64416fb44884411fb450fb64416fc44884411fc450fb64416fd44884411fd450fb64416fe44884411fe450fb64416ff44884411ff450fb60416448804114883c2064883fa3575b6eb56488b44245048890348b8000000006300000049890424e9b800000041c7042403000000e9ab000000488b44245048890341c7042406000000e996000000410f10060f1101410f1046100f114110410f1046200f114120418b4c240483f9050f8785000000ba270000000fa3ca737b488b461849894424504885c0744b31c0660f1f440000488b4e180fb60c0141884c0458488b4e180fb64c010141884c0459488b4e180fb64c010241884c045a488b4e180fb64c010341884c045b4883c004483d2001000075bd8b44245c41898424c800000031c04881c4980000005b5d5f5e415c415d415e415fc341c7442404000000004989442410e972ffffff"
 

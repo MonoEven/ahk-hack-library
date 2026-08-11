@@ -12,7 +12,7 @@
   --code-ink: #e6e9ef;
   --code-muted: #9aa7b8;
   --radius: 8px;
-  --content-max: 42rem;
+  --content-max: 52rem;
 }
 
 * {
@@ -29,8 +29,8 @@ body {
   color: var(--ink);
   font-family: "Segoe UI", system-ui, -apple-system, "Microsoft YaHei",
     "PingFang SC", sans-serif;
-  font-size: 17px;
-  line-height: 1.72;
+  font-size: 18px;
+  line-height: 1.8;
   letter-spacing: 0;
 }
 
@@ -125,14 +125,42 @@ body {
   font-size: clamp(2rem, 5vw, 3rem);
   line-height: 1.16;
   letter-spacing: 0;
-  max-width: 22ch;
+  max-width: 18ch;
 }
 
 .lede {
   margin: 0;
-  max-width: 46rem;
+  max-width: 100%;
   color: var(--muted);
   font-size: 1.13rem;
+}
+
+.key-points {
+  margin: 2rem 0 0;
+  padding: 1.2rem 1.4rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.key-points h2 {
+  margin: 0 0 0.7rem;
+  padding: 0;
+  border: 0;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.key-points ul {
+  margin: 0;
+  padding-left: 1.2rem;
+  max-width: 100%;
+}
+
+.key-points li {
+  margin: 0.35rem 0;
 }
 
 .meta {
@@ -148,21 +176,23 @@ body {
 
 article {
   max-width: var(--content-max);
+  margin: 0 auto;
   padding-top: 2rem;
 }
 
 h2 {
-  margin: 3.4rem 0 1rem;
-  padding-bottom: 0.55rem;
+  margin: 4rem 0 1.1rem;
+  padding: 0 0 0.7rem 0.85rem;
+  border-left: 4px solid var(--accent);
   border-bottom: 1px solid var(--line);
-  font-size: 1.62rem;
-  line-height: 1.3;
+  font-size: 1.85rem;
+  line-height: 1.25;
   scroll-margin-top: 84px;
 }
 
 h3 {
-  margin: 2.2rem 0 0.7rem;
-  font-size: 1.2rem;
+  margin: 2.6rem 0 0.8rem;
+  font-size: 1.3rem;
   line-height: 1.35;
   scroll-margin-top: 84px;
 }
@@ -170,6 +200,17 @@ h3 {
 p {
   margin: 0.9rem 0;
   max-width: 100%;
+}
+
+h2 + p,
+h3 + p {
+  font-size: 1.08rem;
+  color: #263244;
+  font-weight: 550;
+}
+
+section {
+  scroll-margin-top: 84px;
 }
 
 ul,
@@ -195,13 +236,13 @@ code {
 }
 
 pre {
-  margin: 1.2rem 0;
-  padding: 1.05rem 1.15rem;
+  margin: 1.4rem 0;
+  padding: 1.15rem 1.25rem;
   background: var(--code-bg);
   color: var(--code-ink);
   border-radius: var(--radius);
   overflow: auto;
-  font-size: 0.86rem;
+  font-size: 0.88rem;
   line-height: 1.55;
 }
 
@@ -239,8 +280,8 @@ pre .cmt {
 table {
   width: 100%;
   border-collapse: collapse;
-  margin: 1.3rem 0;
-  font-size: 0.95rem;
+  margin: 1.5rem 0;
+  font-size: 0.97rem;
   background: var(--surface);
 }
 
@@ -258,11 +299,12 @@ th {
 }
 
 blockquote {
-  margin: 1.4rem 0;
-  padding: 0.85rem 1.1rem;
+  margin: 1.6rem 0;
+  padding: 1rem 1.2rem;
   border-left: 4px solid var(--accent);
   border-radius: 0 var(--radius) var(--radius) 0;
   background: var(--accent-soft);
+  font-size: 1.05rem;
 }
 
 blockquote.warn {
@@ -288,13 +330,13 @@ blockquote.warn {
 .toc ol {
   margin: 0;
   columns: 2;
-  column-gap: 2.4rem;
-  padding-left: 1.2rem;
+  column-gap: 2.6rem;
+  padding-left: 1.3rem;
 }
 
 .toc li {
   break-inside: avoid;
-  margin: 0.25rem 0;
+  margin: 0.4rem 0;
 }
 
 .toc a {

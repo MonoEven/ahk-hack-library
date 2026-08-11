@@ -28,6 +28,14 @@
       <h1>Inside AutoHotkey64.exe: Runtime Scanning, Machine Code, and In-Process Eval</h1>
       <p class="lede">How an AutoHotkey v2 script reads the interpreter that is running it, rebuilds its embedded x64 machine code, and evaluates expressions without spawning a child process.</p>
       <p class="meta">Repository: <a href="https://github.com/MonoEven/ahk-hack-library">MonoEven/ahk-hack-library</a> · Practice integration: <a href="https://github.com/MonoEven/cnumpy">cnumpy</a></p>
+      <div class="key-points">
+        <h2>What this covers</h2>
+        <ul>
+          <li>Runtime PE parsing and interpreter table scanning.</li>
+          <li>Rebuilding position-independent machine code from C sources.</li>
+          <li>In-process expression evaluation and script loading from memory.</li>
+        </ul>
+      </div>
       <div class="links">
         <a href="https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk">Single-file core</a>
         <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode">Machine-code sources</a>
@@ -195,7 +203,7 @@ MsgBox AhkMagic.EvalNative("myVar + 1")          ; 43</code></pre>
           <li><code>Line::sSourceFileCount</code> is discovered from a backward RIP-relative load with a plausible small count.</li>
           <li>The <code>g</code> global is discovered inside callers of <code>PreparseExpressions</code> via a <code>mov rax,[rip+disp]</code> followed by a store into offset <code>0x28</code>.</li>
         </ul>
-        <p>The in-memory <code>TextStream</code> layout is version-dependent: <code>mData</code> sits at <code>0x40</code> before 2.0.26 and at <code>0x50</code> from 2.0.26 onward, so the loader receives the offset as a parameter instead of assuming a fixed layout. The script state is saved before loading and restored in a <code>finally</code> block: pending parent/related lines, pending parameter initializers, current module, expression-function state, and class count. This keeps temporary parser state out of the caller.</p>
+        <p>The in-memory <code>TextStream</code> is built with both possible <code>mData</code> regions populated, so the loader does not need to choose a layout for 2.0 versus 2.1. The script state is saved before loading and restored in a <code>finally</code> block: pending parent/related lines, pending parameter initializers, current module, expression-function state, and class count. This keeps temporary parser state out of the caller.</p>
         <pre><code>script := "
 (
 add(a, b) {
@@ -222,7 +230,7 @@ MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
 
       <section id="boundary">
         <h2>7. Runtime discovery versus layout constants</h2>
-        <p>"Hardcoded" needs a precise definition here. The library has no per-version table of function RVAs or global addresses. Tables, function entry points, globals, and enum values are discovered at runtime. What remains per-version is a small set of C++ struct field offsets for <code>Script</code>, <code>ScriptModule</code>, <code>UserFunc</code>, <code>Line</code>, <code>ArgStruct</code>, and expression tokens.</p>
+        <p>"Hardcoded" needs a precise definition here. The library has no per-version table at all. Tables, function entry points, globals, and enum values are discovered at runtime. The Script field offsets used by EvalScript are discovered the same way: a one-time probe loads a function from memory, diffs the live Script object to find <code>mFuncs</code>, <code>mFuncsCount</code>, and <code>mLastLine</code>, walks the new function's line chain to find <code>mJumpLine</code>, and reads parser-state anchors from the <code>LoadIncludedFile</code> prologue. Stable offsets such as <code>Line</code>/<code>ArgStruct</code>/token layout are fixed constants that have not changed across the verified builds.</p>
         <table>
           <thead>
             <tr>
@@ -248,12 +256,12 @@ MsgBox AhkMagic.EvalScript(classScript)          ; 1</code></pre>
               <td>Runtime-discovered by the internal locator</td>
             </tr>
             <tr>
-              <td>C++ struct field offsets (<code>Script</code>, <code>ScriptModule</code>, <code>UserFunc</code>, <code>Line</code>, <code>ArgStruct</code>, tokens)</td>
-              <td>Per-version layout constants, validated by the test matrix</td>
+              <td>Script/UserFunc/TextStream layout offsets</td>
+              <td>Runtime-discovered by probe diffing and machine-code anchors</td>
             </tr>
           </tbody>
         </table>
-        <p>Field offsets are a different axis from addresses. They describe how members sit inside C++ objects, and they are exercised by the four-build test matrix. A build whose layout differs will make the probes fail explicitly.</p>
+        <p>The probe runs once per process and restores the Script object afterwards, so it does not leave a hidden test function behind. A build whose layout differs will make the probe fail explicitly instead of falling back to a guessed offset.</p>
         <p>The optional cnumpy bridge applies the same idea to AHK <code>Array</code> objects. <code>AhkLayout</code> discovers <code>mItem</code>, <code>mLength</code>, <code>mCapacity</code>, and the <code>Variant</code> layout by diffing live objects, then cross-validates with a second independent probe set.</p>
       </section>
 
