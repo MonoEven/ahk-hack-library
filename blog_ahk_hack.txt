@@ -97,6 +97,7 @@ AhkMagic.RestoreBif("Abs", old)
 
 MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
+MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))") ; 显式子进程
 MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7，同进程
 MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0，同进程
 MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5，同进程
@@ -105,7 +106,7 @@ MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5，同进程
 [c]EvalNative[/c] 会构造临时 [c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的
 [c]ExpressionToPostfix[/c] 和 [c]ExpandExpression[/c]。已验证的四个版本上都支持
 字面量、运算符、全局变量与函数调用；不支持的语法会直接报错而不是悄悄降级。
-[c]Eval[/c] 仍保留为通用兜底。
+[c]Eval[/c] 会先走同进程管线，遇到暂不支持的表达式再使用 [c]EvalSubprocess[/c]。
 
 [color=#BF4000][b]4.4 重新构建机器码[/b][/color]
 

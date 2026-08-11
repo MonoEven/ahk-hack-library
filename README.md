@@ -44,9 +44,9 @@ Practice integration: [https://github.com/MonoEven/cnumpy](https://github.com/Mo
   function RVA and ordinal.
 - **Runtime built-in redirection.** `PatchBif()` can temporarily re-point a
   built-in C function and `RestoreBif()` restores it.
-- **Expression eval.** `AhkMagic.EvalNative()` evaluates expression strings
-  by driving the running interpreter's own expression compiler/evaluator
-  in-process. `AhkMagic.Eval()` remains as the subprocess fallback.
+- **Expression eval.** `AhkMagic.Eval()` tries the interpreter's in-process
+  expression pipeline first and falls back to `EvalSubprocess()` for
+  expressions it cannot evaluate yet. `EvalNative()` is the in-process core.
 - **Optional cnumpy bridge.** `CnpBridge` converts `CnpArray` to native AHK
   values, supports zero-copy views, and is validated by 1D/2D/3D tests.
 - **Self-contained at runtime.** No Python, no external scanner, no
@@ -107,7 +107,8 @@ AhkMagic.RestoreBif("Abs", old)
 MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7, in-process
 MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5, in-process
 MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)") ; "bc", in-process
-MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5, subprocess fallback
+MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5, in-process first
+MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))") ; explicit subprocess
 ```
 
 ### Optional cnumpy integration
@@ -148,7 +149,8 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `ScanExports(moduleBase)` | Returns `Map(name -> {rva, ordinal})` for a loaded module |
 | `PatchBif(name, newName)` / `RestoreBif(name, oldPtr)` | Temporarily redirect and restore a built-in |
 | `PatchBifObject(fnObj, newName)` / `RestoreBifObject(fnObj, state)` | Deep-redirect an already-resolved built-in so direct calls are affected |
-| `Eval(expr)` | Evaluates an expression string with the same interpreter |
+| `Eval(expr)` | Tries the in-process pipeline, then `EvalSubprocess()` for unsupported expressions |
+| `EvalSubprocess(expr)` | Evaluates an expression string in a hidden child process |
 | `EvalNative(expr)` | Evaluates literals, operators, variables, and function calls through the interpreter's in-process expression pipeline |
 
 ### CnpBridge

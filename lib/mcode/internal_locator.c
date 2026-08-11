@@ -5,8 +5,8 @@
  * EvalNative needs, without a per-version RVA table:
  *
  *   g_script            most frequent `lea rcx, [rip+disp]` in ExpressionToPostfix
- *   FindOrAddVar        call target after a `lea rcx, g_script` whose prologue
- *                       contains `cmpw $0, (%rdx)`
+ *   FindOrAddVar        wrapper immediately before `FindVar`, which is found
+ *                       by its 6-arg prologue + `cmpw $0, (%rdx)`
  *   FinalizeExpression  function between ExpressionToPostfix and ExpandExpression
  *                       with the standard ArgStruct prologue
  *   CRT free            next call after the direct caller of ExpressionToPostfix
@@ -93,35 +93,48 @@ static int target_has_cmp_null_name(u8 *p, u64 size, u64 target_off)
     return 0;
 }
 
-static int find_find_or_add_var(u8 *p, u64 size, u64 start, u64 end,
-                                u64 gscript, u64 *out)
+static int find_var(u8 *p, u64 size, u64 *out)
+{
+    static const u8 prologue[] = { 0x44, 0x89, 0x4C, 0x24, 0x20 };
+    u64 i;
+    for (i = 0; i + 0x100 <= size; ++i)
+    {
+        u64 j;
+        for (j = 0; j < sizeof(prologue); ++j)
+            if (p[i + j] != prologue[j])
+                break;
+        if (j != sizeof(prologue))
+            continue;
+        if (!target_has_cmp_null_name(p, size, i))
+            continue;
+        while (i > 0 && p[i - 1] != 0xCC && p[i - 1] != 0xC3)
+            --i;
+        *out = (u64)(p + i);
+        return 1;
+    }
+    return 0;
+}
+
+static int find_or_add_var(u8 *p, u64 size, u64 findvar_off, u64 *out)
 {
     u64 i;
-    for (i = start; i + 7 <= end; ++i)
+    for (i = 0; i + 5 <= size; ++i)
     {
-        if (p[i] != 0x48 || p[i + 1] != 0x8D || p[i + 2] != 0x0D)
+        u64 start;
+        if (p[i] != 0xE8)
             continue;
         {
-            i32 disp = rds32(p + i + 3);
-            if ((u64)(p + i + 7) + (i64)disp != gscript)
+            i32 disp = rds32(p + i + 1);
+            if ((u64)(p + i + 5) + (i64)disp != (u64)(p + findvar_off))
                 continue;
-            {
-                u64 j;
-                for (j = i + 7; j + 5 <= end && j < i + 23; ++j)
-                {
-                    if (p[j] != 0xE8)
-                        continue;
-                    {
-                        i32 d2 = rds32(p + j + 1);
-                        u64 target = (u64)(p + j + 5) + (i64)d2;
-                        if (target_has_cmp_null_name(p, size, target - (u64)p))
-                        {
-                            *out = target;
-                            return 1;
-                        }
-                    }
-                }
-            }
+        }
+        start = i;
+        while (start > 0 && p[start - 1] != 0xCC)
+            --start;
+        if (target_has_cmp_null_name(p, size, start))
+        {
+            *out = (u64)(p + start);
+            return 1;
         }
     }
     return 0;
@@ -232,9 +245,10 @@ int AhkLocateInternal(u64 base, u64 text_rva, u64 text_size,
 
     if (!find_gscript(p, expr_off, expr_off + 0x20000, base, &gscript))
         return 4;
-    if (!find_find_or_add_var(p, size, expr_off, expr_off + 0x20000,
-                              gscript, &findvar))
+    if (!find_var(p, size, &findvar))
         return 5;
+    if (!find_or_add_var(p, size, findvar - (u64)p, &findvar))
+        return 8;
     if (expand_off > expr_off + 0x20000)
         expand_off = expr_off + 0x20000;
     find_finalize(p, size, expr_off, expand_off, &finalize);
