@@ -22,7 +22,31 @@
     </div>
   </header>
 
-  <main class="wrap">
+  <main class="layout wrap">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <span>Contents</span>
+        <button type="button" id="sidebarClose" aria-label="Close sidebar">&times;</button>
+      </div>
+      <nav id="toc" aria-label="Table of contents">
+        <ol>
+          <li><a href="#why">Why scan at runtime</a></li>
+          <li><a href="#pe">The PE map</a></li>
+          <li><a href="#tables">The three interpreter tables</a></li>
+          <li><a href="#rebuild">Rebuilding the machine code</a></li>
+          <li><a href="#evalnative">EvalNative: in-process expression evaluation</a></li>
+          <li><a href="#evalscript">EvalScript: long text, functions, and classes</a></li>
+          <li><a href="#boundary">Runtime discovery versus layout constants</a></li>
+          <li><a href="#examples">Complete examples</a></li>
+          <li><a href="#verification">Verification matrix</a></li>
+          <li><a href="#debugging">Debugging and failure modes</a></li>
+          <li><a href="#security">Security and usage rules</a></li>
+          <li><a href="#learning">Learning path</a></li>
+          <li><a href="#appendix">Appendix: single-file source</a></li>
+        </ol>
+      </nav>
+    </aside>
+    <div class="content">
     <section class="hero">
       <div class="kicker">Field notes · 2026-08-12</div>
       <h1>Inside AutoHotkey64.exe: Runtime Scanning, Machine Code, and In-Process Eval</h1>
@@ -44,25 +68,6 @@
     </section>
 
     <article>
-      <nav class="toc" aria-label="Table of contents">
-        <h2>Contents</h2>
-        <ol>
-          <li><a href="#why">Why scan at runtime</a></li>
-          <li><a href="#pe">The PE map</a></li>
-          <li><a href="#tables">The three interpreter tables</a></li>
-          <li><a href="#rebuild">Rebuilding the machine code</a></li>
-          <li><a href="#evalnative">EvalNative: in-process expression evaluation</a></li>
-          <li><a href="#evalscript">EvalScript: long text, functions, and classes</a></li>
-          <li><a href="#boundary">Runtime discovery versus layout constants</a></li>
-          <li><a href="#examples">Complete examples</a></li>
-          <li><a href="#verification">Verification matrix</a></li>
-          <li><a href="#debugging">Debugging and failure modes</a></li>
-          <li><a href="#security">Security and usage rules</a></li>
-          <li><a href="#learning">Learning path</a></li>
-          <li><a href="#appendix">Appendix: single-file source</a></li>
-        </ol>
-      </nav>
-
       <section id="why">
         <h2>1. Why scan at runtime</h2>
         <p>AutoHotkey v2 exposes the script-facing surface through built-ins and system variables such as <code>A_AhkPath</code>, but it does not provide a stable C API for interpreter internals. The tables used by this library, <code>g_BIF</code>, <code>sMdFunc</code>, and <code>g_BIV_A</code>, live inside <code>AutoHotkey64.exe</code> itself.</p>
@@ -1754,7 +1759,11 @@ MC_INPROC_EVAL_X64 := &quot;4157415641554154565755534881ec980000004c89cf4c89c349
         </details>
       </section>
     </article>
+    </div>
   </main>
+  <button class="sidebar-float" id="sidebarOpen" type="button" aria-label="Open sidebar">
+    <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+  </button>
 
   <footer class="wrap">
     <div class="footer">

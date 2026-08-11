@@ -22,7 +22,31 @@
     </div>
   </header>
 
-  <main class="wrap">
+  <main class="layout wrap">
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <span>目录</span>
+        <button type="button" id="sidebarClose" aria-label="关闭侧栏">&times;</button>
+      </div>
+      <nav id="toc" aria-label="目录">
+        <ol>
+          <li><a href="#why">为什么在运行时扫描</a></li>
+          <li><a href="#pe">PE 结构</a></li>
+          <li><a href="#tables">三张解释器内部表</a></li>
+          <li><a href="#rebuild">重新构建机器码</a></li>
+          <li><a href="#evalnative">EvalNative：进程内表达式求值</a></li>
+          <li><a href="#evalscript">EvalScript：长文本、函数与类</a></li>
+          <li><a href="#boundary">运行时发现与布局常量</a></li>
+          <li><a href="#examples">完整示例</a></li>
+          <li><a href="#verification">验证矩阵</a></li>
+          <li><a href="#debugging">调试与故障</a></li>
+          <li><a href="#security">安全与使用规则</a></li>
+          <li><a href="#learning">学习路径</a></li>
+          <li><a href="#appendix">附录：单文件源码</a></li>
+        </ol>
+      </nav>
+    </aside>
+    <div class="content">
     <section class="hero">
       <div class="kicker">技术笔记 · 2026-08-12</div>
       <h1>深入 AutoHotkey64.exe：运行时扫描、机器码重建与进程内 Eval</h1>
@@ -44,25 +68,6 @@
     </section>
 
     <article>
-      <nav class="toc" aria-label="目录">
-        <h2>目录</h2>
-        <ol>
-          <li><a href="#why">为什么在运行时扫描</a></li>
-          <li><a href="#pe">PE 结构</a></li>
-          <li><a href="#tables">三张解释器内部表</a></li>
-          <li><a href="#rebuild">重新构建机器码</a></li>
-          <li><a href="#evalnative">EvalNative：进程内表达式求值</a></li>
-          <li><a href="#evalscript">EvalScript：长文本、函数与类</a></li>
-          <li><a href="#boundary">运行时发现与布局常量</a></li>
-          <li><a href="#examples">完整示例</a></li>
-          <li><a href="#verification">验证矩阵</a></li>
-          <li><a href="#debugging">调试与故障</a></li>
-          <li><a href="#security">安全与使用规则</a></li>
-          <li><a href="#learning">学习路径</a></li>
-          <li><a href="#appendix">附录：单文件源码</a></li>
-        </ol>
-      </nav>
-
       <section id="why">
         <h2>1. 为什么在运行时扫描</h2>
         <p>AutoHotkey v2 对外提供的是内置函数和 <code>A_AhkPath</code> 这类系统变量，没有稳定的 C API 可以拿到解释器内部结构。本库用到的三张表 <code>g_BIF</code>、<code>sMdFunc</code>、<code>g_BIV_A</code> 都放在 <code>AutoHotkey64.exe</code> 里。</p>
@@ -1754,7 +1759,11 @@ MC_INPROC_EVAL_X64 := &quot;4157415641554154565755534881ec980000004c89cf4c89c349
         </details>
       </section>
     </article>
+    </div>
   </main>
+  <button class="sidebar-float" id="sidebarOpen" type="button" aria-label="打开侧栏">
+    <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+  </button>
 
   <footer class="wrap">
     <div class="footer">
