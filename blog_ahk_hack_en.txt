@@ -5,7 +5,7 @@ cnumpy practice integration: [url=https://github.com/MonoEven/cnumpy]https://git
 
 [i]Summary: this project embeds x64 machine code in an AutoHotkey v2 library and scans the internal structure of AutoHotkey executables at runtime. On top of that map it provides native AHK array construction, built-in redirection, and expression evaluation. cnumpy conversion is a practice integration used to validate the scanner, not the core. [/i]
 
-The original goal sounded like "crack autohotkey.exe", but what turned out to be valuable is not bypassing anything. It is a reusable runtime structure scanner. An interpreter is not a black box; it is a PE file that a program can read by itself. The scanner translates that file into a runtime map, and every other feature is built on that map.
+The project started as an attempt to "crack autohotkey.exe". What survived is a reusable runtime structure scanner. An interpreter is a PE file that a program can read by itself; the scanner turns that file into a runtime map, and everything else builds on the map.
 
 
 [b]1. Core capability: runtime scanning[/b]
@@ -16,14 +16,14 @@ The AutoHotkey 2 interpreter keeps several critical tables in the [c].data[/c] s
 - [c]sMdFunc[/c]: typed native functions ([c]MsgBox[/c], [c]WinActivate[/c], ...), 0x28 bytes;
 - [c]g_BIV_A[/c]: built-in variables starting with [c]A_[/c] ([c]A_AhkPath[/c], [c]A_YYYY[/c], ...), 0x18 bytes.
 
-The scan does not guess offsets. It verifies three invariants: the name pointer must resolve to a UTF-16 string, the function pointer must land in [c].text[/c], and the records must be sorted alphabetically. The contiguous region that satisfies all three is the target table. After the scan, every entry's RVA, parameter counts, and ID are read out.
+The scan relies on three invariants: the name pointer must resolve to a UTF-16 string, the function pointer must land in [c].text[/c], and the records must be sorted alphabetically. The contiguous region that satisfies all three is the target table. After the scan, every entry's RVA, parameter counts, and ID are read out.
 
 The same machine code runs on 2.0-beta, 2.0.0, 2.0.26, and 2.1-alpha without per-version offsets. The same approach was generalized into a universal PE export scanner: given the base address of any loaded DLL/EXE, it enumerates every named export with its function RVA and ordinal. All 1027 exports of [c]cnumpy_ahk.dll[/c] are recognized this way.
 
 
 [b]2. Where the machine code comes from[/b]
 
-The machine code is not hand-written assembly. It is written in C, compiled with clang, and extracted from the [c].text[/c] section of the COFF object:
+The machine code is written in C, compiled with clang, and extracted from the [c].text[/c] section of the COFF object:
 
 [codebox=text file=tools\build_mcode.py excerpt]
 clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
@@ -154,7 +154,7 @@ Verified versions: 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
 
 [b]5. Security (important, read fully)[/b]
 
-[color=#BF4000]This library allocates executable memory, executes machine code, and reads or writes interpreter internals directly. Treat it as a reverse-engineering research tool, not an ordinary script library.[/color]
+[color=#BF4000]This library allocates executable memory, executes machine code, and reads or writes interpreter internals directly. Use it with reverse-engineering research discipline.[/color]
 
 Operations fall into three categories:
 
@@ -213,7 +213,7 @@ Verified: 1D/2D/3D native construction, roundtrip, view read/write, ownership, a
 
 [b]9. Conclusion[/b]
 
-"Crack the exe" ended up becoming a cleaner shape: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. The cnumpy integration is the test stone that proves the map works: it pushes 100M-element conversion from tens of seconds down to sub-second range. The core value is always the scanning itself.
+The "crack the exe" goal ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. The cnumpy integration validated the map by pushing 100M-element conversion from tens of seconds down to sub-second range. The core remains the scanning.
 
 GitHub: [url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
 cnumpy: [url=https://github.com/MonoEven/cnumpy]https://github.com/MonoEven/cnumpy[/url]

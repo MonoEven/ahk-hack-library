@@ -3,9 +3,9 @@
 仓库：[url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
 cnumpy 实践集成：[url=https://github.com/MonoEven/cnumpy]https://github.com/MonoEven/cnumpy[/url]
 
-[i]摘要：这个项目用嵌入 AHK v2 的 x64 机器码，在运行时扫描 AutoHotkey 可执行文件的内部结构，并在此基础上提供原生数组构造、内置函数重定向和表达式求值等能力。cnumpy 数组转换是验证这套扫描能力的实践集成，不是核心。[/i]
+[i]摘要：这个项目用嵌入 AHK v2 的 x64 机器码，在运行时扫描 AutoHotkey 可执行文件的内部结构，并在此基础上提供原生数组构造、内置函数重定向和表达式求值等能力。cnumpy 数组转换属于实践集成，用来验证这套扫描能力。[/i]
 
-最初的目标听起来像“破解 autohotkey.exe”，但真正有价值的部分不是绕过什么，而是一套可复用的运行时结构扫描机制。解释器不是黑盒，它只是一份可以被程序自己读取的 PE 文件。扫描器负责把这份文件翻译成运行时地图，后续所有操作都建立在这张地图上。
+项目最初的目标是“破解 autohotkey.exe”，做到后面留下来的是一套可复用的运行时结构扫描机制。解释器本身就是一份 PE 文件，程序可以自己读取它。扫描器把这份文件翻译成运行时地图，后续功能都建立在这张地图上。
 
 
 [b]1. 核心能力：运行时扫描[/b]
@@ -16,14 +16,14 @@ AutoHotkey 2 解释器在 [c].data[/c] 段维护了几张关键表。扫描器�
 - [c]sMdFunc[/c]：带类型签名的原生函数表（[c]MsgBox[/c]、[c]WinActivate[/c] 等），0x28 字节；
 - [c]g_BIV_A[/c]：以 [c]A_[/c] 开头的内置变量表（[c]A_AhkPath[/c]、[c]A_YYYY[/c] 等），0x18 字节。
 
-定位不是靠猜偏移，而是验证三个不变式：名字指针必须指向 UTF-16 字符串、函数指针必须落在 [c].text[/c]、表内记录必须按字典序排列。满足这些条件的连续记录区就是目标表。扫描完成后，每条记录的 RVA、参数个数、ID 都会被读出。
+定位依据三个不变式：名字指针必须指向 UTF-16 字符串、函数指针必须落在 [c].text[/c]、表内记录必须按字典序排列。满足这些条件的连续记录区就是目标表。扫描完成后，每条记录的 RVA、参数个数、ID 都会被读出。
 
 同一段机器码可以在 2.0-beta、2.0.0、2.0.26、2.1-alpha 上运行，不需要为每个版本单独维护偏移。这套思路还被泛化成通用 PE 导出表扫描器：给定任意已加载 DLL/EXE 的基址，就能枚举全部具名导出及其 RVA 和序号。[c]cnumpy_ahk.dll[/c] 的 1027 个导出就是这样自动识别的。
 
 
 [b]2. 机器码从哪里来[/b]
 
-机器码不是手写汇编，而是用 C 编写、clang 编译、再从 COFF 对象的 [c].text[/c] 段提取的：
+机器码用 C 编写，经 clang 编译后从 COFF 对象的 [c].text[/c] 段提取：
 
 [codebox=text file=tools\build_mcode.py 摘要]
 clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
@@ -154,7 +154,7 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 [b]5. 安全性（重要，请完整阅读）[/b]
 
-[color=#BF4000]这个库会在你的进程里分配可执行内存、执行机器码，并直接读写解释器内部结构。请把它当作逆向工程研究工具，而不是普通脚本库。[/color]
+[color=#BF4000]这个库会在你的进程里分配可执行内存、执行机器码，并直接读写解释器内部结构。请按逆向工程研究工具的标准来使用。[/color]
 
 操作分为三类：
 
@@ -213,7 +213,7 @@ cnumpy 侧修复了写死偏移的问题，本库已同步更正：
 
 [b]9. 结语[/b]
 
-“破解 exe”最终变成了一个更干净的形态：把 exe 当作程序自身可以读取的结构化文档，扫描出内部地图，再在地图上做实验。cnumpy 集成是验证地图质量的试金石：它能把 100M 元素的转换从几十秒量级压到亚秒量级。核心价值始终是扫描。
+“破解 exe”这个目标最后落到了扫描上：把 exe 当作程序自身可以读取的结构化文档，先扫描出内部地图，再在地图上做实验。cnumpy 集成用 100M 元素转换验证了这张地图，耗时从几十秒压到亚秒级。核心还是扫描。
 
 GitHub：[url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
 cnumpy：[url=https://github.com/MonoEven/cnumpy]https://github.com/MonoEven/cnumpy[/url]
