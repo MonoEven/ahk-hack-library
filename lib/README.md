@@ -1,9 +1,15 @@
 # ahk-hack library
 
+![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
+![AutoHotkey](https://img.shields.io/badge/AutoHotkey-v2-green.svg)
+![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg)
+
 The core of this library is **scanning**: machine code that reads the
 internal structure of AutoHotkey executables and of arbitrary PE modules at
 runtime.  cnumpy conversion is a practice integration built on top of it,
 not the core.
+
+Repository: https://github.com/MonoEven/ahk-hack-library
 
 ## Layout
 
