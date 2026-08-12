@@ -308,6 +308,10 @@ name, so the PID file in the test harness is only test orchestration.
 Expressions that depend on string-result buffers may need interpreter-thread
 context calibration.
 
+`RemoteEval` is expression-level (`EvalNative`-style). Remote `EvalScript`
+(loading multi-line script text with new function/class definitions into the
+target through the script-loading pipeline) is not implemented yet.
+
 Live hotkey verification:
 
 ```powershell
