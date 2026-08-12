@@ -2436,6 +2436,88 @@ ahkHackLayoutProbe() {
         }
     }
 
+    static RemoteReplaceFuncBody(hook, oldName, newName) {
+        if !(hook is Map) or !hook.Has("pid")
+            throw TypeError("hook must be an AttachRemote result", -1)
+        h := AhkMagic._RemoteOpen(hook["pid"], true)
+        try {
+            mod := AhkMagic._RemoteModuleBase(h, hook["pid"])
+            secs := AhkMagic._RemoteSections(h, mod["base"])
+            if hook.Has("script_layout") {
+                layout := hook["script_layout"]
+            } else {
+                loc := AhkMagic._RemoteLocateEvalScript(secs, mod["base"])
+                layout := AhkMagic._RemoteDiscoverLayout(h, secs, mod["base"], loc)
+                hook["script_layout"] := layout
+            }
+            oldList := AhkMagic._RemoteFindUserFuncs(h, layout, oldName)
+            newPtr := AhkMagic._RemoteFindUserFunc(h, layout, newName)
+            if !oldList.Length or !newPtr
+                throw Error("function object not found: " oldName " / " newName, -1)
+            jumpOff := layout["mjump_line_off"]
+            newJump := AhkMagic._RPtr(h, newPtr + jumpOff)
+            if !newJump
+                throw Error("new function body not found", -1)
+            patched := []
+            for oldPtr in oldList {
+                AhkMagic._WPtr(h, oldPtr + jumpOff, newJump)
+                patched.Push(oldPtr)
+            }
+            return Map("old", oldList, "new", newPtr, "jump_off", jumpOff
+                , "count", patched.Length)
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
+    }
+
+    static _RemoteFindUserFunc(h, layout, name) {
+        list := AhkMagic._RemoteFindUserFuncs(h, layout, name)
+        return list.Length ? list[1] : 0
+    }
+
+    static _RemoteFindUserFuncs(h, layout, name) {
+        gscript := layout["gscript"]
+        arr := AhkMagic._RPtr(h, gscript + layout["mfuncs_off"])
+        count := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
+        result := []
+        shortName := name
+        dot := InStr(name, ".")
+        fullName := ""
+        if dot {
+            shortName := SubStr(name, dot + 1)
+            fullName := SubStr(name, 1, dot - 1)
+                . ".Prototype." shortName
+        }
+        loop count {
+            nf := AhkMagic._RPtr(h, arr + (A_Index - 1) * 8)
+            candidates := [name, shortName]
+            if fullName != ""
+                candidates.Push(fullName)
+            for want in candidates {
+                data := AhkMagic._RemoteRead(h, nf, 0x500)
+                found := false
+                loop data.Size // 2 - StrLen(want) {
+                    off := (A_Index - 1) * 2
+                    ok := true
+                    loop StrLen(want) {
+                        if NumGet(data, off + (A_Index - 1) * 2, "UShort")
+                            != Ord(SubStr(want, A_Index, 1)) {
+                            ok := false
+                            break
+                        }
+                    }
+                    if ok and NumGet(data, off + StrLen(want) * 2, "UShort") = 0 {
+                        found := true
+                        break
+                    }
+                }
+                if found
+                    result.Push(nf)
+            }
+        }
+        return result
+    }
+
     static EvalSubprocess(expr) {
         AhkMagic.Init()
         if !(expr is String)

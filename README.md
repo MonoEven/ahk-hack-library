@@ -189,6 +189,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `RemoteDeepRedirect(hook, name, newName)` | Also patches already-resolved `Func` objects, so direct calls inside other functions change |
 | `RemoteEval(hook, expr)` | Injects a thread into the target and evaluates an expression through its own expression pipeline |
 | `RemoteEvalScript(hook, text)` | Loads a multi-line script inside the target through its script-loading pipeline (functions and classes verified) |
+| `RemoteReplaceFuncBody(hook, oldName, newName)` | Writes `newName`'s `mJumpToLine` into `oldName`'s `UserFunc`, so direct calls to `oldName` execute the new body |
 
 ### CnpBridge
 
@@ -314,6 +315,20 @@ function definitions (`add(a, b)` plus `add(1, 2)` returns `3`) and class
 definitions (`Point(1, 2).y` returns `2`). The injected thread sets
 `g->CurrentFunc` before `PreparseExpressions`, which is what class methods with
 `Super` need.
+
+Hotkey verification for `RemoteEvalScript`:
+
+- `tests/remote_hook_evalscript_target.ahk` defines `B_add(x)` calling `A(x)`
+  directly and binds `F9` to `B_add(1)`.
+- `tests/remote_hook_evalscript_demo.ahk` loads `NewA` on `F2`, replaces `A`'s
+  function body with `RemoteReplaceFuncBody("A", "NewA")`, then sends `F9`.
+- `F3` loads the `PointNew` class and verifies `PointNew(1, 2).y` with
+  `RemoteEval`.
+
+```text
+after address replace A f9=42
+after class eval=2
+```
 
 Remote hook compatibility matrix (verified):
 

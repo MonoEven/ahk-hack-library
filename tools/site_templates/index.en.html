@@ -523,6 +523,7 @@ add(a, b) {
 add(1, 2)
 )"
 MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
+        <p><code>RemoteReplaceFuncBody(hook, "A", "NewA")</code> replaces the function body pointer like <code>Abs -&gt; Sin</code>. The hotkey demo loads <code>NewA</code> on <code>F2</code>, replaces <code>A</code>, and <code>F9</code> verifies <code>42</code>; <code>F3</code> loads <code>PointNew</code> and <code>RemoteEval</code> verifies <code>2</code>.</p>
         <p>Live verification: start <code>tests/remote_hook_resident_target.ahk</code>, redirect <code>Abs</code> to <code>Sin</code>, then send <code>F7</code> to the target. It writes <code>0.8414709848078965</code> (<code>Sin(1)</code>) instead of <code>1</code> (<code>Abs(1)</code>). Remote eval <code>x := 1 + 2 * 3</code> is verified by sending <code>F8</code>, which writes <code>7</code>.</p>
         <p>Function-to-function verification: <code>tests/remote_hook_function_target.ahk</code> defines <code>B_direct()</code> and <code>B_dynamic()</code>; <code>tests/remote_hook_function_demo.ahk</code> deep redirects <code>Abs -&gt; Sin</code> and both outputs become <code>0.8414709848078965</code>.</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v

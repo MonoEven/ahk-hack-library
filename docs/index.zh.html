@@ -523,6 +523,7 @@ add(a, b) {
 add(1, 2)
 )"
 MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
+        <p><code>RemoteReplaceFuncBody(hook, "A", "NewA")</code>像 <code>Abs -&gt; Sin</code>一样替换函数体指针。热键 demo 在 <code>F2</code> 加载 <code>NewA</code> 并替换 <code>A</code>，<code>F9</code> 验证输出 <code>42</code>；<code>F3</code> 加载 <code>PointNew</code> 后由 <code>RemoteEval</code> 验证输出 <code>2</code>。</p>
         <p>实测验证：启动 <code>tests/remote_hook_resident_target.ahk</code>，把 <code>Abs</code> 重定向为 <code>Sin</code>，再向目标发送 <code>F7</code>。它会输出 <code>0.8414709848078965</code>（即 <code>Sin(1)</code>），而不是原来的 <code>1</code>。远程执行 <code>x := 1 + 2 * 3</code> 后发送 <code>F8</code>，目标会写出 <code>7</code>。</p>
         <p>函数到函数验证：<code>tests/remote_hook_function_target.ahk</code>定义 <code>B_direct()</code>和 <code>B_dynamic()</code>；<code>tests/remote_hook_function_demo.ahk</code>深补丁 <code>Abs -&gt; Sin</code>后，两个输出都变成 <code>0.8414709848078965</code>。</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
@@ -3030,6 +3031,88 @@ ahkHackLayoutProbe() {
         } finally {
             DllCall(&quot;CloseHandle&quot;, &quot;Ptr&quot;, h)
         }
+    }
+
+    static RemoteReplaceFuncBody(hook, oldName, newName) {
+        if !(hook is Map) or !hook.Has(&quot;pid&quot;)
+            throw TypeError(&quot;hook must be an AttachRemote result&quot;, -1)
+        h := AhkMagic._RemoteOpen(hook[&quot;pid&quot;], true)
+        try {
+            mod := AhkMagic._RemoteModuleBase(h, hook[&quot;pid&quot;])
+            secs := AhkMagic._RemoteSections(h, mod[&quot;base&quot;])
+            if hook.Has(&quot;script_layout&quot;) {
+                layout := hook[&quot;script_layout&quot;]
+            } else {
+                loc := AhkMagic._RemoteLocateEvalScript(secs, mod[&quot;base&quot;])
+                layout := AhkMagic._RemoteDiscoverLayout(h, secs, mod[&quot;base&quot;], loc)
+                hook[&quot;script_layout&quot;] := layout
+            }
+            oldList := AhkMagic._RemoteFindUserFuncs(h, layout, oldName)
+            newPtr := AhkMagic._RemoteFindUserFunc(h, layout, newName)
+            if !oldList.Length or !newPtr
+                throw Error(&quot;function object not found: &quot; oldName &quot; / &quot; newName, -1)
+            jumpOff := layout[&quot;mjump_line_off&quot;]
+            newJump := AhkMagic._RPtr(h, newPtr + jumpOff)
+            if !newJump
+                throw Error(&quot;new function body not found&quot;, -1)
+            patched := []
+            for oldPtr in oldList {
+                AhkMagic._WPtr(h, oldPtr + jumpOff, newJump)
+                patched.Push(oldPtr)
+            }
+            return Map(&quot;old&quot;, oldList, &quot;new&quot;, newPtr, &quot;jump_off&quot;, jumpOff
+                , &quot;count&quot;, patched.Length)
+        } finally {
+            DllCall(&quot;CloseHandle&quot;, &quot;Ptr&quot;, h)
+        }
+    }
+
+    static _RemoteFindUserFunc(h, layout, name) {
+        list := AhkMagic._RemoteFindUserFuncs(h, layout, name)
+        return list.Length ? list[1] : 0
+    }
+
+    static _RemoteFindUserFuncs(h, layout, name) {
+        gscript := layout[&quot;gscript&quot;]
+        arr := AhkMagic._RPtr(h, gscript + layout[&quot;mfuncs_off&quot;])
+        count := AhkMagic._RInt(h, gscript + layout[&quot;mfuncs_count_off&quot;])
+        result := []
+        shortName := name
+        dot := InStr(name, &quot;.&quot;)
+        fullName := &quot;&quot;
+        if dot {
+            shortName := SubStr(name, dot + 1)
+            fullName := SubStr(name, 1, dot - 1)
+                . &quot;.Prototype.&quot; shortName
+        }
+        loop count {
+            nf := AhkMagic._RPtr(h, arr + (A_Index - 1) * 8)
+            candidates := [name, shortName]
+            if fullName != &quot;&quot;
+                candidates.Push(fullName)
+            for want in candidates {
+                data := AhkMagic._RemoteRead(h, nf, 0x500)
+                found := false
+                loop data.Size // 2 - StrLen(want) {
+                    off := (A_Index - 1) * 2
+                    ok := true
+                    loop StrLen(want) {
+                        if NumGet(data, off + (A_Index - 1) * 2, &quot;UShort&quot;)
+                            != Ord(SubStr(want, A_Index, 1)) {
+                            ok := false
+                            break
+                        }
+                    }
+                    if ok and NumGet(data, off + StrLen(want) * 2, &quot;UShort&quot;) = 0 {
+                        found := true
+                        break
+                    }
+                }
+                if found
+                    result.Push(nf)
+            }
+        }
+        return result
     }
 
     static EvalSubprocess(expr) {
