@@ -292,6 +292,11 @@ verified on all four versions. `EvalSubprocess` also works: the regular v2
 runtime accepts `/script`, so the compiled exe is relaunched in interpreter
 mode to run the temporary script.
 
+UPX/MPRESS compression also keeps the pipeline working. The scanner falls back
+to content-based section classification when packers rename `.text`,
+`.rdata`, and `.data` (UPX0/UPX1, .MPRESS1/...). This Ahk2Exe build does not
+support `/pass` encryption and rejects it explicitly.
+
 ## Project Layout
 
 ```text
@@ -373,6 +378,10 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 # Ahk2Exe packaged exe (use the AutoHotkey v2 runtime as /base)
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
 & build\compiled_eval_probe.exe
+
+# UPX-compressed variant of the same probe
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_upx.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 2 /silent verbose
+& build\compiled_eval_probe_upx.exe
 
 # Interactive compiled demo (shows a MsgBox)
 & D:\...\Compiler2\Ahk2Exe.exe /in examples\ahk_hack_compiled_demo.ahk /out build\compiled_eval_demo.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /silent verbose

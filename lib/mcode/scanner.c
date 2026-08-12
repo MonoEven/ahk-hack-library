@@ -31,6 +31,7 @@ typedef struct {
     u8 is_text;
     u8 is_rdata;
     u8 is_data;
+    u8 name[8];
 } SecRange;
 
 typedef struct {
@@ -148,6 +149,20 @@ static u8 is_yyyy(u64 p)
         && *(u16 *)(p + 8) == 0;
 }
 
+static u8 name_eq(u8 *np, const char *s, int len)
+{
+    int k;
+    for (k = 0; k < len; ++k)
+        if (np[k] != (u8)s[k])
+            return 0;
+    return 1;
+}
+
+static u8 is_rsrc_name(u8 *np)
+{
+    return name_eq(np, ".rsrc", 5);
+}
+
 static u8 name_le(u64 a, u64 b)
 {
     u64 i;
@@ -262,6 +277,9 @@ int AhkScanTables(u64 base, ScanOut *out)
     SecRange secs[16];
     int n = 0;
     int i;
+    u8 has_text = 0;
+    u8 has_data = 0;
+    u8 strict;
 
     if (base == 0 || out == 0)
         return 1;
@@ -289,16 +307,39 @@ int AhkScanTables(u64 base, ScanOut *out)
         u32 va = *(u32 *)(hdr + 12);
         u32 raw_size = *(u32 *)(hdr + 16);
         u8 *np = (u8 *)name;
+        int k;
         u64 size = vsize ? vsize : raw_size;
         secs[n].start = base + va;
         secs[n].end = secs[n].start + size;
-        secs[n].is_text = np[0] == '.' && np[1] == 't' && np[2] == 'e'
-            && np[3] == 'x' && np[4] == 't';
-        secs[n].is_rdata = np[0] == '.' && np[1] == 'r' && np[2] == 'd'
-            && np[3] == 'a' && np[4] == 't' && np[5] == 'a';
-        secs[n].is_data = np[0] == '.' && np[1] == 'd' && np[2] == 'a'
-            && np[3] == 't' && np[4] == 'a';
+        for (k = 0; k < 8; ++k)
+            secs[n].name[k] = np[k];
+        if (name_eq(np, ".text", 5))
+            has_text = 1;
+        if (name_eq(np, ".rdata", 6) || name_eq(np, ".data", 5))
+            has_data = 1;
         ++n;
+    }
+
+    // Normal builds expose .text/.rdata/.data by name. Packed executables
+    // (UPX, MPRESS) rename them (UPX0/UPX1, .MPRESS1/...), so fall back to
+    // scanning every non-resource section and rely on anchor+run validation.
+    strict = has_text && has_data;
+    for (i = 0; i < n; ++i)
+    {
+        u8 *np = secs[i].name;
+        u8 non_rsrc = !is_rsrc_name(np);
+        if (strict)
+        {
+            secs[i].is_text = name_eq(np, ".text", 5);
+            secs[i].is_rdata = name_eq(np, ".rdata", 6);
+            secs[i].is_data = name_eq(np, ".data", 5);
+        }
+        else
+        {
+            secs[i].is_text = non_rsrc;
+            secs[i].is_rdata = non_rsrc;
+            secs[i].is_data = non_rsrc;
+        }
     }
 
     if (!scan_one(base, secs, n, KIND_BIF, 0x20, &out->bif_ptr,
