@@ -9,6 +9,14 @@ if A_Args.Length >= 2 and A_Args[1] = "--selftest" {
     SelfTest(Integer(A_Args[2]))
     ExitApp 0
 }
+if A_Args.Length >= 3 and A_Args[1] = "--eval" {
+    SelfEval(Integer(A_Args[2]), A_Args[3])
+    ExitApp 0
+}
+if A_Args.Length >= 3 and A_Args[1] = "--script" {
+    SelfScript(Integer(A_Args[2]), A_Args[3])
+    ExitApp 0
+}
 
 global guiHook := 0
 global monitorExprText := ""
@@ -370,6 +378,37 @@ SelfTest(pid) {
         ExitApp 0
     } catch as e {
         Write("FAIL " e.What " | " e.Message " | line " e.Line)
+        ExitApp 1
+    }
+}
+
+
+SelfEval(pid, expr) {
+    outFile := A_Temp "\ahk_hack_gui_eval.out"
+    try FileDelete(outFile)
+    try {
+        hook := AhkMagic.AttachRemote(pid)
+        r := AhkMagic.RemoteEval(hook, expr)
+        FileAppend(r, outFile, "UTF-8")
+        ExitApp 0
+    } catch as e {
+        FileAppend("FAIL " e.What " | " e.Message, outFile, "UTF-8")
+        ExitApp 1
+    }
+}
+
+
+SelfScript(pid, path) {
+    outFile := A_Temp "\ahk_hack_gui_script.out"
+    try FileDelete(outFile)
+    try {
+        text := FileRead(path, "UTF-8")
+        hook := AhkMagic.AttachRemote(pid)
+        r := AhkMagic.RemoteEvalScript(hook, text)
+        FileAppend(r, outFile, "UTF-8")
+        ExitApp 0
+    } catch as e {
+        FileAppend("FAIL " e.What " | " e.Message, outFile, "UTF-8")
         ExitApp 1
     }
 }

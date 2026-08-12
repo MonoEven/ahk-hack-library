@@ -86,6 +86,62 @@ The result is written to `%TEMP%\ahk_hack_gui_selftest.out`, so the GUI's
 underlying logic can be verified in CI or from a script without opening a
 window.
 
+### Scriptable eval from the command line
+
+The same attach path is exposed as `--eval` and `--script`, so any external
+driver (PowerShell, CI, a coding agent, or another AutoHotkey process) can
+interrogate a running target without opening the GUI:
+
+```powershell
+AutoHotkey64.exe ahk_hack_gui.ahk --eval <pid> "1 + 2 * 3"
+AutoHotkey64.exe ahk_hack_gui.ahk --script <pid> add.ahk
+```
+
+`--eval` writes the evaluated value to
+`%TEMP%\ahk_hack_gui_eval.out`; `--script` loads the file through the
+target's own parser and writes the last expression result to
+`%TEMP%\ahk_hack_gui_script.out`. Failures write a `FAIL ...` line and
+return a nonzero exit code.
+
+## Beyond debugging
+
+Attach-and-eval tooling has a longer history in other runtimes: CPython 3.14
+adds PEP 768 as a safe external debugger interface so `pdb` can attach to a
+running process; Frida hooks functions and calls into them from outside the
+target; Arthas attaches to JVMs to inspect state and redefine class bodies;
+DTrace exposes dynamic tracing on live systems. The remote console maps the
+same ideas onto AutoHotkey, and most of them work on interpreted, compiled,
+and UPX-packed builds because the hook reads the runtime tables from memory
+instead of relying on debug symbols or a built-in attach API.
+
+Concrete directions worth building on top of `AttachRemote`:
+
+- **Live hotfix and hot reload.** A long-running resident script can receive
+  a replacement function or class through `RemoteEvalScript`, then have its
+  callers switched with `RemoteReplaceFuncBody`, without losing in-memory
+  state or restarting hotkeys/timers. This mirrors Arthas-style redefine and
+  editor hot reload, but for scripts that have no official reload path.
+- **Fault injection and chaos testing.** Redirect a builtin to another one,
+  or inject a failing function, to force error branches in CI or staging.
+  Because `RemoteDeepRedirect` also changes already-resolved call sites, it
+  covers paths that a source-level mock cannot reach without a rebuild.
+- **Support triage on production-like machines.** Attach to a target that
+  cannot be stopped, read counters and timer state with `RemoteEval`, and
+  dump the interpreter tables for forensic or capacity questions. The CLI
+  modes make this scriptable from PowerShell or a support playbook.
+- **Agent and IDE orchestration.** `--eval` and `--script` give a coding
+  agent, a CI job, or an editor extension a narrow command surface for
+  querying a live AutoHotkey process and applying small patches.
+- **Interpreter research and compatibility tooling.** Dump the same table
+  structures across versions and compiled formats, diff RVAs, and keep a
+  regression suite that detects when a new build moves a parser layout.
+- **Authorized security analysis.** With an owned process or a disposable
+  VM, the same primitives can exercise hook detection, verify whether a
+  script is packed, or inspect what a suspicious compiled exe does after
+  unpacking in memory. This is a dual-use area: process injection is also
+  catalogued as MITRE T1055, so only run it on targets you control and keep
+  experiments isolated.
+
 ## Safety
 
 The GUI is a research tool. Attach only to processes you own. Redirects and
