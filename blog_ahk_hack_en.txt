@@ -209,6 +209,8 @@ AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
 
 The same injection path powers [c]RemoteEval[/c]: it copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely.
 
+The target needs no special code: no [c]#Include[/c], no exported pointers, no callback, and no embedded metadata. [c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c] resolves the PID from the image name, so the PID file in the test harness is only test orchestration.
+
 Live verification: start [c]tests\remote_hotkey_target.ahk[/c], redirect [c]Abs[/c] to [c]Sin[/c], then run [c]tests\remote_hotkey_trigger.ahk[/c]. The [c]F7[/c] hotkey writes [c]0.8414709848078965[/c] ([c]Sin(1)[/c]) instead of [c]1[/c] ([c]Abs(1)[/c]).
 
 [codebox=text file=compiled]

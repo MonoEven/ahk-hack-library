@@ -241,7 +241,12 @@ The Python tool exposes the same path:
 
 ```powershell
 python tools\ahk_remote_attach.py --pid 1234 --eval "1 + 2 * 3"
+python tools\ahk_remote_attach.py --name AutoHotkey64.exe --eval "1 + 2 * 3"
 ```
+
+The target needs no special code: no `#Include`, no exported pointers, no
+callback, and no embedded metadata. `--name` resolves the PID from the image
+name, so the PID file in the test harness is only test orchestration.
 
 `RemoteEval` is verified for numeric expressions and simple builtin calls.
 Expressions that depend on string-result buffers may need interpreter-thread

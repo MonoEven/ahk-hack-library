@@ -36,6 +36,7 @@ PROCESS_VM_OPERATION = 0x0008
 PROCESS_CREATE_THREAD = 0x0002
 TH32CS_SNAPMODULE = 0x00000008
 TH32CS_SNAPMODULE32 = 0x00000010
+TH32CS_SNAPPROCESS = 0x00000002
 MAX_PATH = 260
 MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
@@ -56,6 +57,21 @@ class MODULEENTRY32W(ctypes.Structure):
         ("hModule", wt.HMODULE),
         ("szModule", ctypes.c_wchar * 256),
         ("szExePath", ctypes.c_wchar * MAX_PATH),
+    ]
+
+
+class PROCESSENTRY32W(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wt.DWORD),
+        ("cntUsage", wt.DWORD),
+        ("th32ProcessID", wt.DWORD),
+        ("th32DefaultHeapID", wt.LPVOID),
+        ("th32ModuleID", wt.DWORD),
+        ("cntThreads", wt.DWORD),
+        ("th32ParentProcessID", wt.DWORD),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", wt.DWORD),
+        ("szExeFile", ctypes.c_wchar * MAX_PATH),
     ]
 
 
@@ -86,6 +102,10 @@ kernel32.Module32FirstW.argtypes = [wt.HANDLE, ctypes.POINTER(MODULEENTRY32W)]
 kernel32.Module32FirstW.restype = wt.BOOL
 kernel32.Module32NextW.argtypes = [wt.HANDLE, ctypes.POINTER(MODULEENTRY32W)]
 kernel32.Module32NextW.restype = wt.BOOL
+kernel32.Process32FirstW.argtypes = [wt.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+kernel32.Process32FirstW.restype = wt.BOOL
+kernel32.Process32NextW.argtypes = [wt.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+kernel32.Process32NextW.restype = wt.BOOL
 kernel32.VirtualAllocEx.argtypes = [
     wt.HANDLE,
     wt.LPVOID,
@@ -213,6 +233,25 @@ def find_main_module(pid: int):
         if "autohotkey" in name.lower():
             return base, path
     return modules[0][0], modules[0][1]
+
+
+def find_pid_by_name(name: str) -> int:
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    if snapshot == -1:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(entry)
+        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        while True:
+            if entry.szExeFile.lower() == name.lower():
+                return entry.th32ProcessID
+            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                break
+    finally:
+        kernel32.CloseHandle(snapshot)
+    raise RuntimeError("process not found: %s" % name)
 
 
 class RemotePE:
@@ -578,7 +617,11 @@ def attach(pid: int, redirect=None, eval_expr=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pid", type=int, required=True, help="target process id")
+    parser.add_argument("--pid", type=int, help="target process id")
+    parser.add_argument(
+        "--name",
+        help="attach to a process by image name (for example AutoHotkey64.exe)",
+    )
     parser.add_argument("--json", action="store_true", help="print JSON report")
     parser.add_argument(
         "--filter",
@@ -599,7 +642,13 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    report = attach(args.pid, redirect=args.redirect, eval_expr=args.eval)
+    if args.pid is not None:
+        pid = args.pid
+    elif args.name:
+        pid = find_pid_by_name(args.name)
+    else:
+        parser.error("one of --pid or --name is required")
+    report = attach(pid, redirect=args.redirect, eval_expr=args.eval)
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0

@@ -209,6 +209,8 @@ AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
 
 同一套注入路径也支撑[c]RemoteEval[/c]：把内部定位器和表达式求值 blob 连同一个小型线程 stub 写进目标进程，用[c]CreateRemoteThread[/c]执行，再读回结果。[c]1 + 2 * 3[/c]、[c]2 * 3.5[/c]这类基础表达式已远程验证。
 
+目标进程不需要任何特殊代码：不需要[c]#Include[/c]、不需要导出指针、不需要回调，也不需要内嵌元数据。[c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c]可以直接按映像名解析 PID，测试脚本里写 PID 文件只是测试编排用的。
+
 实测验证：启动[c]tests\remote_hotkey_target.ahk[/c]，把[c]Abs[/c]重定向为[c]Sin[/c]，再运行[c]tests\remote_hotkey_trigger.ahk[/c]。[c]F7[/c]热键会输出[c]0.8414709848078965[/c]（即[c]Sin(1)[/c]），而不是原来的[c]1[/c]。
 
 [codebox=text file=compiled]
