@@ -199,6 +199,14 @@ UPX 和 MPRESS 压缩也验证过。压缩后的 exe 会改写解释器节名，
 python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
 [/codebox]
 
+同一套流程也做成了 AHK Hook API。[c]AttachRemote(pid)[/c]用[c]OpenProcess[/c]打开目标进程，用[c]ReadProcessMemory[/c]读取 PE 头和 data 节，扫描锚点名和连续排序记录定位三张表，返回包含[c]image_base[/c]、[c]table_rva[/c]和条目的 Map。[c]RemoteRedirect(hook, "Abs", "Sin")[/c]以写权限重新打开目标，把目标函数指针写进源条目对应的[c]fn_ptr[/c]槽。
+
+[codebox=autohotkey file=remote-hook]
+hook := AhkMagic.AttachRemote(pid)
+MsgBox hook["builtins"]["count"]
+AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+[/codebox]
+
 [codebox=text file=compiled]
 # 普通编译
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
@@ -250,7 +258,7 @@ python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
 - 在四个版本上用 Ahk2Exe 编译后验证[c]Init[/c]、[c]EvalNative[/c]、[c]EvalScript[/c]仍然可用；编译 exe 内嵌同一个运行时，动态定位器照常工作；
 - [c]EvalSubprocess[/c]现在在编译版里也能工作：编译 exe 通过[c]/script[/c]重新进入解释器模式来执行临时[c].ahk[/c]。
 - 增加基于内容的节分类回退，UPX/MPRESS 压缩后的 exe 仍然可用；
-- 新增[c]tools\ahk_remote_attach.py[/c]，按 PID 挂到正在运行的 AutoHotkey 进程，远程扫描解释器三张表，并支持改写运行中的内置函数表（例如[c]Abs -> Sin[/c]）。
+- 新增[c]tools\ahk_remote_attach.py[/c]和[c]AhkMagic.AttachRemote()[/c]/[c]RemoteRedirect()[/c]Hook API，脚本可以直接按 PID 挂到正在运行的 AutoHotkey 进程，远程扫描解释器三张表，并改写运行中的内置函数表（例如[c]Abs -> Sin[/c]）。
 
 
 [b]7. 已知限制[/b]
@@ -1534,6 +1542,284 @@ ahkHackLayoutProbe() {
             , "Int")
         if rc != 0
             throw Error("LoadIncludedFile(memory) failed with rc=" rc)
+    }
+
+    ; ------------------------------------------------------------------
+    ; Remote attach: read the three interpreter tables from another
+    ; AutoHotkey process without injecting anything.
+    ; ------------------------------------------------------------------
+
+    static _RemoteOpen(pid, write := false) {
+        access := 0x410
+        if write
+            access := 0x410 | 0x28
+        h := DllCall("OpenProcess", "UInt", access, "Int", 0, "UInt", pid, "Ptr")
+        if !h
+            throw Error("OpenProcess failed", -1)
+        return h
+    }
+
+    static _RemoteModuleBase(h, pid) {
+        hSnap := DllCall("CreateToolhelp32Snapshot", "UInt", 0x18, "UInt", pid, "Ptr")
+        if hSnap = -1 or !hSnap
+            throw Error("CreateToolhelp32Snapshot failed", -1)
+        buf := Buffer(1080)
+        NumPut("UInt", 1080, buf, 0)
+        best := Map("base", 0, "path", "")
+        try {
+            if !DllCall("Module32FirstW", "Ptr", hSnap, "Ptr", buf.Ptr)
+                throw Error("Module32FirstW failed", -1)
+            loop {
+                modBase := NumGet(buf, 24, "Ptr")
+                modName := StrGet(buf.Ptr + 48, 256, "UTF-16")
+                modPath := StrGet(buf.Ptr + 560, 260, "UTF-16")
+                if !best["base"] or InStr(modName, "AutoHotkey", false) {
+                    best := Map("base", modBase, "path", modPath)
+                    if InStr(modName, "AutoHotkey", false)
+                        break
+                }
+                if !DllCall("Module32NextW", "Ptr", hSnap, "Ptr", buf.Ptr)
+                    break
+            }
+        } finally {
+            DllCall("CloseHandle", "Ptr", hSnap)
+        }
+        if !best["base"]
+            throw Error("module base not found", -1)
+        return best
+    }
+
+    static _RemoteRead(h, addr, size) {
+        buf := Buffer(size)
+        read := 0
+        if !DllCall("ReadProcessMemory", "Ptr", h, "Ptr", addr, "Ptr", buf.Ptr
+            , "UPtr", size, "UPtr*", &read)
+            throw Error("ReadProcessMemory failed at 0x" Format("{:X}", addr), -1)
+        return buf
+    }
+
+    static _RemoteSections(h, base) {
+        dos := AhkMagic._RemoteRead(h, base, 0x40)
+        e_lfanew := NumGet(dos, 0x3C, "UInt")
+        pe := AhkMagic._RemoteRead(h, base + e_lfanew, 0x18)
+        if NumGet(pe, 0, "UInt") != 0x4550
+            throw Error("PE signature not found", -1)
+        num := NumGet(pe, 6, "UShort")
+        optSize := NumGet(pe, 20, "UShort")
+        secTable := base + e_lfanew + 24 + optSize
+        hdrs := AhkMagic._RemoteRead(h, secTable, num * 40)
+        secs := []
+        hasText := false
+        hasData := false
+        loop num {
+            off := (A_Index - 1) * 40
+            name := StrGet(hdrs.Ptr + off, 8, "UTF-8")
+            vsize := NumGet(hdrs, off + 8, "UInt")
+            va := NumGet(hdrs, off + 12, "UInt")
+            rawSize := NumGet(hdrs, off + 16, "UInt")
+            size := vsize ? vsize : rawSize
+            if name = ".text"
+                hasText := true
+            if name = ".rdata" or name = ".data"
+                hasData := true
+            secs.Push(Map("name", name, "rva", va, "size", size
+                , "start", base + va, "end", base + va + size, "data", Buffer(0)))
+        }
+        strict := hasText and hasData
+        for sec in secs {
+            if strict and sec["name"] != ".rdata" and sec["name"] != ".data"
+                continue
+            if sec["name"] = ".rsrc"
+                continue
+            if sec["size"] > 0 and sec["size"] < 0x800000 {
+                try
+                    sec["data"] := AhkMagic._RemoteRead(h, sec["start"], sec["size"])
+                catch
+                    sec["data"] := Buffer(0)
+            }
+        }
+        return secs
+    }
+
+    static _RemoteReadUtf16(secs, addr, maxLen := 64) {
+        for sec in secs {
+            if addr >= sec["start"] and addr < sec["end"]
+                and sec["data"].Size > 0 {
+                off := addr - sec["start"]
+                if off < sec["data"].Size
+                    return StrGet(sec["data"].Ptr + off, maxLen, "UTF-16")
+            }
+        }
+        return ""
+    }
+
+    static _RemoteStrValid(secs, addr) {
+        text := AhkMagic._RemoteReadUtf16(secs, addr, 64)
+        if text = "" or StrLen(text) > 64
+            return false
+        return RegExMatch(text, "^[\x20-\x7E]+$") ? true : false
+    }
+
+    static _RemotePtrInText(secs, ptr) {
+        hasText := false
+        for sec in secs
+            if sec["name"] = ".text"
+                hasText := true
+        for sec in secs {
+            if ptr < sec["start"] or ptr >= sec["end"]
+                continue
+            if sec["name"] = ".text"
+                return true
+            if !hasText and sec["name"] != ".rsrc"
+                return true
+        }
+        return false
+    }
+
+    static _RemoteTable(h, secs, base, kind) {
+        if kind = "bif" {
+            stride := 0x20
+            anchor := "Abs"
+        } else if kind = "mdfunc" {
+            stride := 0x28
+            anchor := "BlockInput"
+        } else {
+            stride := 0x18
+            anchor := "AhkPath"
+        }
+        bestStart := 0
+        bestCount := 0
+        for sec in secs {
+            if sec["data"].Size < 32
+                continue
+            p := sec["data"].Ptr
+            maxOff := sec["data"].Size - 16
+            off := 0
+            while off <= maxOff {
+                namePtr := NumGet(p + off, "Ptr")
+                fnPtr := NumGet(p + off + 8, "Ptr")
+                if AhkMagic._RemoteStrValid(secs, namePtr)
+                    and AhkMagic._RemotePtrInText(secs, fnPtr) {
+                    name := AhkMagic._RemoteReadUtf16(secs, namePtr, 64)
+                    if name = anchor {
+                        count := 1
+                        prevName := name
+                        q := off + stride
+                        while q + 16 <= sec["data"].Size {
+                            qNamePtr := NumGet(p + q, "Ptr")
+                            qFnPtr := NumGet(p + q + 8, "Ptr")
+                            if !AhkMagic._RemoteStrValid(secs, qNamePtr)
+                                or !AhkMagic._RemotePtrInText(secs, qFnPtr)
+                                break
+                            qName := AhkMagic._RemoteReadUtf16(secs, qNamePtr, 64)
+                            if StrCompare(qName, prevName, false) < 0
+                                break
+                            count += 1
+                            prevName := qName
+                            q += stride
+                        }
+                        if count > bestCount {
+                            bestCount := count
+                            bestStart := sec["rva"] + off
+                        }
+                    }
+                }
+                off += 8
+            }
+        }
+        empty := Map("found", false, "stride", stride, "count", 0
+            , "entries", Map(), "names", [])
+        if bestCount < 10
+            return empty
+        sec := 0
+        for s in secs
+            if bestStart >= s["rva"] and bestStart < s["rva"] + s["size"] {
+                sec := s
+                break
+            }
+        if !sec or sec["data"].Size = 0
+            return empty
+        entries := Map()
+        names := []
+        off := bestStart - sec["rva"]
+        loop bestCount {
+            p := sec["data"].Ptr + off
+            namePtr := NumGet(p, "Ptr")
+            name := AhkMagic._RemoteReadUtf16(secs, namePtr, 64)
+            if kind = "bif" {
+                entries[name] := Map(
+                    "rva", NumGet(p + 8, "Ptr") - base,
+                    "min", NumGet(p + 16, "UChar"),
+                    "max", NumGet(p + 17, "UChar"),
+                    "fid", NumGet(p + 18, "UChar"))
+            } else if kind = "mdfunc" {
+                entries[name] := Map(
+                    "rva", NumGet(p + 8, "Ptr") - base,
+                    "ret", NumGet(p + 16, "UChar"))
+            } else {
+                getter := NumGet(p + 8, "Ptr")
+                setter := NumGet(p + 16, "Ptr")
+                entries[name] := Map(
+                    "getter_rva", getter - base,
+                    "setter_rva", setter ? setter - base : 0)
+            }
+            names.Push(name)
+            off += stride
+        }
+        return Map("found", true, "table_rva", bestStart, "stride", stride
+            , "count", bestCount, "entries", entries, "names", names)
+    }
+
+    static AttachRemote(pid) {
+        if !(pid is Integer)
+            throw TypeError("pid must be an integer", -1)
+        h := AhkMagic._RemoteOpen(pid, false)
+        try {
+            mod := AhkMagic._RemoteModuleBase(h, pid)
+            secs := AhkMagic._RemoteSections(h, mod["base"])
+            return Map(
+                "pid", pid,
+                "module", mod["path"],
+                "image_base", mod["base"],
+                "builtins", AhkMagic._RemoteTable(h, secs, mod["base"], "bif"),
+                "native_functions", AhkMagic._RemoteTable(h, secs, mod["base"], "mdfunc"),
+                "builtin_vars", AhkMagic._RemoteTable(h, secs, mod["base"], "biv")
+            )
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
+    }
+
+    static RemoteRedirect(hook, name, newName) {
+        if !(hook is Map) or !hook.Has("pid")
+            throw TypeError("hook must be an AttachRemote result", -1)
+        bif := hook["builtins"]
+        if !bif["found"] or !bif["entries"].Has(name)
+            or !bif["entries"].Has(newName)
+            throw Error("builtin redirect names not found", -1)
+        idx := 0
+        for n in bif["names"] {
+            if n = name
+                break
+            idx += 1
+        }
+        if idx >= bif["names"].Length
+            throw Error("builtin index not found", -1)
+        h := AhkMagic._RemoteOpen(hook["pid"], true)
+        try {
+            fnSlot := hook["image_base"] + bif["table_rva"]
+                + idx * bif["stride"] + 8
+            newPtr := hook["image_base"] + bif["entries"][newName]["rva"]
+            data := Buffer(8)
+            NumPut("Ptr", newPtr, data, 0)
+            written := 0
+            if !DllCall("WriteProcessMemory", "Ptr", h, "Ptr", fnSlot
+                , "Ptr", data.Ptr, "UPtr", 8, "UPtr*", &written)
+                throw Error("WriteProcessMemory failed", -1)
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
+        return Map("src", name, "dst", newName, "fn_slot", fnSlot)
     }
 
     static EvalSubprocess(expr) {

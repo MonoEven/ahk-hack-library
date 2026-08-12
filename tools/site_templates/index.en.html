@@ -465,6 +465,9 @@ try {
           </tbody>
         </table>
         <p>Ahk2Exe packaging keeps the in-process Eval pipeline intact. The compiled exe embeds the same AutoHotkey runtime, so <code>Init</code>, <code>EvalNative</code>, and <code>EvalScript</code> still work. Verified on all four versions with <code>AutoHotkey64.exe</code> as the Ahk2Exe base. <code>EvalSubprocess</code> also works: the compiled exe is relaunched with <code>/script</code> to interpret the temporary script. UPX and MPRESS compression are also verified; the scanner falls back to content-based section classification when packers rename interpreter sections. A running process can be inspected from outside with <code>tools/ahk_remote_attach.py</code>, which scans the same tables by PID without injection and can redirect builtins in the live table.</p>
+        <p><code>AttachRemote(pid)</code> exposes the same scan as an AHK hook API: <code>OpenProcess</code> plus <code>ReadProcessMemory</code>, PE section parsing, and the anchor/run table scan. <code>RemoteRedirect(hook, "Abs", "Sin")</code> then writes the new function pointer into the live BIF slot.</p>
+        <pre><code>hook := AhkMagic.AttachRemote(pid)
+AhkMagic.RemoteRedirect(hook, "Abs", "Sin")</code></pre>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk

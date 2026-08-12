@@ -465,6 +465,9 @@ try {
           </tbody>
         </table>
         <p>Ahk2Exe packaging keeps the in-process Eval pipeline intact. The compiled exe embeds the same AutoHotkey runtime, so <code>Init</code>, <code>EvalNative</code>, and <code>EvalScript</code> still work. Verified on all four versions with <code>AutoHotkey64.exe</code> as the Ahk2Exe base. <code>EvalSubprocess</code> also works: the compiled exe is relaunched with <code>/script</code> to interpret the temporary script. UPX and MPRESS compression are also verified; the scanner falls back to content-based section classification when packers rename interpreter sections. A running process can be inspected from outside with <code>tools/ahk_remote_attach.py</code>, which scans the same tables by PID without injection and can redirect builtins in the live table.</p>
+        <p><code>AttachRemote(pid)</code> exposes the same scan as an AHK hook API: <code>OpenProcess</code> plus <code>ReadProcessMemory</code>, PE section parsing, and the anchor/run table scan. <code>RemoteRedirect(hook, "Abs", "Sin")</code> then writes the new function pointer into the live BIF slot.</p>
+        <pre><code>hook := AhkMagic.AttachRemote(pid)
+AhkMagic.RemoteRedirect(hook, "Abs", "Sin")</code></pre>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
@@ -1797,6 +1800,284 @@ ahkHackLayoutProbe() {
             , &quot;Int&quot;)
         if rc != 0
             throw Error(&quot;LoadIncludedFile(memory) failed with rc=&quot; rc)
+    }
+
+    ; ------------------------------------------------------------------
+    ; Remote attach: read the three interpreter tables from another
+    ; AutoHotkey process without injecting anything.
+    ; ------------------------------------------------------------------
+
+    static _RemoteOpen(pid, write := false) {
+        access := 0x410
+        if write
+            access := 0x410 | 0x28
+        h := DllCall(&quot;OpenProcess&quot;, &quot;UInt&quot;, access, &quot;Int&quot;, 0, &quot;UInt&quot;, pid, &quot;Ptr&quot;)
+        if !h
+            throw Error(&quot;OpenProcess failed&quot;, -1)
+        return h
+    }
+
+    static _RemoteModuleBase(h, pid) {
+        hSnap := DllCall(&quot;CreateToolhelp32Snapshot&quot;, &quot;UInt&quot;, 0x18, &quot;UInt&quot;, pid, &quot;Ptr&quot;)
+        if hSnap = -1 or !hSnap
+            throw Error(&quot;CreateToolhelp32Snapshot failed&quot;, -1)
+        buf := Buffer(1080)
+        NumPut(&quot;UInt&quot;, 1080, buf, 0)
+        best := Map(&quot;base&quot;, 0, &quot;path&quot;, &quot;&quot;)
+        try {
+            if !DllCall(&quot;Module32FirstW&quot;, &quot;Ptr&quot;, hSnap, &quot;Ptr&quot;, buf.Ptr)
+                throw Error(&quot;Module32FirstW failed&quot;, -1)
+            loop {
+                modBase := NumGet(buf, 24, &quot;Ptr&quot;)
+                modName := StrGet(buf.Ptr + 48, 256, &quot;UTF-16&quot;)
+                modPath := StrGet(buf.Ptr + 560, 260, &quot;UTF-16&quot;)
+                if !best[&quot;base&quot;] or InStr(modName, &quot;AutoHotkey&quot;, false) {
+                    best := Map(&quot;base&quot;, modBase, &quot;path&quot;, modPath)
+                    if InStr(modName, &quot;AutoHotkey&quot;, false)
+                        break
+                }
+                if !DllCall(&quot;Module32NextW&quot;, &quot;Ptr&quot;, hSnap, &quot;Ptr&quot;, buf.Ptr)
+                    break
+            }
+        } finally {
+            DllCall(&quot;CloseHandle&quot;, &quot;Ptr&quot;, hSnap)
+        }
+        if !best[&quot;base&quot;]
+            throw Error(&quot;module base not found&quot;, -1)
+        return best
+    }
+
+    static _RemoteRead(h, addr, size) {
+        buf := Buffer(size)
+        read := 0
+        if !DllCall(&quot;ReadProcessMemory&quot;, &quot;Ptr&quot;, h, &quot;Ptr&quot;, addr, &quot;Ptr&quot;, buf.Ptr
+            , &quot;UPtr&quot;, size, &quot;UPtr*&quot;, &amp;read)
+            throw Error(&quot;ReadProcessMemory failed at 0x&quot; Format(&quot;{:X}&quot;, addr), -1)
+        return buf
+    }
+
+    static _RemoteSections(h, base) {
+        dos := AhkMagic._RemoteRead(h, base, 0x40)
+        e_lfanew := NumGet(dos, 0x3C, &quot;UInt&quot;)
+        pe := AhkMagic._RemoteRead(h, base + e_lfanew, 0x18)
+        if NumGet(pe, 0, &quot;UInt&quot;) != 0x4550
+            throw Error(&quot;PE signature not found&quot;, -1)
+        num := NumGet(pe, 6, &quot;UShort&quot;)
+        optSize := NumGet(pe, 20, &quot;UShort&quot;)
+        secTable := base + e_lfanew + 24 + optSize
+        hdrs := AhkMagic._RemoteRead(h, secTable, num * 40)
+        secs := []
+        hasText := false
+        hasData := false
+        loop num {
+            off := (A_Index - 1) * 40
+            name := StrGet(hdrs.Ptr + off, 8, &quot;UTF-8&quot;)
+            vsize := NumGet(hdrs, off + 8, &quot;UInt&quot;)
+            va := NumGet(hdrs, off + 12, &quot;UInt&quot;)
+            rawSize := NumGet(hdrs, off + 16, &quot;UInt&quot;)
+            size := vsize ? vsize : rawSize
+            if name = &quot;.text&quot;
+                hasText := true
+            if name = &quot;.rdata&quot; or name = &quot;.data&quot;
+                hasData := true
+            secs.Push(Map(&quot;name&quot;, name, &quot;rva&quot;, va, &quot;size&quot;, size
+                , &quot;start&quot;, base + va, &quot;end&quot;, base + va + size, &quot;data&quot;, Buffer(0)))
+        }
+        strict := hasText and hasData
+        for sec in secs {
+            if strict and sec[&quot;name&quot;] != &quot;.rdata&quot; and sec[&quot;name&quot;] != &quot;.data&quot;
+                continue
+            if sec[&quot;name&quot;] = &quot;.rsrc&quot;
+                continue
+            if sec[&quot;size&quot;] &gt; 0 and sec[&quot;size&quot;] &lt; 0x800000 {
+                try
+                    sec[&quot;data&quot;] := AhkMagic._RemoteRead(h, sec[&quot;start&quot;], sec[&quot;size&quot;])
+                catch
+                    sec[&quot;data&quot;] := Buffer(0)
+            }
+        }
+        return secs
+    }
+
+    static _RemoteReadUtf16(secs, addr, maxLen := 64) {
+        for sec in secs {
+            if addr &gt;= sec[&quot;start&quot;] and addr &lt; sec[&quot;end&quot;]
+                and sec[&quot;data&quot;].Size &gt; 0 {
+                off := addr - sec[&quot;start&quot;]
+                if off &lt; sec[&quot;data&quot;].Size
+                    return StrGet(sec[&quot;data&quot;].Ptr + off, maxLen, &quot;UTF-16&quot;)
+            }
+        }
+        return &quot;&quot;
+    }
+
+    static _RemoteStrValid(secs, addr) {
+        text := AhkMagic._RemoteReadUtf16(secs, addr, 64)
+        if text = &quot;&quot; or StrLen(text) &gt; 64
+            return false
+        return RegExMatch(text, &quot;^[\x20-\x7E]+$&quot;) ? true : false
+    }
+
+    static _RemotePtrInText(secs, ptr) {
+        hasText := false
+        for sec in secs
+            if sec[&quot;name&quot;] = &quot;.text&quot;
+                hasText := true
+        for sec in secs {
+            if ptr &lt; sec[&quot;start&quot;] or ptr &gt;= sec[&quot;end&quot;]
+                continue
+            if sec[&quot;name&quot;] = &quot;.text&quot;
+                return true
+            if !hasText and sec[&quot;name&quot;] != &quot;.rsrc&quot;
+                return true
+        }
+        return false
+    }
+
+    static _RemoteTable(h, secs, base, kind) {
+        if kind = &quot;bif&quot; {
+            stride := 0x20
+            anchor := &quot;Abs&quot;
+        } else if kind = &quot;mdfunc&quot; {
+            stride := 0x28
+            anchor := &quot;BlockInput&quot;
+        } else {
+            stride := 0x18
+            anchor := &quot;AhkPath&quot;
+        }
+        bestStart := 0
+        bestCount := 0
+        for sec in secs {
+            if sec[&quot;data&quot;].Size &lt; 32
+                continue
+            p := sec[&quot;data&quot;].Ptr
+            maxOff := sec[&quot;data&quot;].Size - 16
+            off := 0
+            while off &lt;= maxOff {
+                namePtr := NumGet(p + off, &quot;Ptr&quot;)
+                fnPtr := NumGet(p + off + 8, &quot;Ptr&quot;)
+                if AhkMagic._RemoteStrValid(secs, namePtr)
+                    and AhkMagic._RemotePtrInText(secs, fnPtr) {
+                    name := AhkMagic._RemoteReadUtf16(secs, namePtr, 64)
+                    if name = anchor {
+                        count := 1
+                        prevName := name
+                        q := off + stride
+                        while q + 16 &lt;= sec[&quot;data&quot;].Size {
+                            qNamePtr := NumGet(p + q, &quot;Ptr&quot;)
+                            qFnPtr := NumGet(p + q + 8, &quot;Ptr&quot;)
+                            if !AhkMagic._RemoteStrValid(secs, qNamePtr)
+                                or !AhkMagic._RemotePtrInText(secs, qFnPtr)
+                                break
+                            qName := AhkMagic._RemoteReadUtf16(secs, qNamePtr, 64)
+                            if StrCompare(qName, prevName, false) &lt; 0
+                                break
+                            count += 1
+                            prevName := qName
+                            q += stride
+                        }
+                        if count &gt; bestCount {
+                            bestCount := count
+                            bestStart := sec[&quot;rva&quot;] + off
+                        }
+                    }
+                }
+                off += 8
+            }
+        }
+        empty := Map(&quot;found&quot;, false, &quot;stride&quot;, stride, &quot;count&quot;, 0
+            , &quot;entries&quot;, Map(), &quot;names&quot;, [])
+        if bestCount &lt; 10
+            return empty
+        sec := 0
+        for s in secs
+            if bestStart &gt;= s[&quot;rva&quot;] and bestStart &lt; s[&quot;rva&quot;] + s[&quot;size&quot;] {
+                sec := s
+                break
+            }
+        if !sec or sec[&quot;data&quot;].Size = 0
+            return empty
+        entries := Map()
+        names := []
+        off := bestStart - sec[&quot;rva&quot;]
+        loop bestCount {
+            p := sec[&quot;data&quot;].Ptr + off
+            namePtr := NumGet(p, &quot;Ptr&quot;)
+            name := AhkMagic._RemoteReadUtf16(secs, namePtr, 64)
+            if kind = &quot;bif&quot; {
+                entries[name] := Map(
+                    &quot;rva&quot;, NumGet(p + 8, &quot;Ptr&quot;) - base,
+                    &quot;min&quot;, NumGet(p + 16, &quot;UChar&quot;),
+                    &quot;max&quot;, NumGet(p + 17, &quot;UChar&quot;),
+                    &quot;fid&quot;, NumGet(p + 18, &quot;UChar&quot;))
+            } else if kind = &quot;mdfunc&quot; {
+                entries[name] := Map(
+                    &quot;rva&quot;, NumGet(p + 8, &quot;Ptr&quot;) - base,
+                    &quot;ret&quot;, NumGet(p + 16, &quot;UChar&quot;))
+            } else {
+                getter := NumGet(p + 8, &quot;Ptr&quot;)
+                setter := NumGet(p + 16, &quot;Ptr&quot;)
+                entries[name] := Map(
+                    &quot;getter_rva&quot;, getter - base,
+                    &quot;setter_rva&quot;, setter ? setter - base : 0)
+            }
+            names.Push(name)
+            off += stride
+        }
+        return Map(&quot;found&quot;, true, &quot;table_rva&quot;, bestStart, &quot;stride&quot;, stride
+            , &quot;count&quot;, bestCount, &quot;entries&quot;, entries, &quot;names&quot;, names)
+    }
+
+    static AttachRemote(pid) {
+        if !(pid is Integer)
+            throw TypeError(&quot;pid must be an integer&quot;, -1)
+        h := AhkMagic._RemoteOpen(pid, false)
+        try {
+            mod := AhkMagic._RemoteModuleBase(h, pid)
+            secs := AhkMagic._RemoteSections(h, mod[&quot;base&quot;])
+            return Map(
+                &quot;pid&quot;, pid,
+                &quot;module&quot;, mod[&quot;path&quot;],
+                &quot;image_base&quot;, mod[&quot;base&quot;],
+                &quot;builtins&quot;, AhkMagic._RemoteTable(h, secs, mod[&quot;base&quot;], &quot;bif&quot;),
+                &quot;native_functions&quot;, AhkMagic._RemoteTable(h, secs, mod[&quot;base&quot;], &quot;mdfunc&quot;),
+                &quot;builtin_vars&quot;, AhkMagic._RemoteTable(h, secs, mod[&quot;base&quot;], &quot;biv&quot;)
+            )
+        } finally {
+            DllCall(&quot;CloseHandle&quot;, &quot;Ptr&quot;, h)
+        }
+    }
+
+    static RemoteRedirect(hook, name, newName) {
+        if !(hook is Map) or !hook.Has(&quot;pid&quot;)
+            throw TypeError(&quot;hook must be an AttachRemote result&quot;, -1)
+        bif := hook[&quot;builtins&quot;]
+        if !bif[&quot;found&quot;] or !bif[&quot;entries&quot;].Has(name)
+            or !bif[&quot;entries&quot;].Has(newName)
+            throw Error(&quot;builtin redirect names not found&quot;, -1)
+        idx := 0
+        for n in bif[&quot;names&quot;] {
+            if n = name
+                break
+            idx += 1
+        }
+        if idx &gt;= bif[&quot;names&quot;].Length
+            throw Error(&quot;builtin index not found&quot;, -1)
+        h := AhkMagic._RemoteOpen(hook[&quot;pid&quot;], true)
+        try {
+            fnSlot := hook[&quot;image_base&quot;] + bif[&quot;table_rva&quot;]
+                + idx * bif[&quot;stride&quot;] + 8
+            newPtr := hook[&quot;image_base&quot;] + bif[&quot;entries&quot;][newName][&quot;rva&quot;]
+            data := Buffer(8)
+            NumPut(&quot;Ptr&quot;, newPtr, data, 0)
+            written := 0
+            if !DllCall(&quot;WriteProcessMemory&quot;, &quot;Ptr&quot;, h, &quot;Ptr&quot;, fnSlot
+                , &quot;Ptr&quot;, data.Ptr, &quot;UPtr&quot;, 8, &quot;UPtr*&quot;, &amp;written)
+                throw Error(&quot;WriteProcessMemory failed&quot;, -1)
+        } finally {
+            DllCall(&quot;CloseHandle&quot;, &quot;Ptr&quot;, h)
+        }
+        return Map(&quot;src&quot;, name, &quot;dst&quot;, newName, &quot;fn_slot&quot;, fnSlot)
     }
 
     static EvalSubprocess(expr) {

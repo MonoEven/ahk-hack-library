@@ -183,6 +183,8 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `EvalScript(text)` | Loads multi-line script text in-process and evaluates the last expression |
 | `EvalSubprocess(expr)` | Evaluates an expression string in a hidden child process; compiled scripts re-enter interpreter mode with `/script` |
 | `EvalNative(expr)` | Evaluates literals, operators, variables, and function calls through the interpreter's in-process expression pipeline |
+| `AttachRemote(pid)` | Opens another AutoHotkey process, reads its PE sections and the three interpreter tables remotely; returns a hook map |
+| `RemoteRedirect(hook, name, newName)` | Writes a new function pointer into a running process's BIF table |
 
 ### CnpBridge
 
@@ -197,6 +199,34 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `FromAhk(data, dtype)` / `FromAhkFast(data, dtype)` | Nested AHK `Array` to `NdArray` |
 | `FromBuffer(buffer, dtype)` | `Buffer` to `NdArray` (copy semantics) |
 | `WriteRaw(arr, flat)` | Writes exact-dtype bytes into a C-contiguous array |
+
+## Remote Hook
+
+`AhkMagic.AttachRemote(pid)` reads another AutoHotkey process without
+injecting anything:
+
+1. `OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ)` opens the target.
+2. A Toolhelp32 module snapshot finds the main module image base.
+3. `ReadProcessMemory` reads the PE headers, section table, and the data
+   sections that can contain interpreter tables.
+4. The same anchor logic used by the machine-code scanner locates `g_BIF`,
+   `sMdFunc`, and `g_BIV_A` by scanning for `Abs`, `BlockInput`, and `AhkPath`
+   entries and counting sorted runs.
+5. The result is a hook map with `image_base`, `builtins`,
+   `native_functions`, and `builtin_vars` (each with `table_rva`, `stride`,
+   `count`, and `entries`).
+
+`AhkMagic.RemoteRedirect(hook, name, newName)` reopens the target with
+`PROCESS_VM_WRITE | PROCESS_VM_OPERATION`, computes
+`image_base + table_rva + index * stride + 8`, and writes the destination
+function pointer into that slot. Already-resolved `Func` objects are not
+retroactively affected, matching the in-process `PatchBif` limitation.
+
+```ahk
+hook := AhkMagic.AttachRemote(pid)
+MsgBox hook["builtins"]["count"]
+AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+```
 
 ## Lifecycle and Ownership
 
