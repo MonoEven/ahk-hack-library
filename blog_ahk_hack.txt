@@ -234,6 +234,35 @@ F3:: {
 
 函数到函数的验证：[c]tests\remote_hook_function_target.ahk[/c]定义了[c]B_direct()[/c]（直接调用[c]Abs[/c]）和[c]B_dynamic()[/c]（动态调用[c]%name%[/c]）。[c]tests\remote_hook_function_demo.ahk[/c]深补丁[c]Abs -> Sin[/c]并触发两个热键，两个输出都变成[c]0.8414709848078965[/c]。
 
+[c]RemoteEvalScript[/c]会通过目标自己的脚本加载管线在目标里加载多行脚本。注入线程会在[c]PreparseExpressions[/c]前设置[c]g->CurrentFunc[/c]，所以函数和 class 定义都能正常工作。
+
+[codebox=autohotkey file=remote-eval-script]
+hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+
+script := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
+MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3
+
+classScript := "
+(
+class Point {
+    x := 0
+    y := 0
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
+}
+Point(1, 2).y
+)"
+MsgBox AhkMagic.RemoteEvalScript(hook, classScript) ; 2
+[/codebox]
+
 [codebox=text file=compiled]
 # 普通编译
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
@@ -246,6 +275,10 @@ F3:: {
 # MPRESS 压缩
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_mpress.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 1 /silent verbose
 & build\compiled_eval_probe_mpress.exe
+[/codebox]
+
+[codebox=text file=compat]
+powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1
 [/codebox]
 
 
@@ -286,6 +319,7 @@ F3:: {
 - [c]EvalSubprocess[/c]现在在编译版里也能工作：编译 exe 通过[c]/script[/c]重新进入解释器模式来执行临时[c].ahk[/c]。
 - 增加基于内容的节分类回退，UPX/MPRESS 压缩后的 exe 仍然可用；
 - 新增[c]tools\ahk_remote_attach.py[/c]和[c]AhkMagic.AttachRemote()[/c]/[c]RemoteRedirect()[/c]/[c]RemoteEval()[/c]Hook API，脚本可以直接按 PID 挂到正在运行的 AutoHotkey 进程，远程扫描解释器三张表、改写运行中的内置函数表，并通过注入线程在目标进程内求值。
+- 新增[c]RemoteEvalScript[/c]，支持函数和 class；新增[c]tools\verify_remote_compat.ps1[/c]用于交叉版本和编译 UPX 兼容矩阵。
 
 
 [b]7. 已知限制[/b]

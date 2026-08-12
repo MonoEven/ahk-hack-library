@@ -485,6 +485,15 @@ F3:: {
 }</code></pre>
         <p><code>RemoteEval(hook, expr)</code>把 Hook 再推进一步：向目标进程注入线程 stub、内部定位器和求值 blob，用 <code>CreateRemoteThread</code> 执行并读回结果。</p>
         <p><code>RemoteEvalScript(hook, text)</code>现在可以通过目标脚本加载管线在目标里加载多行脚本，包括函数和 class 定义。注入线程会在 <code>PreparseExpressions</code> 前设置 <code>g-&gt;CurrentFunc</code>，让使用 <code>Super</code> 的 class 方法正确解析。</p>
+        <pre><code>hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+script := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
+MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
         <p>实测验证：启动 <code>tests/remote_hook_resident_target.ahk</code>，把 <code>Abs</code> 重定向为 <code>Sin</code>，再向目标发送 <code>F7</code>。它会输出 <code>0.8414709848078965</code>（即 <code>Sin(1)</code>），而不是原来的 <code>1</code>。远程执行 <code>x := 1 + 2 * 3</code> 后发送 <code>F8</code>，目标会写出 <code>7</code>。</p>
         <p>函数到函数验证：<code>tests/remote_hook_function_target.ahk</code>定义 <code>B_direct()</code>和 <code>B_dynamic()</code>；<code>tests/remote_hook_function_demo.ahk</code>深补丁 <code>Abs -&gt; Sin</code>后，两个输出都变成 <code>0.8414709848078965</code>。</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
