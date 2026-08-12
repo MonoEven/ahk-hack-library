@@ -120,3 +120,6 @@ The full suite is verified on AutoHotkey 2.1-alpha.30 and 2.0.26. The
 `tests/ahk_live_cross_smoke.ahk` script covers the core, introspection,
 patch, and watch layers on both runtimes; the full trace/replace path is
 covered by `tests/ahk_live_test.ahk`.
+
+See [docs/ahk_live_developer.md](../docs/ahk_live_developer.md) for
+architecture, lifecycle, diagnostics, and compatibility notes.
