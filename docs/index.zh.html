@@ -524,6 +524,7 @@ add(1, 2)
 )"
 MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
         <p><code>RemoteReplaceFuncBody(hook, "A", "NewA")</code>像 <code>Abs -&gt; Sin</code>一样替换函数体指针。热键 demo 在 <code>F2</code> 加载 <code>NewA</code> 并替换 <code>A</code>，<code>F9</code> 验证输出 <code>42</code>；<code>F3</code> 加载 <code>PointNew</code> 后由 <code>RemoteEval</code> 验证输出 <code>2</code>。</p>
+        <p>class 验证链路：<code>RemoteEvalScript</code>先把 <code>PointNew</code> 加载进目标，再由 <code>RemoteEval</code> 在同一个目标里读取 <code>PointNew(1, 2).y</code>。热键路径验证函数体地址替换：<code>F2</code> 加载 <code>NewA</code> 并替换 <code>A</code>，<code>F9</code> 返回 <code>42</code>。</p>
         <p>实测验证：启动 <code>tests/remote_hook_resident_target.ahk</code>，把 <code>Abs</code> 重定向为 <code>Sin</code>，再向目标发送 <code>F7</code>。它会输出 <code>0.8414709848078965</code>（即 <code>Sin(1)</code>），而不是原来的 <code>1</code>。远程执行 <code>x := 1 + 2 * 3</code> 后发送 <code>F8</code>，目标会写出 <code>7</code>。</p>
         <p>函数到函数验证：<code>tests/remote_hook_function_target.ahk</code>定义 <code>B_direct()</code>和 <code>B_dynamic()</code>；<code>tests/remote_hook_function_demo.ahk</code>深补丁 <code>Abs -&gt; Sin</code>后，两个输出都变成 <code>0.8414709848078965</code>。</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v

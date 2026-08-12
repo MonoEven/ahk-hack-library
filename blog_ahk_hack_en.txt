@@ -298,6 +298,52 @@ MsgBox AhkMagic.RemoteEvalScript(hook, classScript) ; 2
 
 Hotkey verification uses address replacement like [c]Abs -> Sin[/c]: [c]tests\remote_hook_evalscript_target.ahk[/c] defines [c]B_add(x)[/c] that directly calls [c]A(x)[/c], and [c]F9[/c] outputs [c]B_add(1)[/c]. [c]tests\remote_hook_evalscript_demo.ahk[/c] loads [c]NewA[/c] on [c]F2[/c], replaces [c]A[/c]'s body with [c]RemoteReplaceFuncBody("A", "NewA")[/c], then sends [c]F9[/c]. Result: [c]after address replace A f9=42[/c]. [c]F3[/c] loads the [c]PointNew[/c] class and verifies [c]PointNew(1, 2).y[/c] with [c]RemoteEval[/c]: [c]after class eval=2[/c].
 
+[codebox=autohotkey file=remote-eval-script-hotkey]
+; Resident target: tests\remote_hook_evalscript_target.ahk
+A(x) {
+    return 1
+}
+B_add(x) {
+    return A(x)
+}
+F9:: FileAppend("f9=" B_add(1) "`n", A_Temp "\ahk_remote_evalscript.out")
+
+; Attacher: tests\remote_hook_evalscript_demo.ahk
+F2:: {
+    AhkMagic.RemoteEvalScript(hook, "
+    (
+    NewA(x) {
+        return 42
+    }
+    NewA(1)
+    )")
+    AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
+    Send "{F9}"
+}
+F3:: {
+    AhkMagic.RemoteEvalScript(hook, "
+    (
+    class PointNew {
+        x := 0
+        y := 0
+        __New(x, y) {
+            this.x := x
+            this.y := y
+        }
+    }
+    PointNew(1, 2).y
+    )")
+    MsgBox AhkMagic.RemoteEval(hook, "PointNew(1, 2).y") ; 2
+}
+[/codebox]
+
+The class verification chain is explicit: [c]RemoteEvalScript[/c] first loads the [c]PointNew[/c] class into the target process, then [c]RemoteEval[/c] instantiates it and reads [c]PointNew(1, 2).y[/c] inside the same target. The hotkey path verifies function body replacement: [c]F2[/c] loads [c]NewA[/c], replaces [c]A[/c]'s body address, and [c]F9[/c] returns [c]42[/c].
+
+[codebox=text file=remote-eval-script-results]
+after address replace A f9=42
+after class eval=2
+[/codebox]
+
 [codebox=text file=compiled]
 # Plain compile
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
