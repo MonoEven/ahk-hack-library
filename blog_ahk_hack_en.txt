@@ -4,7 +4,7 @@ Repository: [url=https://github.com/MonoEven/ahk-hack-library]https://github.com
 
 Bilingual online version: [url=https://monoeven.github.io/ahk-hack-library/]https://monoeven.github.io/ahk-hack-library/[/url]
 
-This library solves one problem: let an AutoHotkey script read the [c]AutoHotkey.exe[/c] that is running it, locate the interpreter's internal tables, and then build on top of them with native array construction, built-in redirection, and expression evaluation. The implementation embeds x64 machine code in an AutoHotkey v2 file and scans PE structures at runtime.
+This library solves one problem: let an AutoHotkey script read the [c]AutoHotkey.exe[/c] that is running it, locate the interpreter's internal tables, and then build on top of them with built-in redirection, expression evaluation, and remote hooking. The implementation embeds x64 machine code in an AutoHotkey v2 file and scans PE structures at runtime.
 
 
 [b]1. Runtime scanning[/b]
@@ -32,13 +32,21 @@ clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
 
 The build script checks relocations in [c].text[/c] and refuses to embed if any relocation escapes the blob. This guarantees the embedded result is self-contained and position-independent.
 
-The machine-code layer ships five blobs:
+The machine-code layer ships the following blobs:
 
 - [c]scanner.c[/c]: interpreter table scan;
 - [c]export_scanner.c[/c]: generic PE export-table scan;
 - [c]inproc_eval.c[/c]: in-process expression evaluation;
 - [c]internal_locator.c[/c]: runtime discovery of EvalNative internals;
-- [c]mem_script.c[/c]: in-memory [c]TextStream[/c] for EvalScript.
+- [c]mem_script.c[/c]: in-memory [c]TextStream[/c] for EvalScript;
+- [c]remote_call_stub.c[/c]: remote-thread call stub;
+- [c]remote_eval_stub.c[/c]: remote expression-evaluation stub.
+
+Rebuilding the machine code requires LLVM clang (locally at [c]F:\Tech\LLVM\bin\clang.exe[/c]):
+
+[codebox=text file=rebuild]
+python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk
+[/codebox]
 
 
 [b]3. Single-file core[/b]
@@ -51,16 +59,21 @@ Library layout:
 ahk_hack_single.ahk        single-file core
 ahk_hack_demo.ahk          runnable demo
 lib/
-  ahk_hack.ahk             library alias for the single-file core
+  init.ahk                 core entry, scanning only
+  ahk_hack.ahk             MCode() + AhkMagic
   mcode/                   machine-code C sources
 tools/
   build_mcode.py           compiles and embeds the machine code
   ahk_inspect.py           Python/PE cross-check analyzer
-tests/                     core, export scan, and eval tests
+  ahk_remote_attach.py     remote attach and hooking
+  verify_remote_compat.ps1 remote compatibility matrix
+tests/                     core, export, eval, and remote hook tests
+examples/                  export inventory, builtin probe, compiled demo
+docs/                      bilingual Pages site
 [/codebox]
 
 
-[b]4. Usage[/b]
+[b]4. Core usage: scanning and redirection[/b]
 
 [color=#BF4000][b]4.1 Core scanning[/b][/color]
 
@@ -95,7 +108,9 @@ AhkMagic.RestoreBif("Abs", old)
 
 The table patch affects future dynamic lookups. The deep patch rewrites the already-resolved function object's C function pointer, so a direct `Abs(1)` in source also returns `sin(1)`, and is restored to 1 afterwards.
 
-[color=#BF4000][b]4.3 Expression Eval[/b][/color]
+[b]5. In-process Eval[/b]
+
+[color=#BF4000][b]5.1 Expression evaluation[/b][/color]
 
 [codebox=autohotkey file=eval-usage]
 #Include ahk_hack_single.ahk
@@ -106,6 +121,14 @@ MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))") ; explicit subproce
 MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7, in-process
 MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0, in-process
 MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5, in-process
+[/codebox]
+
+[c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls the interpreter's own [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c] in this process. It covers literals, operators, global variables, and function calls on the verified builds. Unsupported syntax fails loudly. [c]Eval[/c] tries the in-process pipeline first and falls back to [c]EvalSubprocess[/c] when needed.
+
+[color=#BF4000][b]5.2 Function definitions[/b][/color]
+
+[codebox=autohotkey file=evalscript-function]
+#Include ahk_hack_single.ahk
 
 script := "
 (
@@ -115,6 +138,12 @@ add(a, b) {
 add(1, 2)
 )"
 MsgBox AhkMagic.EvalScript(script)          ; 3, in-process
+[/codebox]
+
+[color=#BF4000][b]5.3 Class definitions[/b][/color]
+
+[codebox=autohotkey file=evalscript-class]
+#Include ahk_hack_single.ahk
 
 classScript := "
 (
@@ -132,11 +161,9 @@ MsgBox AhkMagic.EvalScript(classScript)     ; 1, class loaded and used in-proces
 MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2, class loaded and used in-process
 [/codebox]
 
-[c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls the interpreter's own [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c] in this process. It covers literals, operators, global variables, and function calls on the verified builds. Unsupported syntax fails loudly.
+[c]EvalScript[/c] does not write a temp [c].ahk[/c] file. It encodes the text as UTF-16, builds a [c]TextMem[/c]-compatible [c]TextStream[/c] in a scratch buffer, and passes it directly to [c]LoadIncludedFile(TextStream*)[/c]. Function definitions and class definitions therefore work in-process.
 
-[c]Eval[/c] tries the in-process pipeline first and falls back to [c]EvalSubprocess[/c] when needed. [c]EvalScript[/c] no longer writes a temp [c].ahk[/c] file. It encodes the text as UTF-16, builds a [c]TextMem[/c]-compatible [c]TextStream[/c] in a scratch buffer, and passes it directly to [c]LoadIncludedFile(TextStream*)[/c]. Function definitions and class definitions therefore work in-process.
-
-Every entry point and global used by the pipeline is located at runtime: [c]PreparseExpressions[/c], [c]PreprocessLocalVars[/c], [c]OpenIncludedFile[/c], [c]LoadIncludedFile(TextStream*)[/c], [c]g[/c], and [c]Line::sSourceFileCount[/c]. There is no per-version table: the [c]Script[/c]/[c]UserFunc[/c]/[c]TextStream[/c] layout offsets are discovered at runtime by a one-time probe. Verified on 2.1-alpha.30, 2.0.26, 2.0.0, and 2.0-beta.10.
+[color=#BF4000][b]5.4 Why this works[/b][/color]
 
 [c]Why this enables Eval:[/c] AutoHotkey does not evaluate expression strings directly. During script load, [c]Line::ExpressionToPostfix[/c] compiles each expression into a postfix [c]ExprTokenType[/c] array, [c]PreparseExpressions[/c] pre-compiles expression lines, [c]PreprocessLocalVars[/c] binds local variables, and [c]Line::ExpandExpression[/c] later evaluates the postfix. [c]EvalNative()[/c] builds the same temporary [c]Line[/c]/[c]ArgStruct[/c] and calls those functions, so it reuses the interpreter's own grammar and evaluation semantics. [c]EvalScript()[/c] feeds the same [c]LoadIncludedFile(TextStream*, int)[/c] pipeline through an in-memory [c]TextStream[/c]; the parser does not know whether the text came from disk or from a synthetic stream, which is why function and class definitions work in-process.
 
@@ -169,42 +196,33 @@ private:
 };
 [/codebox]
 
-[color=#BF4000][b]4.4 Rebuilding the machine code[/b][/color]
+[b]6. Remote hooking[/b]
 
-Requires LLVM clang (locally at [c]F:\Tech\LLVM\bin\clang.exe[/c]):
+Think of the target as a running machine. We do not install anything into it and it does not have to cooperate: no [c]#Include[/c], no exported pointer, no callback. We read its memory map, find the labels on its internal shelves, then insert a small worker thread through the OS remote-thread door.
 
-[codebox=text file=rebuild]
-python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk
-[/codebox]
+[color=#BF4000][b]6.1 External attach tool[/b][/color]
 
-[color=#BF4000][b]4.5 Verification and tests[/b][/color]
-
-[codebox=text file=tests]
-python -m unittest discover -s tests -p 'test_*.py' -v
-& D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
-& D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
-& D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
-& D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
-& D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
-& D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
-[/codebox]
-
-Verified on 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
-
-Ahk2Exe packaging was also verified. The compiled exe embeds the same AutoHotkey runtime, so [c]Init[/c], [c]EvalNative[/c], and [c]EvalScript[/c] keep scanning the module and evaluating in-process. The probe below passed on all four versions when [c]AutoHotkey64.exe[/c] was passed to Ahk2Exe as [c]/base[/c]. [c]EvalSubprocess[/c] also works: the regular v2 runtime accepts [c]/script[/c], so the compiled exe is relaunched in interpreter mode to run the temp script.
-
-UPX and MPRESS compression were verified too. Packed executables rename the interpreter sections, so the scanner falls back to content-based section classification and still finds the tables; [c]EvalNative[/c], [c]EvalScript[/c], and [c]EvalSubprocess[/c] all pass. A running process can also be inspected from outside: [c]tools\ahk_remote_attach.py --pid <pid>[/c] attaches with [c]ReadProcessMemory[/c], reuses the same anchor/run scan, and reports the three interpreter tables without injecting anything. It can also redirect a builtin in the live table, for example [c]--redirect Abs Sin[/c].
+[c]tools\ahk_remote_attach.py[/c] can read a target process by PID or image name without injecting anything. It uses [c]ReadProcessMemory[/c] to read the PE headers and data sections, reuses the same anchor/run scan to report the three interpreter tables, and can redirect a builtin in the live table or evaluate an expression inside the target.
 
 [codebox=text file=remote]
 python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
+python tools\ahk_remote_attach.py --name AutoHotkey64.exe --redirect Abs Sin
+python tools\ahk_remote_attach.py --name AutoHotkey64.exe --eval "1 + 2 * 3"
 [/codebox]
 
-Think of the target as a running machine. We do not install anything into it and it does not have to cooperate: no [c]#Include[/c], no exported pointer, no callback. We read its memory map, find the labels on its internal shelves, then insert a small worker thread through the OS remote-thread door. The same path is exposed as an AHK hook API. [c]AttachRemoteByName("AutoHotkey64.exe")[/c] finds the running process by image name, opens it with [c]OpenProcess[/c], reads PE headers and data sections through [c]ReadProcessMemory[/c], scans anchor names and sorted runs to locate the three tables, and returns a map with [c]image_base[/c], [c]table_rva[/c], and entries. [c]RemoteRedirect(hook, "Abs", "Sin")[/c] reopens with write access and writes the destination function pointer into the source entry's [c]fn_ptr[/c] slot.
+[color=#BF4000][b]6.2 AHK hook API[/b][/color]
 
-[c]RemoteDeepRedirect(hook, "Abs", "Sin")[/c] goes one level deeper: it scans the target heap for the already-resolved [c]Func[/c] object and patches its [c]mBIF[/c]. This is what changes a function like [c]B()[/c] that directly calls [c]A()[/c].
+[c]AttachRemoteByName("AutoHotkey64.exe")[/c] finds the running process by image name, opens it with [c]OpenProcess[/c], reads PE headers and data sections through [c]ReadProcessMemory[/c], scans anchor names and sorted runs to locate the three tables, and returns a map with [c]image_base[/c], [c]table_rva[/c], and entries. [c]AttachRemote(pid)[/c] is the PID-based form of the same scan.
 
-[codebox=autohotkey file=remote-hook]
-; Target: tests\remote_hook_resident_target.ahk (resident, F7/F8)
+[c]RemoteRedirect(hook, "Abs", "Sin")[/c] reopens the target with write access and writes the destination function pointer into the source entry's [c]fn_ptr[/c] slot. [c]RemoteDeepRedirect(hook, "Abs", "Sin")[/c] goes one level deeper: it scans the target heap for the already-resolved [c]Func[/c] object and patches its [c]mBIF[/c]. This is what changes a function like [c]B()[/c] that directly calls [c]A()[/c].
+
+[color=#BF4000][b]6.3 Hotkey verification[/b][/color]
+
+Remote hooking changes another process's memory, so verification needs the target to write its own results. The target script [c]tests\remote_hook_resident_target.ahk[/c] stays resident; [c]F7[/c] writes the dynamic call [c]%name%(1)[/c] and [c]F8[/c] writes the global [c]x[/c]. The attacher [c]tests\remote_hook_resident_demo.ahk[/c] sends the matching hotkey after each hook step.
+
+[codebox=autohotkey file=remote-hook-attacher]
+#Include ahk_hack_single.ahk
+
 ; Attacher: tests\remote_hook_resident_demo.ahk
 F1:: {
     global hook
@@ -215,20 +233,17 @@ F2:: {
     AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
     Send "{F7}"          ; activate target hotkey to verify
     Sleep 400
-    ; read back f7=0.8414709848078965
 }
 F3:: {
     global hook
     AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
     Send "{F8}"          ; activate target hotkey to verify
     Sleep 400
-    ; read back f8=7
 }
 [/codebox]
 
-The resident target behind [c]F7/F8[/c] is [c]tests\remote_hook_resident_target.ahk[/c]:
-
 [codebox=autohotkey file=remote-resident-target]
+; Resident target: tests\remote_hook_resident_target.ahk
 #NoTrayIcon
 Persistent
 
@@ -259,17 +274,23 @@ F8:: {
 }
 [/codebox]
 
-The same injection path powers [c]RemoteEval[/c]: it copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely.
+Start the target, press [c]F1[/c] to attach, then [c]F2[/c] to redirect [c]Abs[/c] to [c]Sin[/c]. When the target receives [c]F7[/c], it writes [c]0.8414709848078965[/c] ([c]Sin(1)[/c]) instead of [c]1[/c]. Press [c]F3[/c] to evaluate [c]x := 1 + 2 * 3[/c] remotely; the target writes [c]7[/c] when [c]F8[/c] fires.
 
-The target needs no special code: no [c]#Include[/c], no exported pointers, no callback, and no embedded metadata. [c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c] resolves the PID from the image name, so the PID file in the test harness is only test orchestration.
+[color=#BF4000][b]6.4 RemoteEval[/b][/color]
 
-Live verification: start [c]tests\remote_hook_resident_target.ahk[/c], redirect [c]Abs[/c] to [c]Sin[/c], then send [c]F7[/c] to the target. It writes [c]0.8414709848078965[/c] ([c]Sin(1)[/c]) instead of [c]1[/c] ([c]Abs(1)[/c]). Remote eval [c]x := 1 + 2 * 3[/c] is verified by sending [c]F8[/c], which writes [c]7[/c].
+[c]RemoteEval(hook, expr)[/c] copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely.
+
+The target needs no special code: no [c]#Include[/c], no exported pointers, no callback, and no embedded metadata. The PID file in the test harness is only test orchestration; [c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c] resolves the PID from the image name.
 
 Function-to-function verification: [c]tests\remote_hook_function_target.ahk[/c] defines [c]B_direct()[/c] (direct [c]Abs[/c] call) and [c]B_dynamic()[/c] (dynamic [c]%name%[/c] call). [c]tests\remote_hook_function_demo.ahk[/c] deep redirects [c]Abs -> Sin[/c] and triggers both hotkeys. Both outputs become [c]0.8414709848078965[/c].
 
-[c]RemoteEvalScript[/c] loads a multi-line script inside the target through its own script-loading pipeline. The injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c], so both function and class definitions work.
+[color=#BF4000][b]6.5 RemoteEvalScript[/b][/color]
+
+[c]RemoteEvalScript(hook, text)[/c] loads a multi-line script inside the target through its own script-loading pipeline. The injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c], so both function and class definitions work.
 
 [codebox=autohotkey file=remote-eval-script]
+#Include ahk_hack_single.ahk
+
 hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
 
 script := "
@@ -280,25 +301,13 @@ add(a, b) {
 add(1, 2)
 )"
 MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3
-
-classScript := "
-(
-class Point {
-    x := 0
-    y := 0
-    __New(x, y) {
-        this.x := x
-        this.y := y
-    }
-}
-Point(1, 2).y
-)"
-MsgBox AhkMagic.RemoteEvalScript(hook, classScript) ; 2
 [/codebox]
 
-Hotkey verification uses address replacement like [c]Abs -> Sin[/c]: [c]tests\remote_hook_evalscript_target.ahk[/c] defines [c]B_add(x)[/c] that directly calls [c]A(x)[/c], and [c]F9[/c] outputs [c]B_add(1)[/c]. [c]tests\remote_hook_evalscript_demo.ahk[/c] loads [c]NewA[/c] on [c]F2[/c], replaces [c]A[/c]'s body with [c]RemoteReplaceFuncBody("A", "NewA")[/c], then sends [c]F9[/c]. Result: [c]after address replace A f9=42[/c]. [c]F3[/c] loads the [c]PointNew[/c] class and verifies [c]PointNew(1, 2).y[/c] with [c]RemoteEval[/c]: [c]after class eval=2[/c].
+[color=#BF4000][b]6.6 Function body replacement and class verification[/b][/color]
 
-[codebox=autohotkey file=remote-eval-script-hotkey]
+Hotkey verification uses address replacement like [c]Abs -> Sin[/c]. [c]tests\remote_hook_evalscript_target.ahk[/c] defines [c]B_add(x)[/c] that directly calls [c]A(x)[/c], and [c]F9[/c] outputs [c]B_add(1)[/c]. [c]tests\remote_hook_evalscript_demo.ahk[/c] loads [c]NewA[/c] on [c]F2[/c], replaces [c]A[/c]'s body address with [c]RemoteReplaceFuncBody("A", "NewA")[/c], then sends [c]F9[/c].
+
+[codebox=autohotkey file=remote-eval-script-target]
 ; Resident target: tests\remote_hook_evalscript_target.ahk
 A(x) {
     return 1
@@ -307,6 +316,10 @@ B_add(x) {
     return A(x)
 }
 F9:: FileAppend("f9=" B_add(1) "`n", A_Temp "\ahk_remote_evalscript.out")
+[/codebox]
+
+[codebox=autohotkey file=remote-eval-script-attacher]
+#Include ahk_hack_single.ahk
 
 ; Attacher: tests\remote_hook_evalscript_demo.ahk
 F2:: {
@@ -337,12 +350,43 @@ F3:: {
 }
 [/codebox]
 
-The class verification chain is explicit: [c]RemoteEvalScript[/c] first loads the [c]PointNew[/c] class into the target process, then [c]RemoteEval[/c] instantiates it and reads [c]PointNew(1, 2).y[/c] inside the same target. The hotkey path verifies function body replacement: [c]F2[/c] loads [c]NewA[/c], replaces [c]A[/c]'s body address, and [c]F9[/c] returns [c]42[/c].
+After [c]F2[/c] replaces the function body, the target writes [c]after address replace A f9=42[/c] when [c]F9[/c] fires. [c]F3[/c] first loads the [c]PointNew[/c] class into the target, then [c]RemoteEval[/c] instantiates it and reads [c]PointNew(1, 2).y[/c] inside the same target, returning [c]2[/c].
 
 [codebox=text file=remote-eval-script-results]
 after address replace A f9=42
 after class eval=2
 [/codebox]
+
+[color=#BF4000][b]6.7 Remote compatibility matrix[/b][/color]
+
+Remote hook compatibility matrix: 16/16 interpreter x interpreter combinations passed, and 16/16 Ahk2Exe-compiled UPX target x interpreter combinations passed. Remote hooking was also verified against an Ahk2Exe-compiled UPX target: [c]RemoteEval("1 + 2 * 3")[/c] returns [c]7[/c], remote assignment makes [c]F8[/c] write [c]7[/c], and [c]RemoteDeepRedirect[/c] changes [c]F7[/c] from [c]1[/c] to [c]0.8414709848078965[/c].
+
+[codebox=text file=compat]
+powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1
+[/codebox]
+
+
+[b]7. Verification and compatibility[/b]
+
+[color=#BF4000][b]7.1 Test commands[/b][/color]
+
+[codebox=text file=tests]
+python -m unittest discover -s tests -p 'test_*.py' -v
+& D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
+& D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
+& D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
+[/codebox]
+
+Verified on 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
+
+[color=#BF4000][b]7.2 Ahk2Exe and packed executables[/b][/color]
+
+Ahk2Exe packaging was also verified. The compiled exe embeds the same AutoHotkey runtime, so [c]Init[/c], [c]EvalNative[/c], and [c]EvalScript[/c] keep scanning the module and evaluating in-process. Pass [c]AutoHotkey64.exe[/c] to Ahk2Exe as [c]/base[/c]. [c]EvalSubprocess[/c] also works: the regular v2 runtime accepts [c]/script[/c], so the compiled exe is relaunched in interpreter mode to run the temp script.
+
+UPX and MPRESS compression were verified too. Packed executables rename the interpreter sections, so the scanner falls back to content-based section classification and still finds the tables; [c]EvalNative[/c], [c]EvalScript[/c], and [c]EvalSubprocess[/c] all pass.
 
 [codebox=text file=compiled]
 # Plain compile
@@ -358,72 +402,76 @@ after class eval=2
 & build\compiled_eval_probe_mpress.exe
 [/codebox]
 
-[codebox=text file=compat]
-powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1
-[/codebox]
 
-
-[b]5. Security[/b]
+[b]8. Security[/b]
 
 [color=#BF4000]This library allocates executable memory, executes machine code, and reads or writes interpreter internals directly. Use it with reverse-engineering research discipline.[/color]
 
-[c]Is Eval safe? No.[/c] [c]Eval[/c], [c]EvalNative[/c], and [c]EvalScript[/c] execute arbitrary code in the current process with the same privileges as the host script. They are not sandboxes. The in-process path also fabricates interpreter objects, so a wrong layout or state-save mistake can corrupt memory instead of raising a clean exception.
+[c]Is Eval safe? No.[/c] [c]Eval[/c], [c]EvalNative[/c], and [c]EvalScript[/c] execute arbitrary code in the current process with the same privileges as the host script. They are not sandboxes. The in-process path also fabricates interpreter objects, so a wrong layout or state-save mistake can corrupt memory instead of raising a clean exception. The remote APIs perform the same operations in another AutoHotkey process.
 
 Operations fall into three categories:
 
-- Read-only: [c]Init / Summary / BifRva / BifAddr / ScanExports[/c]. These do not modify process state; the main risk is compatibility;
-- Mutating: [c]PatchBif / RestoreBif[/c]. These directly modify internal tables and can crash the interpreter if misused. During development this project hit [c]0xC0000374[/c] (heap corruption);
-- Executing: [c]Eval[/c] and [c]EvalNative[/c]. This is equivalent to running arbitrary scripts.
+- Read-only: [c]Init / Summary / BifRva / BifAddr / ScanExports / AttachRemote[/c]. These do not modify process state; the main risk is compatibility;
+- Mutating: [c]PatchBif / RestoreBif / RemoteRedirect / RemoteDeepRedirect / RemoteReplaceFuncBody[/c]. These directly modify interpreter internals and can crash the process if misused. During development this project hit [c]0xC0000374[/c] (heap corruption);
+- Executing: [c]Eval / EvalNative / EvalScript / RemoteEval / RemoteEvalScript[/c]. This is equivalent to running arbitrary scripts.
 
 Risks to keep in mind:
 
 - Executable-memory allocation and internal function calls may be flagged by antivirus or EDR;
 - Every entry point, global, and layout offset is located at runtime; there is no per-version table, but the target exe still needs a test-suite pass;
-- Always restore [c]PatchBif[/c]; do not leave it enabled;
+- Always restore [c]PatchBif[/c] and remote redirects; do not leave them enabled;
 - Never eval untrusted input;
 - 32-bit AutoHotkey raises an explicit error.
 
 Recommended workflow: test in a VM or isolated environment, back up the exe, record its SHA256, and only analyze software you are authorized to research. This library is not intended to bypass licensing, DRM, or access controls.
 
 
-[b]6. Update log[/b]
+[b]9. Update log[/b]
 
 2026-08-11:
 
-- The scanning core was distilled into [c]ahk_hack_single.ahk[/c], with a runnable [c]ahk_hack_demo.ahk[/c];
-- Added [c]EvalNative[/c], an in-process expression evaluator built on the interpreter's own [c]ExpressionToPostfix[/c]/[c]ExpandExpression[/c] pipeline;
-- Fixed hardcoded structural offsets in the optional integration layer by switching to runtime layout discovery and native fill interfaces.
+- Initial release: runtime scanning library, machine-code builder, and single-file core;
+- Built-in redirection: table patch via [c]PatchBif[/c] and deep object patch via [c]PatchBifObject[/c];
+- Added [c]EvalNative[/c], an in-process expression evaluator built on the interpreter's own [c]ExpressionToPostfix[/c]/[c]ExpandExpression[/c] pipeline, covering literals, operators, global variables, and function calls;
+- Added [c]EvalScript[/c], which loads multi-line scripts through an in-memory [c]TextStream[/c] so function and class definitions work in-process;
+- Fixed hardcoded structural offsets in the optional integration layer by switching to runtime layout discovery and native fill interfaces;
+- Rewrote the README and made the blog reference the single-file core only.
 
 2026-08-12:
 
-- Verified [c]Init[/c], [c]EvalNative[/c], and [c]EvalScript[/c] in Ahk2Exe-compiled executables on all four versions; the compiled exe embeds the same runtime and the dynamic locators still work;
-- [c]EvalSubprocess[/c] now works in compiled executables by relaunching them with [c]/script[/c], which lets the regular v2 runtime interpret the temporary [c].ahk[/c].
+- Made every [c]EvalScript[/c] entry point and layout offset runtime-discovered: a one-time probe finds [c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c]/[c]mJumpLine[/c] and the parser-state anchors, removing the per-version table;
+- Published the bilingual Pages site with a collapsible sidebar and code highlighting;
+- Verified [c]Init[/c], [c]EvalNative[/c], and [c]EvalScript[/c] in Ahk2Exe-compiled executables on all four versions;
+- Made [c]EvalSubprocess[/c] work in compiled executables by relaunching them with [c]/script[/c];
 - Added fallback section classification so UPX/MPRESS-compressed executables keep working;
-- Added [c]tools\ahk_remote_attach.py[/c] and the [c]AhkMagic.AttachRemote()[/c]/[c]RemoteRedirect()[/c]/[c]RemoteEval()[/c] hook API so a script can attach to a running AutoHotkey process by PID, scan its interpreter tables remotely, redirect builtins in the live table, and evaluate expressions through injected threads.
-- Added [c]RemoteEvalScript[/c] with function and class support, plus [c]tools\verify_remote_compat.ps1[/c] for the cross-version and compiled-UPX compatibility matrix.
+- Added [c]tools\ahk_remote_attach.py[/c] and the [c]AhkMagic.AttachRemote()[/c]/[c]AttachRemoteByName()[/c]/[c]RemoteRedirect()[/c] APIs for attaching to a running AutoHotkey process by PID or image name;
+- Added [c]RemoteDeepRedirect[/c], which patches already-resolved [c]Func[/c] objects so direct call chains change;
+- Added resident hotkey verification: the target binds [c]F7/F8[/c] and the attacher sends the matching hotkey after each hook step;
+- Added [c]RemoteEval[/c], which evaluates expressions inside the target through an injected thread;
+- Added [c]RemoteEvalScript[/c], first with function definitions and then with class definitions (the injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c]);
+- Added [c]RemoteReplaceFuncBody[/c], which swaps function body addresses; hotkey verification changes the result from [c]1[/c] to [c]42[/c];
+- Added [c]tools\verify_remote_compat.ps1[/c]; the remote matrix passed 16/16 interpreter x interpreter and 16/16 UPX target x interpreter combinations;
+- Reorganized the blog structure, split duplicated examples, completed the update log, and moved the Pages remote chapter into its own section.
 
 
-[b]7. Known limitations[/b]
+[b]10. Known limitations[/b]
 
-- The machine-code blocks are x64 only;
+- The machine-code blocks are x64 only; 32-bit AutoHotkey raises an explicit error;
 - [c]EvalNative()[/c] runs the interpreter's in-process expression pipeline for literals, operators, global variables, and function calls on all verified builds. [c]Eval()[/c] falls back to [c]EvalSubprocess()[/c] in both script mode and compiled exes built from the regular runtime; an [c]AUTOHOTKEYSC[/c] standalone base would not support [c]/script[/c], so that build should be tested separately;
 - UPX/MPRESS compression is verified; third-party packers, VM protectors, or real script encryption still need per-target testing;
-- [c]PatchBif()[/c] does not retroactively affect already-cached function objects;
-- native construction relies on source-derived or runtime-discovered layout, so cross-version verification is mandatory.
-- [c]RemoteEval[/c] is verified for numeric expressions and simple builtin calls; complex string-result paths still need interpreter-thread context calibration.
-- [c]RemoteEval[/c] is expression-level ([c]EvalNative[/c]-style); remote [c]EvalScript[/c] that loads multi-line scripts with new function/class definitions into the target is not implemented yet.
-- Remote [c]EvalScript[/c] now works in the target for both functions and classes: [c]add(1, 2)[/c] returns [c]3[/c] and [c]Point(1, 2).y[/c] returns [c]2[/c]. The injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c] so class methods using [c]Super[/c] parse correctly.
-- Remote hooking was verified against an Ahk2Exe-compiled UPX target: remote eval returns [c]7[/c], remote assignment makes [c]F8[/c] write [c]7[/c], and deep redirect changes [c]F7[/c] from [c]1[/c] to [c]0.8414709848078965[/c].
-- Remote hook compatibility matrix: 16/16 interpreter x interpreter combinations passed, and 16/16 Ahk2Exe-compiled UPX target x interpreter combinations passed.
+- [c]PatchBif()[/c] and [c]RemoteRedirect()[/c] do not retroactively affect already-cached function objects; use [c]PatchBifObject()[/c]/[c]RemoteDeepRedirect()[/c] for that;
+- [c]RemoteReplaceFuncBody()[/c] requires both the source and destination functions to be loaded in the target process;
+- [c]RemoteEval[/c] is verified for numeric expressions and simple builtin calls; complex string-result paths still need interpreter-thread context calibration;
+- Remote script loading requires the target and the attacher to use the same runtime family; verified on four interpreter versions and a compiled UPX target.
 
 
-[b]8. Closing[/b]
+[b]11. Closing[/b]
 
-The project ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. In-process eval now handles literals, operators, global variables, and function calls across all verified builds, including 2.1-alpha.30. Future directions include automatic DLL binding generation and expanding the scan to more interpreter internals.
+The project ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. In-process eval and remote hooking now work across all verified builds, including 2.1-alpha.30. Future directions include automatic DLL binding generation and expanding the scan to more interpreter internals.
 
 
 
-[b]9. Appendix: single-file source[/b]
+[b]12. Appendix: single-file source[/b]
 
 [codebox=autohotkey file=ahk_hack_single.ahk]
 ; ahk-hack standalone core.
