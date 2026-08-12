@@ -74,6 +74,8 @@ class AhkLive {
         nameLen := StrLen(name)
         oldName := AhkLive._ShortName(nameLen)
         deadName := AhkLive._ShortName(nameLen)
+        retName := "_ahk_live_ret_" Format("{:x}", A_TickCount)
+            . Format("{:x}", Random(1, 0x7fffffff))
         escPath := StrReplace(outFile, "\", "\\")
         sig := AhkLive._FuncSignature(hook, name)
         loop sig["max"] {
@@ -87,9 +89,12 @@ class AhkLive {
         callArgs := params
 
         AhkLive._RenameFunc(hook, name, oldName)
-        script := "`n" name "(" params ") {`n"
-            . "    FileAppend(`"TRACE enter " name "`" Chr(10), `"" escPath "`")`n"
-            . "    return " oldName "(" callArgs ")`n"
+        script := "`n" retName "(v, label) {`n"
+            . "    FileAppend(`"TRACE exit `" label `"=`" v Chr(10), `"" escPath "`")`n"
+            . "    return v`n"
+            . "}`n"
+            . name "(" params ") {`n"
+            . "    return " retName "(" oldName "(" callArgs "), `"" name "`")`n"
             . "}`n"
             . "StrLen(`"`")"
         AhkMagic.RemoteEvalScript(hook, script)
@@ -99,6 +104,7 @@ class AhkLive {
             "name", name,
             "oldName", oldName,
             "deadName", deadName,
+            "retName", retName,
             "outFile", outFile,
             "signature", sig,
             "params", params,

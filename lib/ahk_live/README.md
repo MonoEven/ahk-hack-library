@@ -83,7 +83,7 @@ interpreter memory and can crash the target or trigger AV/EDR.
 
 ## Verification
 
-The full suite is verified on AutoHotkey 2.1-alpha.30. The core,
-introspection, patch, and watch layers are also verified on 2.0.26 with
-`tests/ahk_live_cross_smoke.ahk`; the trace rename path is currently
-version-sensitive and still being qualified on 2.0.26.
+The full suite is verified on AutoHotkey 2.1-alpha.30 and 2.0.26. The
+`tests/ahk_live_cross_smoke.ahk` script covers the core, introspection,
+patch, and watch layers on both runtimes; the full trace/replace path is
+covered by `tests/ahk_live_test.ahk`.
