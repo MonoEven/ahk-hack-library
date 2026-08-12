@@ -297,7 +297,7 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - native construction relies on source-derived or runtime-discovered layout, so cross-version verification is mandatory.
 - [c]RemoteEval[/c] is verified for numeric expressions and simple builtin calls; complex string-result paths still need interpreter-thread context calibration.
 - [c]RemoteEval[/c] is expression-level ([c]EvalNative[/c]-style); remote [c]EvalScript[/c] that loads multi-line scripts with new function/class definitions into the target is not implemented yet.
-- Remote [c]EvalScript[/c] now works at function level in the target: a script that defines [c]add(a, b)[/c] and evaluates [c]add(1, 2)[/c] returns [c]3[/c]. Class definitions are still blocked by the [c]Super[/c] parser context in the injected thread.
+- Remote [c]EvalScript[/c] now works in the target for both functions and classes: [c]add(1, 2)[/c] returns [c]3[/c] and [c]Point(1, 2).y[/c] returns [c]2[/c]. The injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c] so class methods using [c]Super[/c] parse correctly.
 - Remote hooking was verified against an Ahk2Exe-compiled UPX target: remote eval returns [c]7[/c], remote assignment makes [c]F8[/c] write [c]7[/c], and deep redirect changes [c]F7[/c] from [c]1[/c] to [c]0.8414709848078965[/c].
 
 
@@ -2581,6 +2581,7 @@ ahkHackLayoutProbe() {
             oldLast := AhkMagic._RPtr(h, gscript + layout["mlast_line_off"])
             oldFuncCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
             savedCur := AhkMagic._RPtr(h, g + currOff)
+            savedCurFunc := AhkMagic._RPtr(h, g + 0x28)
 
             savedState := []
             for key in ["mopen", "mpending_parent", "mline_parent"
@@ -2641,6 +2642,7 @@ ahkHackLayoutProbe() {
                             , newFunc + layout["mjump_line_off"])
                         if !jump
                             continue
+                        AhkMagic._WPtr(h, g + 0x28, newFunc)
                         rc := AhkMagic._RemoteCall(h
                             , mod["base"] + loc["preparse_rva"]
                             , [gscript, jump])
@@ -2709,6 +2711,7 @@ ahkHackLayoutProbe() {
                             , [gscript, newFunc])
                         if rc != 1
                             throw Error("PreprocessLocalVars rc=" rc, -1)
+                        AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
                     }
                 }
                 AhkMagic._WPtr(h, g + currOff, 0)
@@ -2737,6 +2740,7 @@ ahkHackLayoutProbe() {
                     else
                         AhkMagic._WByte(h, gscript + parser[item[1]], item[3])
                 }
+                AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
                 AhkMagic._WPtr(h, g + currOff, savedCur)
             }
         } finally {

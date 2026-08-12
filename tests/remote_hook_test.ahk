@@ -41,6 +41,20 @@ try {
     mul(2, 3)
     )"
     Log("evalScriptSecond=" AhkMagic.RemoteEvalScript(hook, mulScript))
+    classScript := "
+    (
+    class Point {
+        x := 0
+        y := 0
+        __New(x, y) {
+            this.x := x
+            this.y := y
+        }
+    }
+    Point(1, 2).y
+    )"
+    Log("evalScriptClass=" AhkMagic.RemoteEvalScript(hook, classScript))
+    Log("classNative=" AhkMagic.RemoteEval(hook, "Point(1, 2).x"))
     Log("PASS")
     ExitApp 0
 } catch as e {

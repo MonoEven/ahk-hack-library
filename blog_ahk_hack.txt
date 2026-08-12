@@ -297,7 +297,7 @@ F3:: {
 - 原生构造依赖源码布局或运行时布局发现，跨版本使用前要验证。
 - [c]RemoteEval[/c]已验证数字表达式和简单内置调用；依赖字符串结果缓冲的复杂表达式仍需在解释器线程上下文里进一步校准。
 - [c]RemoteEval[/c]目前是表达式级别（对应[c]EvalNative[/c]）；远程[c]EvalScript[/c]（把带函数/类定义的多行脚本通过脚本加载管线注入目标）还没有实现。
-- 远程[c]EvalScript[/c]现在已支持函数级：在目标进程里定义[c]add(a, b)[/c]并求值[c]add(1, 2)[/c]返回[c]3[/c]。class 仍受注入线程里[c]Super[/c]解析上下文限制。
+- 远程[c]EvalScript[/c]现在同时支持函数和 class：在目标进程里定义[c]add(a, b)[/c]求值返回[c]3[/c]，[c]Point(1, 2).y[/c]返回[c]2[/c]。注入线程会在[c]PreparseExpressions[/c]前设置[c]g->CurrentFunc[/c]，让使用[c]Super[/c]的 class 方法正确解析。
 - 远程 Hook 已在 Ahk2Exe 编译并用 UPX 压缩的目标上验证：远程 eval 返回[c]7[/c]，远程赋值让[c]F8[/c]写出[c]7[/c]，深补丁让[c]F7[/c]从[c]1[/c]变成[c]0.8414709848078965[/c]。
 
 
@@ -2581,6 +2581,7 @@ ahkHackLayoutProbe() {
             oldLast := AhkMagic._RPtr(h, gscript + layout["mlast_line_off"])
             oldFuncCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
             savedCur := AhkMagic._RPtr(h, g + currOff)
+            savedCurFunc := AhkMagic._RPtr(h, g + 0x28)
 
             savedState := []
             for key in ["mopen", "mpending_parent", "mline_parent"
@@ -2641,6 +2642,7 @@ ahkHackLayoutProbe() {
                             , newFunc + layout["mjump_line_off"])
                         if !jump
                             continue
+                        AhkMagic._WPtr(h, g + 0x28, newFunc)
                         rc := AhkMagic._RemoteCall(h
                             , mod["base"] + loc["preparse_rva"]
                             , [gscript, jump])
@@ -2709,6 +2711,7 @@ ahkHackLayoutProbe() {
                             , [gscript, newFunc])
                         if rc != 1
                             throw Error("PreprocessLocalVars rc=" rc, -1)
+                        AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
                     }
                 }
                 AhkMagic._WPtr(h, g + currOff, 0)
@@ -2737,6 +2740,7 @@ ahkHackLayoutProbe() {
                     else
                         AhkMagic._WByte(h, gscript + parser[item[1]], item[3])
                 }
+                AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
                 AhkMagic._WPtr(h, g + currOff, savedCur)
             }
         } finally {

@@ -2269,6 +2269,7 @@ ahkHackLayoutProbe() {
             oldLast := AhkMagic._RPtr(h, gscript + layout["mlast_line_off"])
             oldFuncCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
             savedCur := AhkMagic._RPtr(h, g + currOff)
+            savedCurFunc := AhkMagic._RPtr(h, g + 0x28)
 
             savedState := []
             for key in ["mopen", "mpending_parent", "mline_parent"
@@ -2329,6 +2330,7 @@ ahkHackLayoutProbe() {
                             , newFunc + layout["mjump_line_off"])
                         if !jump
                             continue
+                        AhkMagic._WPtr(h, g + 0x28, newFunc)
                         rc := AhkMagic._RemoteCall(h
                             , mod["base"] + loc["preparse_rva"]
                             , [gscript, jump])
@@ -2397,6 +2399,7 @@ ahkHackLayoutProbe() {
                             , [gscript, newFunc])
                         if rc != 1
                             throw Error("PreprocessLocalVars rc=" rc, -1)
+                        AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
                     }
                 }
                 AhkMagic._WPtr(h, g + currOff, 0)
@@ -2425,6 +2428,7 @@ ahkHackLayoutProbe() {
                     else
                         AhkMagic._WByte(h, gscript + parser[item[1]], item[3])
                 }
+                AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
                 AhkMagic._WPtr(h, g + currOff, savedCur)
             }
         } finally {

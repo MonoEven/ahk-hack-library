@@ -484,7 +484,7 @@ F3:: {
     Sleep 400
 }</code></pre>
         <p><code>RemoteEval(hook, expr)</code> takes the hook one level further: it injects a thread stub plus the internal locator and evaluator blobs, runs them with <code>CreateRemoteThread</code>, and reads the result back.</p>
-        <p><code>RemoteEvalScript(hook, text)</code> now loads multi-line function scripts inside the target through its script-loading pipeline. Class definitions remain blocked by the <code>Super</code> parser context in the injected thread.</p>
+        <p><code>RemoteEvalScript(hook, text)</code> loads multi-line scripts inside the target through its script-loading pipeline, including function and class definitions. The injected thread sets <code>g-&gt;CurrentFunc</code> before <code>PreparseExpressions</code>, so class methods using <code>Super</code> parse correctly.</p>
         <p>Live verification: start <code>tests/remote_hook_resident_target.ahk</code>, redirect <code>Abs</code> to <code>Sin</code>, then send <code>F7</code> to the target. It writes <code>0.8414709848078965</code> (<code>Sin(1)</code>) instead of <code>1</code> (<code>Abs(1)</code>). Remote eval <code>x := 1 + 2 * 3</code> is verified by sending <code>F8</code>, which writes <code>7</code>.</p>
         <p>Function-to-function verification: <code>tests/remote_hook_function_target.ahk</code> defines <code>B_direct()</code> and <code>B_dynamic()</code>; <code>tests/remote_hook_function_demo.ahk</code> deep redirects <code>Abs -&gt; Sin</code> and both outputs become <code>0.8414709848078965</code>.</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
@@ -2827,6 +2827,7 @@ ahkHackLayoutProbe() {
             oldLast := AhkMagic._RPtr(h, gscript + layout[&quot;mlast_line_off&quot;])
             oldFuncCount := AhkMagic._RInt(h, gscript + layout[&quot;mfuncs_count_off&quot;])
             savedCur := AhkMagic._RPtr(h, g + currOff)
+            savedCurFunc := AhkMagic._RPtr(h, g + 0x28)
 
             savedState := []
             for key in [&quot;mopen&quot;, &quot;mpending_parent&quot;, &quot;mline_parent&quot;
@@ -2887,6 +2888,7 @@ ahkHackLayoutProbe() {
                             , newFunc + layout[&quot;mjump_line_off&quot;])
                         if !jump
                             continue
+                        AhkMagic._WPtr(h, g + 0x28, newFunc)
                         rc := AhkMagic._RemoteCall(h
                             , mod[&quot;base&quot;] + loc[&quot;preparse_rva&quot;]
                             , [gscript, jump])
@@ -2955,6 +2957,7 @@ ahkHackLayoutProbe() {
                             , [gscript, newFunc])
                         if rc != 1
                             throw Error(&quot;PreprocessLocalVars rc=&quot; rc, -1)
+                        AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
                     }
                 }
                 AhkMagic._WPtr(h, g + currOff, 0)
@@ -2983,6 +2986,7 @@ ahkHackLayoutProbe() {
                     else
                         AhkMagic._WByte(h, gscript + parser[item[1]], item[3])
                 }
+                AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
                 AhkMagic._WPtr(h, g + currOff, savedCur)
             }
         } finally {
