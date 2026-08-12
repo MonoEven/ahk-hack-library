@@ -472,7 +472,11 @@ try {
 & D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
 & D:\...\AutoHotkey64.exe tests\version_probe.ahk
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
-& build\compiled_eval_probe.exe</code></pre>
+& build\compiled_eval_probe.exe
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_upx.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 2 /silent verbose
+& build\compiled_eval_probe_upx.exe
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_mpress.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 1 /silent verbose
+& build\compiled_eval_probe_mpress.exe</code></pre>
       </section>
 
       <section id="debugging">

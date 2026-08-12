@@ -196,8 +196,17 @@ Ahk2Exe 打包同样验证过。编译出的 exe 内嵌的还是同一个 AutoHo
 UPX 和 MPRESS 压缩也验证过。压缩后的 exe 会改写解释器节名，扫描器会退回到基于内容的节分类，仍然能找到三张表；[c]EvalNative[/c]、[c]EvalScript[/c]、[c]EvalSubprocess[/c]全部通过。当前这个 Ahk2Exe 版本不支持[c]/pass[/c]加密，会直接报错。
 
 [codebox=text file=compiled]
+# 普通编译
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
 & build\compiled_eval_probe.exe
+
+# UPX 压缩
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_upx.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 2 /silent verbose
+& build\compiled_eval_probe_upx.exe
+
+# MPRESS 压缩
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_mpress.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 1 /silent verbose
+& build\compiled_eval_probe_mpress.exe
 [/codebox]
 
 
