@@ -36,6 +36,7 @@
           <li><a href="#rebuild">Rebuilding the machine code</a></li>
           <li><a href="#evalnative">EvalNative: in-process expression evaluation</a></li>
           <li><a href="#evalscript">EvalScript: long text, functions, and classes</a></li>
+          <li><a href="#remote">Remote Hook</a></li>
           <li><a href="#boundary">Runtime discovery versus layout constants</a></li>
           <li><a href="#examples">Complete examples</a></li>
           <li><a href="#verification">Verification matrix</a></li>
@@ -276,8 +277,78 @@ MsgBox AhkMagic.EvalScript(classScript)          ; 1
 MsgBox AhkMagic.EvalNative("Point(1, 2).y")      ; 2, class loaded and used in-process</code></pre>
       </section>
 
+      <section id="remote">
+        <h2>7. Remote Hook</h2>
+        <p>Think of the target as a running machine. We do not install anything into it and it does not have to cooperate: no <code>#Include</code>, no exported pointer, no callback. We read its memory map, find the labels on its internal shelves, then insert a small worker thread through the OS remote-thread door.</p>
+        <p><code>AttachRemoteByName("AutoHotkey64.exe")</code> finds the running process by image name, opens it with <code>OpenProcess</code>, reads PE headers and data sections through <code>ReadProcessMemory</code>, scans anchor names and sorted runs to locate the three tables, and returns a map with <code>image_base</code>, <code>table_rva</code>, and entries. <code>RemoteRedirect(hook, "Abs", "Sin")</code> reopens with write access and writes the destination function pointer into the source entry's <code>fn_ptr</code> slot.</p>
+        <p><code>AttachRemote(pid)</code> is the PID-based form of the same scan: <code>OpenProcess</code> plus <code>ReadProcessMemory</code>, PE section parsing, and the anchor/run table scan. <code>tools/ahk_remote_attach.py</code> does the same scan from outside without injection and can redirect builtins in the live table.</p>
+        <p><code>RemoteDeepRedirect(hook, "Abs", "Sin")</code> goes deeper: it scans the target heap for the already-resolved <code>Func</code> object and patches its <code>mBIF</code>, so a function <code>B()</code> that directly calls <code>A()</code> changes too.</p>
+        <pre><code>F1:: {
+    global hook
+    hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+}
+F2:: {
+    global hook
+    AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+    Send "{F7}"          ; activate target hotkey to verify
+    Sleep 400
+}
+F3:: {
+    global hook
+    AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
+    Send "{F8}"          ; activate target hotkey to verify
+    Sleep 400
+}</code></pre>
+        <p>Resident target behind <code>F7/F8</code> (<code>tests/remote_hook_resident_target.ahk</code>):</p>
+        <pre><code>#NoTrayIcon
+Persistent
+
+pidFile := A_Temp "\ahk_remote_attach_target.pid"
+outFile := A_Temp "\ahk_remote_resident.out"
+errFile := A_Temp "\ahk_remote_resident.err"
+try FileDelete(outFile)
+try FileDelete(errFile)
+FileAppend(DllCall("GetCurrentProcessId") "`n", pidFile)
+
+x := 0
+name := "Abs"
+
+F7:: {
+    global name
+    global outFile
+    try {
+        FileAppend("f7=" %name%(1) "`n", outFile)
+    } catch as e {
+        FileAppend("f7err=" e.Message "`n", outFile)
+    }
+}
+
+F8:: {
+    global x
+    global outFile
+    FileAppend("f8=" x "`n", outFile)
+}</code></pre>
+        <p><code>RemoteEval(hook, expr)</code> injects a thread stub plus the internal locator and evaluator blobs, runs them with <code>CreateRemoteThread</code>, and reads the result back.</p>
+        <p><code>RemoteEvalScript(hook, text)</code> loads multi-line scripts inside the target through its script-loading pipeline, including function and class definitions. The injected thread sets <code>g-&gt;CurrentFunc</code> before <code>PreparseExpressions</code>, so class methods using <code>Super</code> parse correctly.</p>
+        <pre><code>hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+script := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
+MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
+        <p><code>RemoteReplaceFuncBody(hook, "A", "NewA")</code> replaces the function body pointer like <code>Abs -&gt; Sin</code>. The hotkey demo loads <code>NewA</code> on <code>F2</code>, replaces <code>A</code>, and <code>F9</code> verifies <code>42</code>; <code>F3</code> loads <code>PointNew</code> and <code>RemoteEval</code> verifies <code>2</code>.</p>
+        <p>Class verification chain: <code>RemoteEvalScript</code> loads <code>PointNew</code> into the target, then <code>RemoteEval</code> reads <code>PointNew(1, 2).y</code> in the same target. The hotkey path verifies function body replacement: <code>F2</code> loads <code>NewA</code>, replaces <code>A</code>, and <code>F9</code> returns <code>42</code>.</p>
+        <p>Live verification: start <code>tests/remote_hook_resident_target.ahk</code>, redirect <code>Abs</code> to <code>Sin</code>, then send <code>F7</code> to the target. It writes <code>0.8414709848078965</code> (<code>Sin(1)</code>) instead of <code>1</code> (<code>Abs(1)</code>). Remote eval <code>x := 1 + 2 * 3</code> is verified by sending <code>F8</code>, which writes <code>7</code>.</p>
+        <p>Function-to-function verification: <code>tests/remote_hook_function_target.ahk</code> defines <code>B_direct()</code> and <code>B_dynamic()</code>; <code>tests/remote_hook_function_demo.ahk</code> deep redirects <code>Abs -&gt; Sin</code> and both outputs become <code>0.8414709848078965</code>.</p>
+        <p>Remote compatibility matrix: 16/16 interpreter x interpreter combinations passed, and 16/16 Ahk2Exe-compiled UPX target x interpreter combinations passed.</p>
+        <pre><code>powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1</code></pre>
+      </section>
+
       <section id="boundary">
-        <h2>7. Runtime discovery versus layout constants</h2>
+        <h2>8. Runtime discovery versus layout constants</h2>
         <p>"Hardcoded" needs a precise definition here. The library has no per-version table at all. Tables, function entry points, globals, and enum values are discovered at runtime. The Script field offsets used by EvalScript are discovered the same way: a one-time probe loads a function from memory, diffs the live Script object to find <code>mFuncs</code>, <code>mFuncsCount</code>, and <code>mLastLine</code>, walks the new function's line chain to find <code>mJumpLine</code>, and reads parser-state anchors from the <code>LoadIncludedFile</code> prologue. Stable offsets such as <code>Line</code>/<code>ArgStruct</code>/token layout are fixed constants that have not changed across the verified builds.</p>
         <table>
           <thead>
@@ -310,7 +381,7 @@ MsgBox AhkMagic.EvalNative("Point(1, 2).y")      ; 2, class loaded and used in-p
           </tbody>
         </table>
         <p>The probe runs once per process and restores the Script object afterwards, so it does not leave a hidden test function behind. A build whose layout differs will make the probe fail explicitly instead of falling back to a guessed offset.</p>
-        <h3>7.1 Why these methods can read version parameters</h3>
+        <h3>8.1 Why these methods can read version parameters</h3>
         <p>Addresses are discoverable because stable strings create stable cross-references. The interpreter references error strings such as <code>"Missing operand."</code> with RIP-relative <code>lea</code> instructions in every build; the function that owns that reference can be found by walking back to the prologue. Global variables are similar: the compiler materializes their addresses with <code>lea reg,[rip+disp]</code>, so counting and filtering those references yields <code>g</code>, <code>gScript</code>, and the current-line slot.</p>
         <pre><code>// source/script.h (AutoHotkey v2.1-alpha.30)
 class UserFunc : public Func {
@@ -332,14 +403,14 @@ private:
     LPBYTE mDataPos;
 };</code></pre>
         <p>Layout offsets are a different problem. Instead of hardcoding them, the probe makes the running interpreter reveal them: load a throwaway function, diff the live <code>Script</code> object to find <code>mFuncs</code>, <code>mFuncsCount</code>, and <code>mLastLine</code>, then walk the new function's line chain to find <code>mJumpLine</code>. Parser-state anchors are read from the <code>cmp</code> instructions in the <code>LoadIncludedFile</code> prologue. The <code>TextStream</code> layout is handled without choosing at all: both <code>mData</code> regions are populated, so the same object works for either layout. These techniques rely on structural invariants of the interpreter, not on per-version magic numbers.</p>
-        <h3>7.2 Multi-version compatibility</h3>
+        <h3>8.2 Multi-version compatibility</h3>
         <p>Compatibility is a testable claim, not an assumption. The four-version matrix runs the same blob on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30. Stable offsets such as <code>Line</code>/<code>ArgStruct</code>/token layout have not changed in those builds; everything that did change is discovered at runtime. If a future build changes a layout in an unrecognized way, the probe or locator throws instead of proceeding with a guessed offset. That is the intended failure mode: explicit, isolated, and easy to debug.</p>
         <p>The optional cnumpy bridge applies the same idea to AHK <code>Array</code> objects. <code>AhkLayout</code> discovers <code>mItem</code>, <code>mLength</code>, <code>mCapacity</code>, and the <code>Variant</code> layout by diffing live objects, then cross-validates with a second independent probe set.</p>
       </section>
 
       <section id="examples">
-        <h2>8. Complete examples</h2>
-        <h3>8.1 Table inventory</h3>
+        <h2>9. Complete examples</h2>
+        <h3>9.1 Table inventory</h3>
         <pre><code>#Include ahk_hack_single.ahk
 AhkMagic.Init()
 
@@ -348,14 +419,14 @@ for name, info in AhkMagic.bif {
     if name = "Abs" or InStr(name, "Str")
         MsgBox name " rva=0x" Format("{:X}", info["rva"])
 }</code></pre>
-        <h3>8.2 Generic export scan</h3>
+        <h3>9.2 Generic export scan</h3>
         <pre><code>hmod := DllCall("GetModuleHandle", "Str", "kernel32.dll", "Ptr")
 exports := AhkMagic.ScanExports(hmod)
 for name in ["VirtualAlloc", "CreateFileW", "ReadProcessMemory"] {
     if exports.Has(name)
         MsgBox name " rva=0x" Format("{:X}", exports[name]["rva"])
 }</code></pre>
-        <h3>8.3 Built-in redirection, table and object</h3>
+        <h3>9.3 Built-in redirection, table and object</h3>
         <pre><code>old := AhkMagic.PatchBif("Abs", "Sin")
 name := "Abs"
 MsgBox %name%(1)              ; dynamic lookup now returns sin(1)
@@ -365,12 +436,12 @@ state := AhkMagic.PatchBifObject(Abs, "Sin")
 MsgBox Abs(1)                 ; direct call now returns sin(1)
 AhkMagic.RestoreBifObject(Abs, state)</code></pre>
         <p><code>PatchBif</code> changes the table slot used by future dynamic lookups. <code>PatchBifObject</code> additionally rewrites the already-resolved function object's C function pointer, so a direct <code>Abs(1)</code> in source is redirected too. Both are restored in the example.</p>
-        <h3>8.4 Expression eval</h3>
+        <h3>9.4 Expression eval</h3>
         <pre><code>MsgBox AhkMagic.Eval("1 + 2 * 3")                  ; 7
 MsgBox AhkMagic.Eval("StrLen(`"hello`")")            ; 5
 MsgBox AhkMagic.EvalNative("Abs(-5)")                ; 5, in-process
 MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))")</code></pre>
-        <h3>8.5 Script text with functions and classes</h3>
+        <h3>9.5 Script text with functions and classes</h3>
         <pre><code>text := "
 (
 add(a, b) {
@@ -393,7 +464,7 @@ class Point {
 Point(1, 2).x + Point(1, 2).y
 )"
 MsgBox AhkMagic.EvalScript(cls)                      ; 3</code></pre>
-        <h3>8.6 Custom version probe</h3>
+        <h3>9.6 Custom version probe</h3>
         <pre><code>#Include ahk_hack_single.ahk
 try {
     AhkMagic.Init()
@@ -445,7 +516,7 @@ try {
       </section>
 
       <section id="verification">
-        <h2>9. Verification matrix</h2>
+        <h2>10. Verification matrix</h2>
         <table>
           <thead>
             <tr>
@@ -464,69 +535,7 @@ try {
             <tr><td>2.0-beta.10 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
           </tbody>
         </table>
-        <p>Ahk2Exe packaging keeps the in-process Eval pipeline intact. The compiled exe embeds the same AutoHotkey runtime, so <code>Init</code>, <code>EvalNative</code>, and <code>EvalScript</code> still work. Verified on all four versions with <code>AutoHotkey64.exe</code> as the Ahk2Exe base. <code>EvalSubprocess</code> also works: the compiled exe is relaunched with <code>/script</code> to interpret the temporary script. UPX and MPRESS compression are also verified; the scanner falls back to content-based section classification when packers rename interpreter sections. A running process can be inspected from outside with <code>tools/ahk_remote_attach.py</code>, which scans the same tables by PID without injection and can redirect builtins in the live table.</p>
-        <p><code>AttachRemote(pid)</code> exposes the same scan as an AHK hook API: <code>OpenProcess</code> plus <code>ReadProcessMemory</code>, PE section parsing, and the anchor/run table scan. <code>RemoteRedirect(hook, "Abs", "Sin")</code> then writes the new function pointer into the live BIF slot.</p>
-        <p><code>RemoteDeepRedirect(hook, "Abs", "Sin")</code> goes deeper: it scans the target heap for the already-resolved <code>Func</code> object and patches its <code>mBIF</code>, so a function <code>B()</code> that directly calls <code>A()</code> changes too.</p>
-        <pre><code>F1:: {
-    global hook
-    hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
-}
-F2:: {
-    global hook
-    AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
-    Send "{F7}"          ; activate target hotkey to verify
-    Sleep 400
-}
-F3:: {
-    global hook
-    AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
-    Send "{F8}"          ; activate target hotkey to verify
-    Sleep 400
-}</code></pre>
-        <p>Resident target behind <code>F7/F8</code> (<code>tests/remote_hook_resident_target.ahk</code>):</p>
-        <pre><code>#NoTrayIcon
-Persistent
-
-pidFile := A_Temp "\ahk_remote_attach_target.pid"
-outFile := A_Temp "\ahk_remote_resident.out"
-errFile := A_Temp "\ahk_remote_resident.err"
-try FileDelete(outFile)
-try FileDelete(errFile)
-FileAppend(DllCall("GetCurrentProcessId") "`n", pidFile)
-
-x := 0
-name := "Abs"
-
-F7:: {
-    global name
-    global outFile
-    try {
-        FileAppend("f7=" %name%(1) "`n", outFile)
-    } catch as e {
-        FileAppend("f7err=" e.Message "`n", outFile)
-    }
-}
-
-F8:: {
-    global x
-    global outFile
-    FileAppend("f8=" x "`n", outFile)
-}</code></pre>
-        <p><code>RemoteEval(hook, expr)</code> takes the hook one level further: it injects a thread stub plus the internal locator and evaluator blobs, runs them with <code>CreateRemoteThread</code>, and reads the result back.</p>
-        <p><code>RemoteEvalScript(hook, text)</code> loads multi-line scripts inside the target through its script-loading pipeline, including function and class definitions. The injected thread sets <code>g-&gt;CurrentFunc</code> before <code>PreparseExpressions</code>, so class methods using <code>Super</code> parse correctly.</p>
-        <pre><code>hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
-script := "
-(
-add(a, b) {
-    return a + b
-}
-add(1, 2)
-)"
-MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
-        <p><code>RemoteReplaceFuncBody(hook, "A", "NewA")</code> replaces the function body pointer like <code>Abs -&gt; Sin</code>. The hotkey demo loads <code>NewA</code> on <code>F2</code>, replaces <code>A</code>, and <code>F9</code> verifies <code>42</code>; <code>F3</code> loads <code>PointNew</code> and <code>RemoteEval</code> verifies <code>2</code>.</p>
-        <p>Class verification chain: <code>RemoteEvalScript</code> loads <code>PointNew</code> into the target, then <code>RemoteEval</code> reads <code>PointNew(1, 2).y</code> in the same target. The hotkey path verifies function body replacement: <code>F2</code> loads <code>NewA</code>, replaces <code>A</code>, and <code>F9</code> returns <code>42</code>.</p>
-        <p>Live verification: start <code>tests/remote_hook_resident_target.ahk</code>, redirect <code>Abs</code> to <code>Sin</code>, then send <code>F7</code> to the target. It writes <code>0.8414709848078965</code> (<code>Sin(1)</code>) instead of <code>1</code> (<code>Abs(1)</code>). Remote eval <code>x := 1 + 2 * 3</code> is verified by sending <code>F8</code>, which writes <code>7</code>.</p>
-        <p>Function-to-function verification: <code>tests/remote_hook_function_target.ahk</code> defines <code>B_direct()</code> and <code>B_dynamic()</code>; <code>tests/remote_hook_function_demo.ahk</code> deep redirects <code>Abs -&gt; Sin</code> and both outputs become <code>0.8414709848078965</code>.</p>
+        <p>Ahk2Exe packaging keeps the in-process Eval pipeline intact. The compiled exe embeds the same AutoHotkey runtime, so <code>Init</code>, <code>EvalNative</code>, and <code>EvalScript</code> still work. Verified on all four versions with <code>AutoHotkey64.exe</code> as the Ahk2Exe base. <code>EvalSubprocess</code> also works: the compiled exe is relaunched with <code>/script</code> to interpret the temporary script. UPX and MPRESS compression are also verified; the scanner falls back to content-based section classification when packers rename interpreter sections.</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
@@ -542,7 +551,7 @@ MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
       </section>
 
       <section id="debugging">
-        <h2>10. Debugging and failure modes</h2>
+        <h2>11. Debugging and failure modes</h2>
         <ul>
           <li><code>0xC0000005</code> usually means a wrong pointer or struct offset. Isolate the probe, record the version, and verify every located address before dereferencing it.</li>
           <li><code>0xC0000374</code> can happen when parser state is saved or restored in the wrong order. The project hit it during development; the fix was to restore every touched <code>Script</code> field in a <code>finally</code> block.</li>
@@ -552,8 +561,8 @@ MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
       </section>
 
       <section id="security">
-        <h2>11. Security and usage rules</h2>
-        <h3>11.1 Is Eval safe?</h3>
+        <h2>12. Security and usage rules</h2>
+        <h3>12.1 Is Eval safe?</h3>
         <p>No. <code>Eval</code>, <code>EvalNative</code>, and <code>EvalScript</code> execute arbitrary code in the current process with the same privileges as the host script. They are not sandboxes. The in-process path also fabricates interpreter objects, so a wrong layout or a state-save mistake can corrupt memory instead of raising a clean exception. Treat every evaluated string as a script with full access to the host process.</p>
         <blockquote class="warn">This library allocates executable memory, executes machine code, and reads or writes interpreter internals directly. Treat it as a reverse-engineering research tool.</blockquote>
         <p>Operations fall into three categories:</p>
@@ -573,7 +582,7 @@ MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
       </section>
 
       <section id="learning">
-        <h2>12. Learning path</h2>
+        <h2>13. Learning path</h2>
         <ol>
           <li>Read a PE primer and inspect a real exe with <code>ahk_inspect.py</code> before touching the AHK side.</li>
           <li>Trace <code>scanner.c</code>: sections, pointer invariants, sorted runs, anchor names.</li>

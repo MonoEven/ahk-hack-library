@@ -36,6 +36,7 @@
           <li><a href="#rebuild">重新构建机器码</a></li>
           <li><a href="#evalnative">EvalNative：进程内表达式求值</a></li>
           <li><a href="#evalscript">EvalScript：长文本、函数与类</a></li>
+          <li><a href="#remote">远程 Hook</a></li>
           <li><a href="#boundary">运行时发现与布局常量</a></li>
           <li><a href="#examples">完整示例</a></li>
           <li><a href="#verification">验证矩阵</a></li>
@@ -276,196 +277,11 @@ MsgBox AhkMagic.EvalScript(classScript)          ; 1
 MsgBox AhkMagic.EvalNative("Point(1, 2).y")      ; 2，类已加载并在进程内使用</code></pre>
       </section>
 
-      <section id="boundary">
-        <h2>7. 运行时发现与布局常量</h2>
-        <p>“硬编码”需要先定义清楚。本库现在已经没有任何按版本维护的表。表地址、函数入口、全局量和枚举值都在运行时发现；EvalScript 用到的 Script 字段偏移也是运行时发现：一次性探针从内存加载一个函数，diff 存活 Script 对象找到 <code>mFuncs</code>、<code>mFuncsCount</code>、<code>mLastLine</code>，沿新函数的行链找到 <code>mJumpLine</code>，再从 <code>LoadIncludedFile</code> 的 prologue 读取解析器状态锚点。<code>Line</code>/<code>ArgStruct</code>/token 这类稳定偏移是固定常量，在已验证的构建中没有变化。</p>
-        <table>
-          <thead>
-            <tr>
-              <th>维度</th>
-              <th>状态</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>表地址（<code>g_BIF</code>、<code>sMdFunc</code>、<code>g_BIV_A</code>）</td>
-              <td>运行时通过 PE 与签名扫描发现</td>
-            </tr>
-            <tr>
-              <td>函数入口（EvalNative 与 EvalScript 管线）</td>
-              <td>运行时发现，无 RVA 表</td>
-            </tr>
-            <tr>
-              <td>全局量（<code>g</code>、<code>gScript</code>、当前行槽、<code>sSourceFileCount</code>）</td>
-              <td>运行时发现</td>
-            </tr>
-            <tr>
-              <td><code>SYM_INVALID</code> 等枚举值</td>
-              <td>运行时由内部定位器发现</td>
-            </tr>
-            <tr>
-              <td>Script/UserFunc/TextStream 布局偏移</td>
-              <td>运行时通过探针 diff 与机器码锚点发现</td>
-            </tr>
-          </tbody>
-        </table>
-        <p>探针每个进程只运行一次，结束后恢复 Script 对象，不会留下隐藏测试函数。如果目标构建的布局不同，探针会显式失败，不会用猜出来的偏移继续。</p>
-        <h3>7.1 为什么这些方法能读取版本参数</h3>
-        <p>地址能被发现，是因为稳定字符串形成了稳定交叉引用。解释器在每次构建里都用 RIP 相对的 <code>lea</code> 指令引用 <code>"Missing operand."</code> 这类错误字符串；沿引用回退到函数开头就能找到所属函数。全局变量同理：编译器用 <code>lea reg,[rip+disp]</code> 取全局地址，统计并过滤这些引用就能得到 <code>g</code>、<code>gScript</code> 和当前行槽。</p>
-        <pre><code>// source/script.h (AutoHotkey v2.1-alpha.30)
-class UserFunc : public Func {
-public:
-    Line *mJumpToLine = nullptr;
-    ...
-};
-
-// source/TextIO.h
-class TextMem : public TextStream {
-public:
-    struct Buffer {
-        LPVOID mBuffer;
-        DWORD mLength;
-        bool mOwned;
-    };
-private:
-    Buffer mData;
-    LPBYTE mDataPos;
-};</code></pre>
-        <p>布局偏移是另一个问题。与其写死，探针让运行中的解释器自己暴露它们：加载一个一次性函数，diff 存活 Script 对象找到 <code>mFuncs</code>、<code>mFuncsCount</code>、<code>mLastLine</code>，再沿新函数的行链找到 <code>mJumpLine</code>。解析器状态锚点从 <code>LoadIncludedFile</code> prologue 里的 <code>cmp</code> 指令读取。<code>TextStream</code> 布局干脆不做选择：两个 <code>mData</code> 区域同时填充，同一个对象在两种布局下都能工作。这些方法依赖的是解释器的结构不变量，不是按版本写死的魔数。</p>
-        <h3>7.2 多版本兼容</h3>
-        <p>兼容性是能被测试证明的结论，不是假设。四版本矩阵用同一份 blob 跑 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30。<code>Line</code>/<code>ArgStruct</code>/token 这些稳定偏移在这些构建中没有变化；变化的都改为运行时发现。如果未来某个构建改了无法识别的布局，探针或定位器会直接抛错，而不是带着猜出来的偏移继续。这是设计的失败模式：显式、隔离、容易调试。</p>
-        <p>可选 cnumpy 桥接把同一思路用在 AHK <code>Array</code> 对象上。<code>AhkLayout</code> 通过 diff 存活对象发现 <code>mItem</code>、<code>mLength</code>、<code>mCapacity</code> 和 <code>Variant</code> 布局，再用第二组独立探针交叉验证。</p>
-      </section>
-
-      <section id="examples">
-        <h2>8. 完整示例</h2>
-        <h3>8.1 表清单</h3>
-        <pre><code>#Include ahk_hack_single.ahk
-AhkMagic.Init()
-
-MsgBox AhkMagic.Summary()
-for name, info in AhkMagic.bif {
-    if name = "Abs" or InStr(name, "Str")
-        MsgBox name " rva=0x" Format("{:X}", info["rva"])
-}</code></pre>
-        <h3>8.2 通用导出扫描</h3>
-        <pre><code>hmod := DllCall("GetModuleHandle", "Str", "kernel32.dll", "Ptr")
-exports := AhkMagic.ScanExports(hmod)
-for name in ["VirtualAlloc", "CreateFileW", "ReadProcessMemory"] {
-    if exports.Has(name)
-        MsgBox name " rva=0x" Format("{:X}", exports[name]["rva"])
-}</code></pre>
-        <h3>8.3 内置函数重定向：表指针与对象深替换</h3>
-        <pre><code>old := AhkMagic.PatchBif("Abs", "Sin")
-name := "Abs"
-MsgBox %name%(1)              ; 后续动态查找返回 sin(1)
-AhkMagic.RestoreBif("Abs", old)
-
-state := AhkMagic.PatchBifObject(Abs, "Sin")
-MsgBox Abs(1)                 ; 源码里的直接调用也返回 sin(1)
-AhkMagic.RestoreBifObject(Abs, state)</code></pre>
-        <p><code>PatchBif</code> 改表槽，影响之后发生的动态查找。<code>PatchBifObject</code> 还会改写已经解析的函数对象里的 C 函数指针，所以源码里写死的 <code>Abs(1)</code> 也被重定向。上面的例子都会还原。</p>
-        <h3>8.4 表达式求值</h3>
-        <pre><code>MsgBox AhkMagic.Eval("1 + 2 * 3")                  ; 7
-MsgBox AhkMagic.Eval("StrLen(`"hello`")")            ; 5
-MsgBox AhkMagic.EvalNative("Abs(-5)")                ; 5，进程内
-MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))")</code></pre>
-        <h3>8.5 函数与类脚本</h3>
-        <pre><code>text := "
-(
-add(a, b) {
-    return a + b
-}
-add(1, 2)
-)"
-MsgBox AhkMagic.EvalScript(text)                     ; 3
-
-cls := "
-(
-class Point {
-    x := 0
-    y := 0
-    __New(x, y) {
-        this.x := x
-        this.y := y
-    }
-}
-Point(1, 2).x + Point(1, 2).y
-)"
-MsgBox AhkMagic.EvalScript(cls)                      ; 3</code></pre>
-        <h3>8.6 自定义版本探针</h3>
-        <pre><code>#Include ahk_hack_single.ahk
-try {
-    AhkMagic.Init()
-    AhkMagic._LocateInternalFunctions()
-    MsgBox "version=" A_AhkVersion "`n"
-        . "postfix=0x" Format("{:X}", AhkMagic.exprToPostfix) "`n"
-        . "expand=0x" Format("{:X}", AhkMagic.expandSingleArg) "`n"
-        . "gscript=0x" Format("{:X}", AhkMagic.gScript)
-} catch as e {
-    MsgBox "FAIL " e.Message
-}</code></pre>
-        <p>当前机器上探针输出类似下面的地址。这些值只属于具体构建，放在这里展示形态：</p>
-        <table>
-          <thead>
-            <tr>
-              <th>版本</th>
-              <th><code>ExpressionToPostfix</code></th>
-              <th><code>ExpandExpression</code></th>
-              <th><code>gScript</code></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>2.1-alpha.30</td>
-              <td><code>0x14005A470</code></td>
-              <td><code>0x1400761C0</code></td>
-              <td><code>0x140136530</code></td>
-            </tr>
-            <tr>
-              <td>2.0.26</td>
-              <td><code>0x1400593A0</code></td>
-              <td><code>0x140074C60</code></td>
-              <td><code>0x140129FE0</code></td>
-            </tr>
-            <tr>
-              <td>2.0.0</td>
-              <td><code>0x140058A40</code></td>
-              <td><code>0x140073DA0</code></td>
-              <td><code>0x140127530</code></td>
-            </tr>
-            <tr>
-              <td>2.0-beta.10</td>
-              <td><code>0x140057910</code></td>
-              <td><code>0x140073950</code></td>
-              <td><code>0x1401294F0</code></td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-
-      <section id="verification">
-        <h2>9. 验证矩阵</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>版本</th>
-              <th>表扫描</th>
-              <th>导出扫描</th>
-              <th>EvalNative</th>
-              <th>EvalScript 函数</th>
-              <th>EvalScript 类</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td>2.1-alpha.30 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
-            <tr><td>2.0.26 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
-            <tr><td>2.0.0 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
-            <tr><td>2.0-beta.10 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
-          </tbody>
-        </table>
-        <p>Ahk2Exe 打包不会让进程内 Eval 失效。编译出的 exe 内嵌同一个 AutoHotkey 运行时，<code>Init</code>、<code>EvalNative</code>、<code>EvalScript</code> 照常工作；四个版本都用 <code>AutoHotkey64.exe</code> 作为 Ahk2Exe base 验证过。<code>EvalSubprocess</code> 也能正常工作：编译 exe 通过 <code>/script</code> 重新进入解释器模式来执行临时脚本。UPX 和 MPRESS 压缩也验证过；压缩包会改写节名，扫描器会退回到基于内容的节分类。正在运行的进程也可以通过 <code>tools/ahk_remote_attach.py</code> 按 PID 从外部扫描同一组表，无需注入，并支持改写运行中的内置函数表。</p>
-        <p><code>AttachRemote(pid)</code>把同一套扫描做成 AHK Hook API：<code>OpenProcess</code>加<code>ReadProcessMemory</code>、解析 PE 节、用锚点和连续记录定位三张表。<code>RemoteRedirect(hook, "Abs", "Sin")</code>再把新函数指针写进运行中的 BIF 槽。</p>
+      <section id="remote">
+        <h2>7. 远程 Hook</h2>
+        <p>把目标进程想象成一台正在运行的机器。我们不往里面安装任何东西，它也不需要配合：不需要 <code>#Include</code>、不需要导出指针、不需要回调。我们读取它的内存地图，找到内部架子上的标签，再通过操作系统的远程线程入口放进一个小工人。</p>
+        <p><code>AttachRemoteByName("AutoHotkey64.exe")</code>按映像名找到运行中的目标进程，用 <code>OpenProcess</code> 打开，用 <code>ReadProcessMemory</code> 读取 PE 头和 data 节，扫描锚点名和连续排序记录定位三张表。<code>RemoteRedirect(hook, "Abs", "Sin")</code>以写权限重新打开目标，把目标函数指针写进源条目对应的 <code>fn_ptr</code> 槽。</p>
+        <p><code>AttachRemote(pid)</code>是同一套扫描的 PID 形式：<code>OpenProcess</code>加<code>ReadProcessMemory</code>、解析 PE 节、用锚点和连续记录定位三张表。<code>tools/ahk_remote_attach.py</code>可以在不注入的情况下按 PID 从外部扫描同一组表，并支持改写运行中的内置函数表。</p>
         <p><code>RemoteDeepRedirect(hook, "Abs", "Sin")</code>再深一层：扫描目标堆里已解析的 <code>Func</code> 对象并改写 <code>mBIF</code>，让直接调用 <code>A()</code> 的 <code>B()</code> 也跟着变化。</p>
         <pre><code>F1:: {
     global hook
@@ -527,6 +343,199 @@ MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
         <p>class 验证链路：<code>RemoteEvalScript</code>先把 <code>PointNew</code> 加载进目标，再由 <code>RemoteEval</code> 在同一个目标里读取 <code>PointNew(1, 2).y</code>。热键路径验证函数体地址替换：<code>F2</code> 加载 <code>NewA</code> 并替换 <code>A</code>，<code>F9</code> 返回 <code>42</code>。</p>
         <p>实测验证：启动 <code>tests/remote_hook_resident_target.ahk</code>，把 <code>Abs</code> 重定向为 <code>Sin</code>，再向目标发送 <code>F7</code>。它会输出 <code>0.8414709848078965</code>（即 <code>Sin(1)</code>），而不是原来的 <code>1</code>。远程执行 <code>x := 1 + 2 * 3</code> 后发送 <code>F8</code>，目标会写出 <code>7</code>。</p>
         <p>函数到函数验证：<code>tests/remote_hook_function_target.ahk</code>定义 <code>B_direct()</code>和 <code>B_dynamic()</code>；<code>tests/remote_hook_function_demo.ahk</code>深补丁 <code>Abs -&gt; Sin</code>后，两个输出都变成 <code>0.8414709848078965</code>。</p>
+        <p>远程兼容矩阵：解释器 x 解释器 16/16 组合通过，Ahk2Exe 编译 UPX 目标 x 解释器 16/16 组合通过。</p>
+        <pre><code>powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1</code></pre>
+      </section>
+
+      <section id="boundary">
+        <h2>8. 运行时发现与布局常量</h2>
+        <p>“硬编码”需要先定义清楚。本库现在已经没有任何按版本维护的表。表地址、函数入口、全局量和枚举值都在运行时发现；EvalScript 用到的 Script 字段偏移也是运行时发现：一次性探针从内存加载一个函数，diff 存活 Script 对象找到 <code>mFuncs</code>、<code>mFuncsCount</code>、<code>mLastLine</code>，沿新函数的行链找到 <code>mJumpLine</code>，再从 <code>LoadIncludedFile</code> 的 prologue 读取解析器状态锚点。<code>Line</code>/<code>ArgStruct</code>/token 这类稳定偏移是固定常量，在已验证的构建中没有变化。</p>
+        <table>
+          <thead>
+            <tr>
+              <th>维度</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>表地址（<code>g_BIF</code>、<code>sMdFunc</code>、<code>g_BIV_A</code>）</td>
+              <td>运行时通过 PE 与签名扫描发现</td>
+            </tr>
+            <tr>
+              <td>函数入口（EvalNative 与 EvalScript 管线）</td>
+              <td>运行时发现，无 RVA 表</td>
+            </tr>
+            <tr>
+              <td>全局量（<code>g</code>、<code>gScript</code>、当前行槽、<code>sSourceFileCount</code>）</td>
+              <td>运行时发现</td>
+            </tr>
+            <tr>
+              <td><code>SYM_INVALID</code> 等枚举值</td>
+              <td>运行时由内部定位器发现</td>
+            </tr>
+            <tr>
+              <td>Script/UserFunc/TextStream 布局偏移</td>
+              <td>运行时通过探针 diff 与机器码锚点发现</td>
+            </tr>
+          </tbody>
+        </table>
+        <p>探针每个进程只运行一次，结束后恢复 Script 对象，不会留下隐藏测试函数。如果目标构建的布局不同，探针会显式失败，不会用猜出来的偏移继续。</p>
+        <h3>8.1 为什么这些方法能读取版本参数</h3>
+        <p>地址能被发现，是因为稳定字符串形成了稳定交叉引用。解释器在每次构建里都用 RIP 相对的 <code>lea</code> 指令引用 <code>"Missing operand."</code> 这类错误字符串；沿引用回退到函数开头就能找到所属函数。全局变量同理：编译器用 <code>lea reg,[rip+disp]</code> 取全局地址，统计并过滤这些引用就能得到 <code>g</code>、<code>gScript</code> 和当前行槽。</p>
+        <pre><code>// source/script.h (AutoHotkey v2.1-alpha.30)
+class UserFunc : public Func {
+public:
+    Line *mJumpToLine = nullptr;
+    ...
+};
+
+// source/TextIO.h
+class TextMem : public TextStream {
+public:
+    struct Buffer {
+        LPVOID mBuffer;
+        DWORD mLength;
+        bool mOwned;
+    };
+private:
+    Buffer mData;
+    LPBYTE mDataPos;
+};</code></pre>
+        <p>布局偏移是另一个问题。与其写死，探针让运行中的解释器自己暴露它们：加载一个一次性函数，diff 存活 Script 对象找到 <code>mFuncs</code>、<code>mFuncsCount</code>、<code>mLastLine</code>，再沿新函数的行链找到 <code>mJumpLine</code>。解析器状态锚点从 <code>LoadIncludedFile</code> prologue 里的 <code>cmp</code> 指令读取。<code>TextStream</code> 布局干脆不做选择：两个 <code>mData</code> 区域同时填充，同一个对象在两种布局下都能工作。这些方法依赖的是解释器的结构不变量，不是按版本写死的魔数。</p>
+        <h3>8.2 多版本兼容</h3>
+        <p>兼容性是能被测试证明的结论，不是假设。四版本矩阵用同一份 blob 跑 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30。<code>Line</code>/<code>ArgStruct</code>/token 这些稳定偏移在这些构建中没有变化；变化的都改为运行时发现。如果未来某个构建改了无法识别的布局，探针或定位器会直接抛错，而不是带着猜出来的偏移继续。这是设计的失败模式：显式、隔离、容易调试。</p>
+        <p>可选 cnumpy 桥接把同一思路用在 AHK <code>Array</code> 对象上。<code>AhkLayout</code> 通过 diff 存活对象发现 <code>mItem</code>、<code>mLength</code>、<code>mCapacity</code> 和 <code>Variant</code> 布局，再用第二组独立探针交叉验证。</p>
+      </section>
+
+      <section id="examples">
+        <h2>9. 完整示例</h2>
+        <h3>9.1 表清单</h3>
+        <pre><code>#Include ahk_hack_single.ahk
+AhkMagic.Init()
+
+MsgBox AhkMagic.Summary()
+for name, info in AhkMagic.bif {
+    if name = "Abs" or InStr(name, "Str")
+        MsgBox name " rva=0x" Format("{:X}", info["rva"])
+}</code></pre>
+        <h3>9.2 通用导出扫描</h3>
+        <pre><code>hmod := DllCall("GetModuleHandle", "Str", "kernel32.dll", "Ptr")
+exports := AhkMagic.ScanExports(hmod)
+for name in ["VirtualAlloc", "CreateFileW", "ReadProcessMemory"] {
+    if exports.Has(name)
+        MsgBox name " rva=0x" Format("{:X}", exports[name]["rva"])
+}</code></pre>
+        <h3>9.3 内置函数重定向：表指针与对象深替换</h3>
+        <pre><code>old := AhkMagic.PatchBif("Abs", "Sin")
+name := "Abs"
+MsgBox %name%(1)              ; 后续动态查找返回 sin(1)
+AhkMagic.RestoreBif("Abs", old)
+
+state := AhkMagic.PatchBifObject(Abs, "Sin")
+MsgBox Abs(1)                 ; 源码里的直接调用也返回 sin(1)
+AhkMagic.RestoreBifObject(Abs, state)</code></pre>
+        <p><code>PatchBif</code> 改表槽，影响之后发生的动态查找。<code>PatchBifObject</code> 还会改写已经解析的函数对象里的 C 函数指针，所以源码里写死的 <code>Abs(1)</code> 也被重定向。上面的例子都会还原。</p>
+        <h3>9.4 表达式求值</h3>
+        <pre><code>MsgBox AhkMagic.Eval("1 + 2 * 3")                  ; 7
+MsgBox AhkMagic.Eval("StrLen(`"hello`")")            ; 5
+MsgBox AhkMagic.EvalNative("Abs(-5)")                ; 5，进程内
+MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))")</code></pre>
+        <h3>9.5 函数与类脚本</h3>
+        <pre><code>text := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
+MsgBox AhkMagic.EvalScript(text)                     ; 3
+
+cls := "
+(
+class Point {
+    x := 0
+    y := 0
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
+}
+Point(1, 2).x + Point(1, 2).y
+)"
+MsgBox AhkMagic.EvalScript(cls)                      ; 3</code></pre>
+        <h3>9.6 自定义版本探针</h3>
+        <pre><code>#Include ahk_hack_single.ahk
+try {
+    AhkMagic.Init()
+    AhkMagic._LocateInternalFunctions()
+    MsgBox "version=" A_AhkVersion "`n"
+        . "postfix=0x" Format("{:X}", AhkMagic.exprToPostfix) "`n"
+        . "expand=0x" Format("{:X}", AhkMagic.expandSingleArg) "`n"
+        . "gscript=0x" Format("{:X}", AhkMagic.gScript)
+} catch as e {
+    MsgBox "FAIL " e.Message
+}</code></pre>
+        <p>当前机器上探针输出类似下面的地址。这些值只属于具体构建，放在这里展示形态：</p>
+        <table>
+          <thead>
+            <tr>
+              <th>版本</th>
+              <th><code>ExpressionToPostfix</code></th>
+              <th><code>ExpandExpression</code></th>
+              <th><code>gScript</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>2.1-alpha.30</td>
+              <td><code>0x14005A470</code></td>
+              <td><code>0x1400761C0</code></td>
+              <td><code>0x140136530</code></td>
+            </tr>
+            <tr>
+              <td>2.0.26</td>
+              <td><code>0x1400593A0</code></td>
+              <td><code>0x140074C60</code></td>
+              <td><code>0x140129FE0</code></td>
+            </tr>
+            <tr>
+              <td>2.0.0</td>
+              <td><code>0x140058A40</code></td>
+              <td><code>0x140073DA0</code></td>
+              <td><code>0x140127530</code></td>
+            </tr>
+            <tr>
+              <td>2.0-beta.10</td>
+              <td><code>0x140057910</code></td>
+              <td><code>0x140073950</code></td>
+              <td><code>0x1401294F0</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="verification">
+        <h2>10. 验证矩阵</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>版本</th>
+              <th>表扫描</th>
+              <th>导出扫描</th>
+              <th>EvalNative</th>
+              <th>EvalScript 函数</th>
+              <th>EvalScript 类</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>2.1-alpha.30 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+            <tr><td>2.0.26 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+            <tr><td>2.0.0 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+            <tr><td>2.0-beta.10 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
+          </tbody>
+        </table>
+        <p>Ahk2Exe 打包不会让进程内 Eval 失效。编译出的 exe 内嵌同一个 AutoHotkey 运行时，<code>Init</code>、<code>EvalNative</code>、<code>EvalScript</code> 照常工作；四个版本都用 <code>AutoHotkey64.exe</code> 作为 Ahk2Exe base 验证过。<code>EvalSubprocess</code> 也能正常工作：编译 exe 通过 <code>/script</code> 重新进入解释器模式来执行临时脚本。UPX 和 MPRESS 压缩也验证过；压缩包会改写节名，扫描器会退回到基于内容的节分类。</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
@@ -542,7 +551,7 @@ MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
       </section>
 
       <section id="debugging">
-        <h2>10. 调试与故障</h2>
+        <h2>11. 调试与故障</h2>
         <ul>
           <li><code>0xC0000005</code> 通常意味着指针或结构偏移错误。隔离探针、记录版本，并在解引用前确认每个定位出来的地址。</li>
           <li><code>0xC0000374</code> 可能来自解析器状态的保存或恢复顺序错误。开发中实际遇到过；修复方式是让所有被改写的 <code>Script</code> 字段都在 <code>finally</code> 中恢复。</li>
@@ -552,8 +561,8 @@ MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
       </section>
 
       <section id="security">
-        <h2>11. 安全与使用规则</h2>
-        <h3>11.1 Eval 安全吗</h3>
+        <h2>12. 安全与使用规则</h2>
+        <h3>12.1 Eval 安全吗</h3>
         <p>不安全。<code>Eval</code>、<code>EvalNative</code>、<code>EvalScript</code> 会在当前进程里以宿主脚本相同的权限执行任意代码，不是沙箱。进程内路径还会伪造解释器对象，布局错误或状态保存失误可能直接损坏内存，而不是抛出一个干净的异常。请把每一个被求值的字符串都当作拥有完整进程权限的脚本。</p>
         <blockquote class="warn">这个库会分配可执行内存、执行机器码，并直接读写解释器内部结构。请按逆向工程研究工具的标准来使用。</blockquote>
         <p>操作分三类：</p>
@@ -573,7 +582,7 @@ MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
       </section>
 
       <section id="learning">
-        <h2>12. 学习路径</h2>
+        <h2>13. 学习路径</h2>
         <ol>
           <li>先读 PE 入门资料，并用 <code>ahk_inspect.py</code> 分析一个真实 exe。</li>
           <li>跟读 <code>scanner.c</code>：节区、指针不变量、排序连续区、锚点。</li>
