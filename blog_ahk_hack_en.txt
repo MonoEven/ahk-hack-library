@@ -207,6 +207,8 @@ MsgBox hook["builtins"]["count"]
 AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
 [/codebox]
 
+Live verification: start [c]tests\remote_hotkey_target.ahk[/c], redirect [c]Abs[/c] to [c]Sin[/c], then run [c]tests\remote_hotkey_trigger.ahk[/c]. The [c]F7[/c] hotkey writes [c]0.8414709848078965[/c] ([c]Sin(1)[/c]) instead of [c]1[/c] ([c]Abs(1)[/c]).
+
 [codebox=text file=compiled]
 # Plain compile
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose

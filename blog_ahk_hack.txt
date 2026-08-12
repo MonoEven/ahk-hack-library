@@ -207,6 +207,8 @@ MsgBox hook["builtins"]["count"]
 AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
 [/codebox]
 
+实测验证：启动[c]tests\remote_hotkey_target.ahk[/c]，把[c]Abs[/c]重定向为[c]Sin[/c]，再运行[c]tests\remote_hotkey_trigger.ahk[/c]。[c]F7[/c]热键会输出[c]0.8414709848078965[/c]（即[c]Sin(1)[/c]），而不是原来的[c]1[/c]。
+
 [codebox=text file=compiled]
 # 普通编译
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose

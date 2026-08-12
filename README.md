@@ -228,6 +228,18 @@ MsgBox hook["builtins"]["count"]
 AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
 ```
 
+Live hotkey verification:
+
+```powershell
+& D:\...\AutoHotkey64.exe tests\remote_hotkey_target.ahk
+python tools\ahk_remote_attach.py --pid <pid> --redirect Abs Sin
+& D:\...\AutoHotkey64.exe tests\remote_hotkey_trigger.ahk
+```
+
+`remote_hotkey_target.ahk` binds `F7` to a dynamic `%name%(1)` call. After the
+remote redirect, pressing `F7` writes `0.8414709848078965` (`Sin(1)`) instead
+of `1` (`Abs(1)`), so the running process is really affected by the hook.
+
 ## Lifecycle and Ownership
 
 All conversion APIs except `CnpView` use copy semantics. `CnpView` borrows
