@@ -464,7 +464,7 @@ try {
             <tr><td>2.0-beta.10 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
           </tbody>
         </table>
-        <p>Ahk2Exe 打包不会让进程内 Eval 失效。编译出的 exe 内嵌同一个 AutoHotkey 运行时，<code>Init</code>、<code>EvalNative</code>、<code>EvalScript</code> 照常工作；四个版本都用 <code>AutoHotkey64.exe</code> 作为 Ahk2Exe base 验证过。<code>EvalSubprocess</code> 在编译版里不可用，会直接抛出明确错误。</p>
+        <p>Ahk2Exe 打包不会让进程内 Eval 失效。编译出的 exe 内嵌同一个 AutoHotkey 运行时，<code>Init</code>、<code>EvalNative</code>、<code>EvalScript</code> 照常工作；四个版本都用 <code>AutoHotkey64.exe</code> 作为 Ahk2Exe base 验证过。<code>EvalSubprocess</code> 也能正常工作：编译 exe 通过 <code>/script</code> 重新进入解释器模式来执行临时脚本。</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
@@ -1576,13 +1576,7 @@ ahkHackLayoutProbe() {
             return AhkMagic.EvalNative(expr)
         } catch as e {
             ; Expressions the in-process pipeline cannot evaluate yet fall
-            ; back to the explicit subprocess implementation. A compiled exe
-            ; is not an interpreter, so there is nothing to spawn there.
-            if A_IsCompiled
-                throw Error(
-                    &quot;Eval fallback needs the interpreter executable; &quot;
-                    . &quot;compiled scripts should use EvalNative or EvalScript&quot;
-                    , -1)
+            ; back to the explicit subprocess implementation.
         }
         return AhkMagic.EvalSubprocess(expr)
     }
@@ -1798,8 +1792,6 @@ ahkHackLayoutProbe() {
             throw TypeError(&quot;expr must be a string&quot;, -1)
         if expr = &quot;&quot;
             throw ValueError(&quot;expr must not be empty&quot;, -1)
-        if A_IsCompiled
-            throw Error(&quot;EvalSubprocess is not available in compiled scripts&quot;, -1)
 
         tag := Format(&quot;{:x}&quot;, A_TickCount) &quot;-&quot; Format(&quot;{:x}&quot;, Random(1, 0x7fffffff))
         scriptFile := A_Temp &quot;\ahk_mcode_eval_&quot; tag &quot;.ahk&quot;
@@ -1815,7 +1807,12 @@ ahkHackLayoutProbe() {
             . &quot;}`n&quot;
         FileAppend script, scriptFile, &quot;UTF-8&quot;
         try {
-            RunWait Format(&#x27;&quot;{1}&quot; /ErrorStdOut &quot;{2}&quot;&#x27;, A_AhkPath, scriptFile), , &quot;Hide&quot;
+            ; Compiled exes built from the regular v2 runtime can re-enter
+            ; interpreter mode with /script; the SC build does not support it.
+            cmd := A_IsCompiled
+                ? Format(&#x27;&quot;{1}&quot; /script /ErrorStdOut &quot;{2}&quot;&#x27;, A_AhkPath, scriptFile)
+                : Format(&#x27;&quot;{1}&quot; /ErrorStdOut &quot;{2}&quot;&#x27;, A_AhkPath, scriptFile)
+            RunWait cmd, , &quot;Hide&quot;
             if !FileExist(resultFile)
                 throw Error(&quot;eval child produced no result&quot;, -1)
             result := FileRead(resultFile, &quot;UTF-8&quot;)

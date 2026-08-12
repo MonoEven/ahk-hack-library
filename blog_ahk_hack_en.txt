@@ -195,8 +195,9 @@ Ahk2Exe packaging was also verified. The compiled exe embeds the same
 AutoHotkey runtime, so [c]Init[/c], [c]EvalNative[/c], and [c]EvalScript[/c]
 keep scanning the module and evaluating in-process. The probe below passed on
 all four versions when [c]AutoHotkey64.exe[/c] was passed to Ahk2Exe as
-[c]/base[/c]. [c]EvalSubprocess[/c] is not available in a compiled exe and now
-raises an explicit error instead of launching the exe against a temp script.
+[c]/base[/c]. [c]EvalSubprocess[/c] also works: the regular v2 runtime accepts
+[c]/script[/c], so the compiled exe is relaunched in interpreter mode to run
+the temp script.
 
 [codebox=text file=compiled]
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
@@ -242,15 +243,16 @@ interpreter's own [c]ExpressionToPostfix[/c]/[c]ExpandExpression[/c] pipeline;
 - Verified [c]Init[/c], [c]EvalNative[/c], and [c]EvalScript[/c] in
 Ahk2Exe-compiled executables on all four versions; the compiled exe embeds
 the same runtime and the dynamic locators still work;
-- [c]EvalSubprocess[/c] now raises an explicit error in compiled scripts
-instead of launching the compiled exe against a temporary [c].ahk[/c].
+- [c]EvalSubprocess[/c] now works in compiled executables by relaunching them
+with [c]/script[/c], which lets the regular v2 runtime interpret the temporary
+[c].ahk[/c].
 
 
 [b]7. Known limitations[/b]
 
 - The machine-code blocks are x64 only;
 - [c]EvalNative()[/c] runs the interpreter's in-process expression pipeline
-for literals, operators, global variables, and function calls on all verified builds. [c]Eval()[/c] falls back to [c]EvalSubprocess()[/c] only in script mode; in a compiled exe the in-process paths still work, but [c]EvalSubprocess()[/c] raises an explicit error because the compiled exe cannot interpret a temporary script;
+for literals, operators, global variables, and function calls on all verified builds. [c]Eval()[/c] falls back to [c]EvalSubprocess()[/c] in both script mode and compiled exes built from the regular runtime; an [c]AUTOHOTKEYSC[/c] standalone base would not support [c]/script[/c], so that build should be tested separately;
 - [c]PatchBif()[/c] does not retroactively affect already-cached function objects;
 - native construction relies on source-derived or runtime-discovered layout, so cross-version verification is mandatory.
 

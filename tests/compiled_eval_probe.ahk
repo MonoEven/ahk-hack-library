@@ -42,12 +42,7 @@ try {
     )"
     Log("class=" AhkMagic.EvalScript(classScript))
     Log("classnative=" AhkMagic.EvalNative("Point(1, 2).y"))
-    try {
-        AhkMagic.EvalSubprocess("1 + 1")
-        Log("subprocess=NO ERROR")
-    } catch as e {
-        Log("subprocess_error=" e.Message)
-    }
+    Log("subprocess=" AhkMagic.EvalSubprocess("1 + 1"))
     Log("PASS")
     ExitApp 0
 } catch as e {

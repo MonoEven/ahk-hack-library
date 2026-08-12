@@ -26,6 +26,7 @@ AhkMagic.EvalScript(classScript)
 
 text := "1 + 2 * 3 = " AhkMagic.EvalNative("1 + 2 * 3") "`n"
     . "add(1, 2) = " AhkMagic.EvalScript(funcScript) "`n"
-    . "Point(1, 2).y = " AhkMagic.EvalNative("Point(1, 2).y")
+    . "Point(1, 2).y = " AhkMagic.EvalNative("Point(1, 2).y") "`n"
+    . "EvalSubprocess 1 + 1 = " AhkMagic.EvalSubprocess("1 + 1")
 MsgBox text, "AhkMagic compiled demo"
 ExitApp 0

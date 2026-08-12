@@ -1044,13 +1044,7 @@ ahkHackLayoutProbe() {
             return AhkMagic.EvalNative(expr)
         } catch as e {
             ; Expressions the in-process pipeline cannot evaluate yet fall
-            ; back to the explicit subprocess implementation. A compiled exe
-            ; is not an interpreter, so there is nothing to spawn there.
-            if A_IsCompiled
-                throw Error(
-                    "Eval fallback needs the interpreter executable; "
-                    . "compiled scripts should use EvalNative or EvalScript"
-                    , -1)
+            ; back to the explicit subprocess implementation.
         }
         return AhkMagic.EvalSubprocess(expr)
     }
@@ -1266,8 +1260,6 @@ ahkHackLayoutProbe() {
             throw TypeError("expr must be a string", -1)
         if expr = ""
             throw ValueError("expr must not be empty", -1)
-        if A_IsCompiled
-            throw Error("EvalSubprocess is not available in compiled scripts", -1)
 
         tag := Format("{:x}", A_TickCount) "-" Format("{:x}", Random(1, 0x7fffffff))
         scriptFile := A_Temp "\ahk_mcode_eval_" tag ".ahk"
@@ -1283,7 +1275,12 @@ ahkHackLayoutProbe() {
             . "}`n"
         FileAppend script, scriptFile, "UTF-8"
         try {
-            RunWait Format('"{1}" /ErrorStdOut "{2}"', A_AhkPath, scriptFile), , "Hide"
+            ; Compiled exes built from the regular v2 runtime can re-enter
+            ; interpreter mode with /script; the SC build does not support it.
+            cmd := A_IsCompiled
+                ? Format('"{1}" /script /ErrorStdOut "{2}"', A_AhkPath, scriptFile)
+                : Format('"{1}" /ErrorStdOut "{2}"', A_AhkPath, scriptFile)
+            RunWait cmd, , "Hide"
             if !FileExist(resultFile)
                 throw Error("eval child produced no result", -1)
             result := FileRead(resultFile, "UTF-8")

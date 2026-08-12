@@ -181,7 +181,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `PatchBifObject(fnObj, newName)` / `RestoreBifObject(fnObj, state)` | Deep-redirect an already-resolved built-in so direct calls are affected |
 | `Eval(expr)` | Tries the in-process pipeline, then `EvalSubprocess()` for unsupported expressions |
 | `EvalScript(text)` | Loads multi-line script text in-process and evaluates the last expression |
-| `EvalSubprocess(expr)` | Evaluates an expression string in a hidden child process; unavailable in compiled scripts and raises an explicit error there |
+| `EvalSubprocess(expr)` | Evaluates an expression string in a hidden child process; compiled scripts re-enter interpreter mode with `/script` |
 | `EvalNative(expr)` | Evaluates literals, operators, variables, and function calls through the interpreter's in-process expression pipeline |
 
 ### CnpBridge
@@ -288,8 +288,9 @@ runtime by a one-time probe.
 Ahk2Exe packaging does not disable the in-process Eval pipeline. When
 `AutoHotkey64.exe` is selected as the base file, the compiled exe embeds that
 runtime, so `Init`, `EvalNative`, and `EvalScript` keep working. This was
-verified on all four versions. `EvalSubprocess` is not available in a compiled
-exe and now raises an explicit error.
+verified on all four versions. `EvalSubprocess` also works: the regular v2
+runtime accepts `/script`, so the compiled exe is relaunched in interpreter
+mode to run the temporary script.
 
 ## Project Layout
 
