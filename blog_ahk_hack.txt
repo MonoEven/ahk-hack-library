@@ -226,6 +226,39 @@ F3:: {
 }
 [/codebox]
 
+[c]F7/F8[/c]背后的常驻目标脚本是[c]tests\remote_hook_resident_target.ahk[/c]：
+
+[codebox=autohotkey file=remote-resident-target]
+#NoTrayIcon
+Persistent
+
+pidFile := A_Temp "\ahk_remote_attach_target.pid"
+outFile := A_Temp "\ahk_remote_resident.out"
+errFile := A_Temp "\ahk_remote_resident.err"
+try FileDelete(outFile)
+try FileDelete(errFile)
+FileAppend(DllCall("GetCurrentProcessId") "`n", pidFile)
+
+x := 0
+name := "Abs"
+
+F7:: {
+    global name
+    global outFile
+    try {
+        FileAppend("f7=" %name%(1) "`n", outFile)
+    } catch as e {
+        FileAppend("f7err=" e.Message "`n", outFile)
+    }
+}
+
+F8:: {
+    global x
+    global outFile
+    FileAppend("f8=" x "`n", outFile)
+}
+[/codebox]
+
 同一套注入路径也支撑[c]RemoteEval[/c]：把内部定位器和表达式求值 blob 连同一个小型线程 stub 写进目标进程，用[c]CreateRemoteThread[/c]执行，再读回结果。[c]1 + 2 * 3[/c]、[c]2 * 3.5[/c]这类基础表达式已远程验证。
 
 目标进程不需要任何特殊代码：不需要[c]#Include[/c]、不需要导出指针、不需要回调，也不需要内嵌元数据。[c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c]可以直接按映像名解析 PID，测试脚本里写 PID 文件只是测试编排用的。

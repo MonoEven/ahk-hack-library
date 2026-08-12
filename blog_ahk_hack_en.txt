@@ -226,6 +226,39 @@ F3:: {
 }
 [/codebox]
 
+The resident target behind [c]F7/F8[/c] is [c]tests\remote_hook_resident_target.ahk[/c]:
+
+[codebox=autohotkey file=remote-resident-target]
+#NoTrayIcon
+Persistent
+
+pidFile := A_Temp "\ahk_remote_attach_target.pid"
+outFile := A_Temp "\ahk_remote_resident.out"
+errFile := A_Temp "\ahk_remote_resident.err"
+try FileDelete(outFile)
+try FileDelete(errFile)
+FileAppend(DllCall("GetCurrentProcessId") "`n", pidFile)
+
+x := 0
+name := "Abs"
+
+F7:: {
+    global name
+    global outFile
+    try {
+        FileAppend("f7=" %name%(1) "`n", outFile)
+    } catch as e {
+        FileAppend("f7err=" e.Message "`n", outFile)
+    }
+}
+
+F8:: {
+    global x
+    global outFile
+    FileAppend("f8=" x "`n", outFile)
+}
+[/codebox]
+
 The same injection path powers [c]RemoteEval[/c]: it copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely.
 
 The target needs no special code: no [c]#Include[/c], no exported pointers, no callback, and no embedded metadata. [c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c] resolves the PID from the image name, so the PID file in the test harness is only test orchestration.

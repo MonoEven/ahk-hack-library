@@ -483,6 +483,35 @@ F3:: {
     Send "{F8}"          ; activate target hotkey to verify
     Sleep 400
 }</code></pre>
+        <p>Resident target behind <code>F7/F8</code> (<code>tests/remote_hook_resident_target.ahk</code>):</p>
+        <pre><code>#NoTrayIcon
+Persistent
+
+pidFile := A_Temp "\ahk_remote_attach_target.pid"
+outFile := A_Temp "\ahk_remote_resident.out"
+errFile := A_Temp "\ahk_remote_resident.err"
+try FileDelete(outFile)
+try FileDelete(errFile)
+FileAppend(DllCall("GetCurrentProcessId") "`n", pidFile)
+
+x := 0
+name := "Abs"
+
+F7:: {
+    global name
+    global outFile
+    try {
+        FileAppend("f7=" %name%(1) "`n", outFile)
+    } catch as e {
+        FileAppend("f7err=" e.Message "`n", outFile)
+    }
+}
+
+F8:: {
+    global x
+    global outFile
+    FileAppend("f8=" x "`n", outFile)
+}</code></pre>
         <p><code>RemoteEval(hook, expr)</code> takes the hook one level further: it injects a thread stub plus the internal locator and evaluator blobs, runs them with <code>CreateRemoteThread</code>, and reads the result back.</p>
         <p><code>RemoteEvalScript(hook, text)</code> loads multi-line scripts inside the target through its script-loading pipeline, including function and class definitions. The injected thread sets <code>g-&gt;CurrentFunc</code> before <code>PreparseExpressions</code>, so class methods using <code>Super</code> parse correctly.</p>
         <pre><code>hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
