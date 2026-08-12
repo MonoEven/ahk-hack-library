@@ -312,6 +312,11 @@ context calibration.
 (loading multi-line script text with new function/class definitions into the
 target through the script-loading pipeline) is not implemented yet.
 
+Remote hooking was also verified against an Ahk2Exe-compiled UPX target:
+`RemoteEval("1 + 2 * 3")` returns `7`, `RemoteEval("x := 1 + 2 * 3")` makes the
+target's `F8` write `7`, and `RemoteDeepRedirect` changes the target's `F7`
+output from `1` to `0.8414709848078965`.
+
 Live hotkey verification:
 
 ```powershell

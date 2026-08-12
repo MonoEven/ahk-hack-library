@@ -297,6 +297,7 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - native construction relies on source-derived or runtime-discovered layout, so cross-version verification is mandatory.
 - [c]RemoteEval[/c] is verified for numeric expressions and simple builtin calls; complex string-result paths still need interpreter-thread context calibration.
 - [c]RemoteEval[/c] is expression-level ([c]EvalNative[/c]-style); remote [c]EvalScript[/c] that loads multi-line scripts with new function/class definitions into the target is not implemented yet.
+- Remote hooking was verified against an Ahk2Exe-compiled UPX target: remote eval returns [c]7[/c], remote assignment makes [c]F8[/c] write [c]7[/c], and deep redirect changes [c]F7[/c] from [c]1[/c] to [c]0.8414709848078965[/c].
 
 
 [b]8. Closing[/b]
