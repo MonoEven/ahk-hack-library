@@ -140,12 +140,12 @@ RefreshList() {
     global gLv, gShowAll
     gLv.Delete()
     for proc in EnumProcesses() {
-        if !gShowAll.Value and !RegExMatch(proc["name"], "i)autohotkey")
+        if !gShowAll.Value and !RegExMatch(proc.name, "i)autohotkey")
             continue
         title := ""
         try
-            title := WinGetTitle("ahk_pid " proc["pid"])
-        gLv.Add(, proc["pid"], proc["name"], title)
+            title := WinGetTitle("ahk_pid " proc.pid)
+        gLv.Add(, proc.pid, proc.name, title)
     }
     gLv.ModifyCol(1, "AutoHdr")
     gLv.ModifyCol(2, "AutoHdr")
