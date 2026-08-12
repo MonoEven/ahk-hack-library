@@ -466,8 +466,18 @@ try {
         </table>
         <p>Ahk2Exe packaging keeps the in-process Eval pipeline intact. The compiled exe embeds the same AutoHotkey runtime, so <code>Init</code>, <code>EvalNative</code>, and <code>EvalScript</code> still work. Verified on all four versions with <code>AutoHotkey64.exe</code> as the Ahk2Exe base. <code>EvalSubprocess</code> also works: the compiled exe is relaunched with <code>/script</code> to interpret the temporary script. UPX and MPRESS compression are also verified; the scanner falls back to content-based section classification when packers rename interpreter sections. A running process can be inspected from outside with <code>tools/ahk_remote_attach.py</code>, which scans the same tables by PID without injection and can redirect builtins in the live table.</p>
         <p><code>AttachRemote(pid)</code> exposes the same scan as an AHK hook API: <code>OpenProcess</code> plus <code>ReadProcessMemory</code>, PE section parsing, and the anchor/run table scan. <code>RemoteRedirect(hook, "Abs", "Sin")</code> then writes the new function pointer into the live BIF slot.</p>
-        <pre><code>hook := AhkMagic.AttachRemote(pid)
-AhkMagic.RemoteRedirect(hook, "Abs", "Sin")</code></pre>
+        <pre><code>F1:: {
+    global hook
+    hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+}
+F2:: {
+    global hook
+    AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+}
+F3:: {
+    global hook
+    MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")
+}</code></pre>
         <p><code>RemoteEval(hook, expr)</code> takes the hook one level further: it injects a thread stub plus the internal locator and evaluator blobs, runs them with <code>CreateRemoteThread</code>, and reads the result back.</p>
         <p>Live verification: start <code>tests/remote_hotkey_target.ahk</code>, redirect <code>Abs</code> to <code>Sin</code>, then run <code>tests/remote_hotkey_trigger.ahk</code>. The <code>F7</code> hotkey writes <code>0.8414709848078965</code> (<code>Sin(1)</code>) instead of <code>1</code> (<code>Abs(1)</code>).</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
@@ -1852,6 +1862,33 @@ ahkHackLayoutProbe() {
         return best
     }
 
+    static _RemotePidByName(name) {
+        hSnap := DllCall(&quot;CreateToolhelp32Snapshot&quot;, &quot;UInt&quot;, 0x2, &quot;UInt&quot;, 0, &quot;Ptr&quot;)
+        if hSnap = -1 or !hSnap
+            throw Error(&quot;CreateToolhelp32Snapshot failed&quot;, -1)
+        buf := Buffer(568)
+        NumPut(&quot;UInt&quot;, 568, buf, 0)
+        pid := 0
+        try {
+            if !DllCall(&quot;Process32FirstW&quot;, &quot;Ptr&quot;, hSnap, &quot;Ptr&quot;, buf.Ptr)
+                throw Error(&quot;Process32FirstW failed&quot;, -1)
+            loop {
+                exe := StrGet(buf.Ptr + 44, 260, &quot;UTF-16&quot;)
+                if StrCompare(exe, name, false) = 0 {
+                    pid := NumGet(buf, 8, &quot;UInt&quot;)
+                    break
+                }
+                if !DllCall(&quot;Process32NextW&quot;, &quot;Ptr&quot;, hSnap, &quot;Ptr&quot;, buf.Ptr)
+                    break
+            }
+        } finally {
+            DllCall(&quot;CloseHandle&quot;, &quot;Ptr&quot;, hSnap)
+        }
+        if !pid
+            throw Error(&quot;process not found: &quot; name, -1)
+        return pid
+    }
+
     static _RemoteRead(h, addr, size) {
         buf := Buffer(size)
         read := 0
@@ -2149,6 +2186,13 @@ ahkHackLayoutProbe() {
         } finally {
             DllCall(&quot;CloseHandle&quot;, &quot;Ptr&quot;, h)
         }
+    }
+
+    static AttachRemoteByName(name) {
+        if !(name is String)
+            throw TypeError(&quot;name must be a string&quot;, -1)
+        pid := AhkMagic._RemotePidByName(name)
+        return AhkMagic.AttachRemote(pid)
     }
 
     static RemoteRedirect(hook, name, newName) {

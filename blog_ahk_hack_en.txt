@@ -199,12 +199,22 @@ UPX and MPRESS compression were verified too. Packed executables rename the inte
 python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
 [/codebox]
 
-The same path is exposed as an AHK hook API. [c]AttachRemote(pid)[/c] opens the target with [c]OpenProcess[/c], reads PE headers and data sections through [c]ReadProcessMemory[/c], scans anchor names and sorted runs to locate the three tables, and returns a map with [c]image_base[/c], [c]table_rva[/c], and entries. [c]RemoteRedirect(hook, "Abs", "Sin")[/c] reopens with write access and writes the destination function pointer into the source entry's [c]fn_ptr[/c] slot.
+Think of the target as a running machine. We do not install anything into it and it does not have to cooperate: no [c]#Include[/c], no exported pointer, no callback. We read its memory map, find the labels on its internal shelves, then insert a small worker thread through the OS remote-thread door. The same path is exposed as an AHK hook API. [c]AttachRemoteByName("AutoHotkey64.exe")[/c] finds the running process by image name, opens it with [c]OpenProcess[/c], reads PE headers and data sections through [c]ReadProcessMemory[/c], scans anchor names and sorted runs to locate the three tables, and returns a map with [c]image_base[/c], [c]table_rva[/c], and entries. [c]RemoteRedirect(hook, "Abs", "Sin")[/c] reopens with write access and writes the destination function pointer into the source entry's [c]fn_ptr[/c] slot.
 
 [codebox=autohotkey file=remote-hook]
-hook := AhkMagic.AttachRemote(pid)
-MsgBox hook["builtins"]["count"]
-AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+; Attacher hotkeys
+F1:: {
+    global hook
+    hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+}
+F2:: {
+    global hook
+    AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+}
+F3:: {
+    global hook
+    MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")
+}
 [/codebox]
 
 The same injection path powers [c]RemoteEval[/c]: it copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely.
@@ -1599,6 +1609,33 @@ ahkHackLayoutProbe() {
         return best
     }
 
+    static _RemotePidByName(name) {
+        hSnap := DllCall("CreateToolhelp32Snapshot", "UInt", 0x2, "UInt", 0, "Ptr")
+        if hSnap = -1 or !hSnap
+            throw Error("CreateToolhelp32Snapshot failed", -1)
+        buf := Buffer(568)
+        NumPut("UInt", 568, buf, 0)
+        pid := 0
+        try {
+            if !DllCall("Process32FirstW", "Ptr", hSnap, "Ptr", buf.Ptr)
+                throw Error("Process32FirstW failed", -1)
+            loop {
+                exe := StrGet(buf.Ptr + 44, 260, "UTF-16")
+                if StrCompare(exe, name, false) = 0 {
+                    pid := NumGet(buf, 8, "UInt")
+                    break
+                }
+                if !DllCall("Process32NextW", "Ptr", hSnap, "Ptr", buf.Ptr)
+                    break
+            }
+        } finally {
+            DllCall("CloseHandle", "Ptr", hSnap)
+        }
+        if !pid
+            throw Error("process not found: " name, -1)
+        return pid
+    }
+
     static _RemoteRead(h, addr, size) {
         buf := Buffer(size)
         read := 0
@@ -1896,6 +1933,13 @@ ahkHackLayoutProbe() {
         } finally {
             DllCall("CloseHandle", "Ptr", h)
         }
+    }
+
+    static AttachRemoteByName(name) {
+        if !(name is String)
+            throw TypeError("name must be a string", -1)
+        pid := AhkMagic._RemotePidByName(name)
+        return AhkMagic.AttachRemote(pid)
     }
 
     static RemoteRedirect(hook, name, newName) {

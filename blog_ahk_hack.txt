@@ -199,12 +199,22 @@ UPX 和 MPRESS 压缩也验证过。压缩后的 exe 会改写解释器节名，
 python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
 [/codebox]
 
-同一套流程也做成了 AHK Hook API。[c]AttachRemote(pid)[/c]用[c]OpenProcess[/c]打开目标进程，用[c]ReadProcessMemory[/c]读取 PE 头和 data 节，扫描锚点名和连续排序记录定位三张表，返回包含[c]image_base[/c]、[c]table_rva[/c]和条目的 Map。[c]RemoteRedirect(hook, "Abs", "Sin")[/c]以写权限重新打开目标，把目标函数指针写进源条目对应的[c]fn_ptr[/c]槽。
+把目标进程想象成一台正在运行的机器。我们不往里面安装任何东西，它也不需要配合：不需要[c]#Include[/c]、不需要导出指针、不需要回调。我们读取它的内存地图，找到内部架子上的标签，再通过操作系统的远程线程入口放进一个小工人。同一套流程也做成了 AHK Hook API。[c]AttachRemoteByName("AutoHotkey64.exe")[/c]按映像名找到运行中的目标进程，用[c]OpenProcess[/c]打开，用[c]ReadProcessMemory[/c]读取 PE 头和 data 节，扫描锚点名和连续排序记录定位三张表，返回包含[c]image_base[/c]、[c]table_rva[/c]和条目的 Map。[c]RemoteRedirect(hook, "Abs", "Sin")[/c]以写权限重新打开目标，把目标函数指针写进源条目对应的[c]fn_ptr[/c]槽。
 
 [codebox=autohotkey file=remote-hook]
-hook := AhkMagic.AttachRemote(pid)
-MsgBox hook["builtins"]["count"]
-AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+; Attacher 热键
+F1:: {
+    global hook
+    hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+}
+F2:: {
+    global hook
+    AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+}
+F3:: {
+    global hook
+    MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")
+}
 [/codebox]
 
 同一套注入路径也支撑[c]RemoteEval[/c]：把内部定位器和表达式求值 blob 连同一个小型线程 stub 写进目标进程，用[c]CreateRemoteThread[/c]执行，再读回结果。[c]1 + 2 * 3[/c]、[c]2 * 3.5[/c]这类基础表达式已远程验证。
@@ -1599,6 +1609,33 @@ ahkHackLayoutProbe() {
         return best
     }
 
+    static _RemotePidByName(name) {
+        hSnap := DllCall("CreateToolhelp32Snapshot", "UInt", 0x2, "UInt", 0, "Ptr")
+        if hSnap = -1 or !hSnap
+            throw Error("CreateToolhelp32Snapshot failed", -1)
+        buf := Buffer(568)
+        NumPut("UInt", 568, buf, 0)
+        pid := 0
+        try {
+            if !DllCall("Process32FirstW", "Ptr", hSnap, "Ptr", buf.Ptr)
+                throw Error("Process32FirstW failed", -1)
+            loop {
+                exe := StrGet(buf.Ptr + 44, 260, "UTF-16")
+                if StrCompare(exe, name, false) = 0 {
+                    pid := NumGet(buf, 8, "UInt")
+                    break
+                }
+                if !DllCall("Process32NextW", "Ptr", hSnap, "Ptr", buf.Ptr)
+                    break
+            }
+        } finally {
+            DllCall("CloseHandle", "Ptr", hSnap)
+        }
+        if !pid
+            throw Error("process not found: " name, -1)
+        return pid
+    }
+
     static _RemoteRead(h, addr, size) {
         buf := Buffer(size)
         read := 0
@@ -1896,6 +1933,13 @@ ahkHackLayoutProbe() {
         } finally {
             DllCall("CloseHandle", "Ptr", h)
         }
+    }
+
+    static AttachRemoteByName(name) {
+        if !(name is String)
+            throw TypeError("name must be a string", -1)
+        pid := AhkMagic._RemotePidByName(name)
+        return AhkMagic.AttachRemote(pid)
     }
 
     static RemoteRedirect(hook, name, newName) {

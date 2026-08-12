@@ -184,6 +184,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `EvalSubprocess(expr)` | Evaluates an expression string in a hidden child process; compiled scripts re-enter interpreter mode with `/script` |
 | `EvalNative(expr)` | Evaluates literals, operators, variables, and function calls through the interpreter's in-process expression pipeline |
 | `AttachRemote(pid)` | Opens another AutoHotkey process, reads its PE sections and the three interpreter tables remotely; returns a hook map |
+| `AttachRemoteByName(name)` | Resolves a process ID from the image name, then attaches to it |
 | `RemoteRedirect(hook, name, newName)` | Writes a new function pointer into a running process's BIF table |
 | `RemoteEval(hook, expr)` | Injects a thread into the target and evaluates an expression through its own expression pipeline |
 
@@ -202,6 +203,13 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `WriteRaw(arr, flat)` | Writes exact-dtype bytes into a C-contiguous array |
 
 ## Remote Hook
+
+Think of the target as a running machine. We do not install anything into it
+and it does not have to cooperate: no `#Include`, no exported pointer, no
+callback. We read its memory map, find the labels on its internal shelves
+(`g_BIF`, `sMdFunc`, `g_BIV_A`), then insert a small worker thread through the
+OS remote-thread door. That worker uses the machine's own interpreter
+functions and reports back through a shared memory mailbox.
 
 `AhkMagic.AttachRemote(pid)` reads another AutoHotkey process without
 injecting anything:
@@ -231,10 +239,21 @@ inside the target, then calls the same expression pipeline used by
 `EvalNative`.
 
 ```ahk
-hook := AhkMagic.AttachRemote(pid)
-MsgBox hook["builtins"]["count"]
-AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
-MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")  ; 7, evaluated inside the target
+; Attacher hotkeys: run this script, then press F1/F2/F3
+F1:: {
+    global hook
+    hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+    ToolTip "attached " hook["pid"]
+}
+F2:: {
+    global hook
+    AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+    ToolTip "Abs -> Sin"
+}
+F3:: {
+    global hook
+    ToolTip AhkMagic.RemoteEval(hook, "1 + 2 * 3")  ; 7, inside the target
+}
 ```
 
 The Python tool exposes the same path:
@@ -243,6 +262,12 @@ The Python tool exposes the same path:
 python tools\ahk_remote_attach.py --pid 1234 --eval "1 + 2 * 3"
 python tools\ahk_remote_attach.py --name AutoHotkey64.exe --eval "1 + 2 * 3"
 ```
+
+A runnable hotkey demo is in `tests/remote_hook_hotkey_demo.ahk`. Start any
+AutoHotkey v2 target, start the demo, then press `F1` to attach, `F2` to
+redirect `Abs` to `Sin`, and `F3` to evaluate `1 + 2 * 3` remotely. The target
+hotkey demo in `tests/remote_hotkey_target.ahk` then shows the redirect taking
+effect on `F7`.
 
 The target needs no special code: no `#Include`, no exported pointers, no
 callback, and no embedded metadata. `--name` resolves the PID from the image

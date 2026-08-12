@@ -1311,6 +1311,33 @@ ahkHackLayoutProbe() {
         return best
     }
 
+    static _RemotePidByName(name) {
+        hSnap := DllCall("CreateToolhelp32Snapshot", "UInt", 0x2, "UInt", 0, "Ptr")
+        if hSnap = -1 or !hSnap
+            throw Error("CreateToolhelp32Snapshot failed", -1)
+        buf := Buffer(568)
+        NumPut("UInt", 568, buf, 0)
+        pid := 0
+        try {
+            if !DllCall("Process32FirstW", "Ptr", hSnap, "Ptr", buf.Ptr)
+                throw Error("Process32FirstW failed", -1)
+            loop {
+                exe := StrGet(buf.Ptr + 44, 260, "UTF-16")
+                if StrCompare(exe, name, false) = 0 {
+                    pid := NumGet(buf, 8, "UInt")
+                    break
+                }
+                if !DllCall("Process32NextW", "Ptr", hSnap, "Ptr", buf.Ptr)
+                    break
+            }
+        } finally {
+            DllCall("CloseHandle", "Ptr", hSnap)
+        }
+        if !pid
+            throw Error("process not found: " name, -1)
+        return pid
+    }
+
     static _RemoteRead(h, addr, size) {
         buf := Buffer(size)
         read := 0
@@ -1608,6 +1635,13 @@ ahkHackLayoutProbe() {
         } finally {
             DllCall("CloseHandle", "Ptr", h)
         }
+    }
+
+    static AttachRemoteByName(name) {
+        if !(name is String)
+            throw TypeError("name must be a string", -1)
+        pid := AhkMagic._RemotePidByName(name)
+        return AhkMagic.AttachRemote(pid)
     }
 
     static RemoteRedirect(hook, name, newName) {
