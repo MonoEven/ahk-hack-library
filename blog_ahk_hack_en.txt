@@ -299,6 +299,7 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - [c]RemoteEval[/c] is expression-level ([c]EvalNative[/c]-style); remote [c]EvalScript[/c] that loads multi-line scripts with new function/class definitions into the target is not implemented yet.
 - Remote [c]EvalScript[/c] now works in the target for both functions and classes: [c]add(1, 2)[/c] returns [c]3[/c] and [c]Point(1, 2).y[/c] returns [c]2[/c]. The injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c] so class methods using [c]Super[/c] parse correctly.
 - Remote hooking was verified against an Ahk2Exe-compiled UPX target: remote eval returns [c]7[/c], remote assignment makes [c]F8[/c] write [c]7[/c], and deep redirect changes [c]F7[/c] from [c]1[/c] to [c]0.8414709848078965[/c].
+- Remote hook compatibility matrix: 16/16 interpreter x interpreter combinations passed, and 16/16 Ahk2Exe-compiled UPX target x interpreter combinations passed.
 
 
 [b]8. Closing[/b]

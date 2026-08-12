@@ -315,6 +315,19 @@ definitions (`Point(1, 2).y` returns `2`). The injected thread sets
 `g->CurrentFunc` before `PreparseExpressions`, which is what class methods with
 `Super` need.
 
+Remote hook compatibility matrix (verified):
+
+- 16/16 interpreter x interpreter: attacher and target both run across
+  `2.1-alpha.30`, `2.0.26`, `2.0.0`, `2.0-beta.10` in every combination.
+- 16/16 Ahk2Exe-compiled UPX target x interpreter: targets compiled from each
+  of the four runtimes are hooked by each of the four interpreter versions.
+
+Reproduce with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1
+```
+
 Remote hooking was also verified against an Ahk2Exe-compiled UPX target:
 `RemoteEval("1 + 2 * 3")` returns `7`, `RemoteEval("x := 1 + 2 * 3")` makes the
 target's `F8` write `7`, and `RemoteDeepRedirect` changes the target's `F7`
