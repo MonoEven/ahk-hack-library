@@ -278,7 +278,7 @@ Start the target, press [c]F1[/c] to attach, then [c]F2[/c] to redirect [c]Abs[/
 
 [color=#BF4000][b]6.4 RemoteEval[/b][/color]
 
-[c]RemoteEval(hook, expr)[/c] copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely.
+[c]RemoteEval(hook, expr)[/c] copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely; string literals and string-returning builtins such as [c]SubStr[/c] and [c]Format[/c] are read back correctly too.
 
 The target needs no special code: no [c]#Include[/c], no exported pointers, no callback, and no embedded metadata. The PID file in the test harness is only test orchestration; [c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c] resolves the PID from the image name.
 
@@ -323,29 +323,31 @@ F9:: FileAppend("f9=" B_add(1) "`n", A_Temp "\ahk_remote_evalscript.out")
 
 ; Attacher: tests\remote_hook_evalscript_demo.ahk
 F2:: {
-    AhkMagic.RemoteEvalScript(hook, "
+    script := "
     (
     NewA(x) {
         return 42
     }
     NewA(1)
-    )")
+    )"
+    AhkMagic.RemoteEvalScript(hook, script)
     AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
     Send "{F9}"
 }
 F3:: {
-    AhkMagic.RemoteEvalScript(hook, "
+    classScript := "
     (
     class PointNew {
         x := 0
         y := 0
-        __New(x, y) {
-            this.x := x
-            this.y := y
-        }
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
     }
     PointNew(1, 2).y
-    )")
+    )"
+    AhkMagic.RemoteEvalScript(hook, classScript)
     MsgBox AhkMagic.RemoteEval(hook, "PointNew(1, 2).y") ; 2
 }
 [/codebox]
@@ -451,6 +453,7 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - Added [c]RemoteEvalScript[/c], first with function definitions and then with class definitions (the injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c]);
 - Added [c]RemoteReplaceFuncBody[/c], which swaps function body addresses; hotkey verification changes the result from [c]1[/c] to [c]42[/c];
 - Added [c]tools\verify_remote_compat.ps1[/c]; the remote matrix passed 16/16 interpreter x interpreter and 16/16 UPX target x interpreter combinations;
+- Fixed [c]EvalNative[/c] parsing of braces inside string literals: quoted strings are passed to the interpreter as QSTRING derefs instead of being misparsed as object literals, and remote string results are read on UTF-16 code-unit boundaries;
 - Reorganized the blog structure, split duplicated examples, completed the update log, and moved the Pages remote chapter into its own section.
 
 
@@ -461,8 +464,6 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - UPX/MPRESS compression is verified; third-party packers, VM protectors, or real script encryption still need per-target testing;
 - [c]PatchBif()[/c] and [c]RemoteRedirect()[/c] do not retroactively affect already-cached function objects; use [c]PatchBifObject()[/c]/[c]RemoteDeepRedirect()[/c] for that;
 - [c]RemoteReplaceFuncBody()[/c] requires both the source and destination functions to be loaded in the target process;
-- [c]RemoteEval[/c] is verified for numeric expressions and simple builtin calls; complex string-result paths still need interpreter-thread context calibration;
-- Remote script loading does not require the target and attacher to be the same version; all 16 interpreter x interpreter combinations and the compiled UPX target passed. The target only needs to be a supported 64-bit AutoHotkey v2 runtime.
 
 
 [b]11. Closing[/b]

@@ -278,7 +278,7 @@ F8:: {
 
 [color=#BF4000][b]6.4 RemoteEval[/b][/color]
 
-[c]RemoteEval(hook, expr)[/c]把内部定位器和表达式求值 blob 连同一个小型线程 stub 写进目标进程，用[c]CreateRemoteThread[/c]执行，再读回结果。[c]1 + 2 * 3[/c]、[c]2 * 3.5[/c]这类基础表达式已远程验证。
+[c]RemoteEval(hook, expr)[/c]把内部定位器和表达式求值 blob 连同一个小型线程 stub 写进目标进程，用[c]CreateRemoteThread[/c]执行，再读回结果。[c]1 + 2 * 3[/c]、[c]2 * 3.5[/c]这类基础表达式已远程验证；字符串字面量和返回字符串的内置调用（如[c]SubStr[/c]、[c]Format[/c]）也能正确读回。
 
 目标进程不需要任何特殊代码：不需要[c]#Include[/c]、不需要导出指针、不需要回调，也不需要内嵌元数据。测试脚本里写 PID 文件只是测试编排用的，[c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c]可以直接按映像名解析 PID。
 
@@ -323,29 +323,31 @@ F9:: FileAppend("f9=" B_add(1) "`n", A_Temp "\ahk_remote_evalscript.out")
 
 ; Attacher：tests\remote_hook_evalscript_demo.ahk
 F2:: {
-    AhkMagic.RemoteEvalScript(hook, "
+    script := "
     (
     NewA(x) {
         return 42
     }
     NewA(1)
-    )")
+    )"
+    AhkMagic.RemoteEvalScript(hook, script)
     AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
     Send "{F9}"
 }
 F3:: {
-    AhkMagic.RemoteEvalScript(hook, "
+    classScript := "
     (
     class PointNew {
         x := 0
         y := 0
-        __New(x, y) {
-            this.x := x
-            this.y := y
-        }
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
     }
     PointNew(1, 2).y
-    )")
+    )"
+    AhkMagic.RemoteEvalScript(hook, classScript)
     MsgBox AhkMagic.RemoteEval(hook, "PointNew(1, 2).y") ; 2
 }
 [/codebox]
@@ -451,6 +453,7 @@ UPX 和 MPRESS 压缩也验证过。压缩后的 exe 会改写解释器节名，
 - 新增[c]RemoteEvalScript[/c]，先支持函数定义，再支持 class 定义（注入线程在[c]PreparseExpressions[/c]前设置[c]g->CurrentFunc[/c]）；
 - 新增[c]RemoteReplaceFuncBody[/c]，替换函数体地址，热键验证从[c]1[/c]变成[c]42[/c]；
 - 新增[c]tools\verify_remote_compat.ps1[/c]，远程兼容矩阵解释器 x 解释器 16/16、UPX 目标 x 解释器 16/16 通过；
+- 修复[c]EvalNative[/c]对字符串内花括号的解析：字符串字面量以 QSTRING deref 交给解释器，不再误判为对象字面量；远程字符串结果改为按 UTF-16 字符边界读取；
 - 重排博客章节，拆分重复示例并补齐更新记录；Pages 远程章节独立成章。
 
 
@@ -461,8 +464,6 @@ UPX 和 MPRESS 压缩也验证过。压缩后的 exe 会改写解释器节名，
 - UPX/MPRESS 压缩已验证；第三方壳、VM 保护或真正的脚本加密仍需逐个目标验证；
 - [c]PatchBif()[/c]和[c]RemoteRedirect()[/c]对已经缓存的函数对象不追溯生效，需要[c]PatchBifObject()[/c]/[c]RemoteDeepRedirect()[/c]；
 - [c]RemoteReplaceFuncBody()[/c]要求源函数和目标函数都已加载进目标进程；
-- [c]RemoteEval[/c]已验证数字表达式和简单内置调用；依赖字符串结果缓冲的复杂表达式仍需在解释器线程上下文里进一步校准；
-- 远程脚本加载不要求目标与挂载脚本版本一致；四个解释器版本互相组合和编译 UPX 目标均已验证，只要求目标是受支持的 x64 AutoHotkey v2 运行时。
 
 
 [b]11. 写在后面[/b]

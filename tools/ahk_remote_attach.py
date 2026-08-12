@@ -19,6 +19,7 @@ import ctypes.wintypes as wt
 import json
 import struct
 import sys
+import uuid
 from pathlib import Path
 
 
@@ -223,10 +224,12 @@ class RemoteProcess:
             if not data:
                 break
             out += data
-            if b"\x00\x00" in out:
-                break
-        text = out.split(b"\x00\x00", 1)[0]
-        return text.decode("utf-16-le", errors="replace")
+            # A UTF-16 terminator must start at an even byte offset; scanning
+            # every byte offset would cut at the high byte of the last char.
+            for i in range(0, len(out) - 1, 2):
+                if out[i] == 0 and out[i + 1] == 0:
+                    return out[:i].decode("utf-16-le", errors="replace")
+        return out.decode("utf-16-le", errors="replace")
 
     def close(self):
         if self.handle:
@@ -797,6 +800,7 @@ def remote_discover_layout(proc: RemoteProcess, pe: RemotePE, loc):
     snap = proc.read(gscript, 0x200)
     gsnap = proc.read(g, 0x100)
     saved_cur = struct.unpack_from("<Q", proc.read(g + curr_off, 8))[0]
+    proc.write(g, b"\x00" * 0x100)
     proc.write(g + curr_off, struct.pack("<Q", 0))
     parser = loc["parser"]
     for key in [
@@ -821,7 +825,8 @@ def remote_discover_layout(proc: RemoteProcess, pe: RemotePE, loc):
     if "mclass_count" in parser:
         proc.write(gscript + parser["mclass_count"], struct.pack("<i", 0))
 
-    probe = "ahkHackLayoutProbe() {\n    return 1\n}"
+    probe_name = "ahkHackLayoutProbe_%s" % uuid.uuid4().hex[:12]
+    probe = "%s() {\n    return 1\n}" % probe_name
     rc = remote_load_script(proc, pe, loc, probe)
     if rc != 0:
         raise RuntimeError("layout probe load rc=%d" % rc)
@@ -899,6 +904,7 @@ def remote_discover_layout(proc: RemoteProcess, pe: RemotePE, loc):
     proc.write(g + curr_off, struct.pack("<Q", saved_cur))
 
     return {
+        "loc_out": loc_out,
         "gscript": gscript,
         "g": g,
         "curr_off": curr_off,
@@ -914,7 +920,7 @@ def remote_eval_script(proc: RemoteProcess, pe: RemotePE, report, text: str, lay
     loc = remote_locate_eval_script(pe)
     if layout is None:
         layout = remote_discover_layout(proc, pe, loc)
-    loc_out = remote_internal_locator(
+    loc_out = layout.get("loc_out") or remote_internal_locator(
         proc, pe, loc["postfix_rva"], loc["expand_rva"]
     )
     loc["loc_out"] = loc_out
@@ -929,6 +935,7 @@ def remote_eval_script(proc: RemoteProcess, pe: RemotePE, report, text: str, lay
         "<i", proc.read(gscript + layout["mfuncs_count_off"], 4)
     )[0]
     saved_cur = struct.unpack_from("<Q", proc.read(g + curr_off, 8))[0]
+    saved_cur_func = struct.unpack_from("<Q", proc.read(g + 0x28, 8))[0]
 
     ptr_keys = [
         "mopen",
@@ -954,8 +961,16 @@ def remote_eval_script(proc: RemoteProcess, pe: RemotePE, report, text: str, lay
             saved.append((key, "B", proc.read(gscript + parser[key], 1)))
 
     try:
-        for key, fmt, _ in saved:
-            if key in ptr_keys:
+        for key in [
+            "mopen",
+            "mpending_parent",
+            "mline_parent",
+            "mpending_related",
+            "mlast_param_init",
+            "mpending_hotkey",
+            "mexpr_func",
+        ]:
+            if key in parser:
                 proc.write(gscript + parser[key], struct.pack("<Q", 0))
         if "mexpr_func_index" in parser:
             proc.write(gscript + parser["mexpr_func_index"], struct.pack("<i", 0x7FFFFFFF))
@@ -1002,6 +1017,7 @@ def remote_eval_script(proc: RemoteProcess, pe: RemotePE, report, text: str, lay
                 )[0]
                 if not jump:
                     continue
+                proc.write(g + 0x28, struct.pack("<Q", new_func))
                 rc = remote_call(
                     proc,
                     pe.image_base + loc["preparse_rva"],
@@ -1093,6 +1109,7 @@ def remote_eval_script(proc: RemoteProcess, pe: RemotePE, report, text: str, lay
                 )
                 if rc != 1:
                     raise RuntimeError("PreprocessLocalVars rc=%d" % rc)
+                proc.write(g + 0x28, struct.pack("<Q", saved_cur_func))
 
         proc.write(g + curr_off, struct.pack("<Q", 0))
         last = ""
@@ -1130,6 +1147,7 @@ def remote_eval_script(proc: RemoteProcess, pe: RemotePE, report, text: str, lay
     finally:
         for key, fmt, data in saved:
             proc.write(gscript + parser[key], data)
+        proc.write(g + 0x28, struct.pack("<Q", saved_cur_func))
         proc.write(g + curr_off, struct.pack("<Q", saved_cur))
 
 

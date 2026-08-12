@@ -46,6 +46,7 @@ typedef int i32;
 #define DEREF_LEN_OFF 20
 #define DEREF_SIZE 24
 #define DT_VAR 0
+#define DT_QSTRING 3
 #define DT_FUNCREF 7
 
 #define VARREF_REF 3
@@ -151,9 +152,10 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
 
     if (!arg_override)
     {
-        /* Lightweight deref scan: mark identifiers so the interpreter can
-         * resolve variables and function names.  Literals and operators are
-         * handled by ExpressionToPostfix's raw-text parser. */
+        /* Lightweight deref scan: mark identifiers and quoted strings so the
+         * interpreter can resolve variables/function names and tokenize string
+         * literals.  Literals and operators are handled by
+         * ExpressionToPostfix's raw-text parser. */
         deref_count = 0;
         cp16 = (u16 *)expr_ptr;
         while (*cp16)
@@ -161,14 +163,26 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
             if (*cp16 == '"' || *cp16 == '\'')
             {
                 u16 quote = *cp16++;
+                u16 *start = cp16;
                 while (*cp16 && *cp16 != quote)
                 {
                     if (*cp16 == '`' && cp16[1])
                         ++cp16;
                     ++cp16;
                 }
-                if (*cp16)
-                    ++cp16;
+                if (!*cp16)
+                    break; /* unterminated string; let ExpressionToPostfix report it */
+                if (deref_count < 255)
+                {
+                    u64 e = final_deref + deref_count * DEREF_SIZE;
+                    *(u64 *)(e + DEREF_MARKER_OFF) = (u64)start;
+                    *(u8 *)(e + DEREF_VALUE_OFF) = 1; /* terminal */
+                    *(u8 *)(e + DEREF_TYPE_OFF) = DT_QSTRING;
+                    *(u8 *)(e + 17) = 1; /* substring_count */
+                    *(u32 *)(e + DEREF_LEN_OFF) = (u32)(cp16 - start);
+                    ++deref_count;
+                }
+                ++cp16; /* skip closing quote */
                 continue;
             }
             if (is_ident_start(*cp16))

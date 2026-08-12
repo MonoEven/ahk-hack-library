@@ -306,9 +306,8 @@ The target needs no special code: no `#Include`, no exported pointers, no
 callback, and no embedded metadata. `--name` resolves the PID from the image
 name, so the PID file in the test harness is only test orchestration.
 
-`RemoteEval` is verified for numeric expressions and simple builtin calls.
-Expressions that depend on string-result buffers may need interpreter-thread
-context calibration.
+`RemoteEval` is verified for numeric expressions, builtin calls, string
+literals, and string-returning builtins such as `SubStr` and `Format`.
 
 `RemoteEvalScript` loads multi-line scripts inside the target, including new
 function definitions (`add(a, b)` plus `add(1, 2)` returns `3`) and class
