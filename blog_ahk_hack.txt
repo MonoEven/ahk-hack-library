@@ -191,12 +191,7 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 已验证：2.1-alpha.30、2.0.26、2.0.0、2.0-beta.10（均为 64 位）。
 
-Ahk2Exe 打包同样验证过。编译出的 exe 内嵌的还是同一个 AutoHotkey 运行时，
-[c]Init[/c]、[c]EvalNative[/c]、[c]EvalScript[/c] 仍会扫描该模块并在进程内求值。
-下面这个探针在四个版本上全部通过，打包时把[c]AutoHotkey64.exe[/c]作为
-[c]/base[/c]传给 Ahk2Exe 即可。[c]EvalSubprocess[/c]现在也能正常工作：
-普通 v2 运行时支持[c]/script[/c]，可以让编译后的 exe 重新进入解释器模式，
-再运行临时脚本。
+Ahk2Exe 打包同样验证过。编译出的 exe 内嵌的还是同一个 AutoHotkey 运行时，[c]Init[/c]、[c]EvalNative[/c]、[c]EvalScript[/c] 仍会扫描该模块并在进程内求值。下面这个探针在四个版本上全部通过，打包时把[c]AutoHotkey64.exe[/c]作为[c]/base[/c]传给 Ahk2Exe 即可。[c]EvalSubprocess[/c]现在也能正常工作：普通 v2 运行时支持[c]/script[/c]，可以让编译后的 exe 重新进入解释器模式，再运行临时脚本。
 
 [codebox=text file=compiled]
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
@@ -237,10 +232,8 @@ Ahk2Exe 打包同样验证过。编译出的 exe 内嵌的还是同一个 AutoHo
 
 2026-08-12：
 
-- 在四个版本上用 Ahk2Exe 编译后验证[c]Init[/c]、[c]EvalNative[/c]、
-[c]EvalScript[/c]仍然可用；编译 exe 内嵌同一个运行时，动态定位器照常工作；
-- [c]EvalSubprocess[/c]现在在编译版里也能工作：编译 exe 通过[c]/script[/c]
-重新进入解释器模式来执行临时[c].ahk[/c]。
+- 在四个版本上用 Ahk2Exe 编译后验证[c]Init[/c]、[c]EvalNative[/c]、[c]EvalScript[/c]仍然可用；编译 exe 内嵌同一个运行时，动态定位器照常工作；
+- [c]EvalSubprocess[/c]现在在编译版里也能工作：编译 exe 通过[c]/script[/c]重新进入解释器模式来执行临时[c].ahk[/c]。
 
 
 [b]7. 已知限制[/b]
@@ -1537,7 +1530,12 @@ ahkHackLayoutProbe() {
             . "}`n"
         FileAppend script, scriptFile, "UTF-8"
         try {
-            RunWait Format('"{1}" /ErrorStdOut "{2}"', A_AhkPath, scriptFile), , "Hide"
+            ; Compiled exes built from the regular v2 runtime can re-enter
+            ; interpreter mode with /script; the SC build does not support it.
+            cmd := A_IsCompiled
+                ? Format('"{1}" /script /ErrorStdOut "{2}"', A_AhkPath, scriptFile)
+                : Format('"{1}" /ErrorStdOut "{2}"', A_AhkPath, scriptFile)
+            RunWait cmd, , "Hide"
             if !FileExist(resultFile)
                 throw Error("eval child produced no result", -1)
             result := FileRead(resultFile, "UTF-8")
