@@ -37,7 +37,24 @@ try {
     watcher["Stop"]()
     FileAppend("watch_count=" watchLog.Length " first=" (watchLog.Length ? watchLog[1] : "") "`n", outFile)
 
+    globals := AhkLive.Globals(hook, ["pidFile"])
+    FileAppend("pidFile=" globals["pidFile"] "`n", outFile)
+    funcs := AhkLive.ListFunctions(hook)
+    FileAppend("func_count=" funcs.Count
+        . " add_params=" AhkLive._JoinList(funcs["Add"]["params"]) "`n", outFile)
+    FileAppend("name_off=" hook["name_off"] "`n", outFile)
+    classes := AhkLive.ListClasses(hook)
+    FileAppend("class_count=" classes.Count
+        . " point_methods=" AhkLive._JoinList(_Keys(classes["Point"])) "`n", outFile)
+
     FileAppend("PASS`n", outFile)
 } catch as e {
     FileAppend("FAIL " e.What " | " e.Message " | line " e.Line "`n", outFile)
+}
+
+_Keys(map) {
+    out := []
+    for key in map
+        out.Push(key)
+    return out
 }

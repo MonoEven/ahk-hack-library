@@ -20,6 +20,16 @@ NewMul(x) {
     return 99
 }
 
+class Point {
+    x := 0
+    __New(x) {
+        this.x := x
+    }
+    Get() {
+        return this.x
+    }
+}
+
 F9:: {
     global outFile
     if !IsSet(outFile)
