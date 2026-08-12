@@ -202,7 +202,8 @@ python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
 Think of the target as a running machine. We do not install anything into it and it does not have to cooperate: no [c]#Include[/c], no exported pointer, no callback. We read its memory map, find the labels on its internal shelves, then insert a small worker thread through the OS remote-thread door. The same path is exposed as an AHK hook API. [c]AttachRemoteByName("AutoHotkey64.exe")[/c] finds the running process by image name, opens it with [c]OpenProcess[/c], reads PE headers and data sections through [c]ReadProcessMemory[/c], scans anchor names and sorted runs to locate the three tables, and returns a map with [c]image_base[/c], [c]table_rva[/c], and entries. [c]RemoteRedirect(hook, "Abs", "Sin")[/c] reopens with write access and writes the destination function pointer into the source entry's [c]fn_ptr[/c] slot.
 
 [codebox=autohotkey file=remote-hook]
-; Attacher hotkeys
+; Target: tests\remote_hook_resident_target.ahk (resident, F7/F8)
+; Attacher: tests\remote_hook_resident_demo.ahk
 F1:: {
     global hook
     hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
@@ -210,10 +211,16 @@ F1:: {
 F2:: {
     global hook
     AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+    Send "{F7}"          ; activate target hotkey to verify
+    Sleep 400
+    ; read back f7=0.8414709848078965
 }
 F3:: {
     global hook
-    MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")
+    AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
+    Send "{F8}"          ; activate target hotkey to verify
+    Sleep 400
+    ; read back f8=7
 }
 [/codebox]
 
@@ -221,7 +228,7 @@ The same injection path powers [c]RemoteEval[/c]: it copies the internal locator
 
 The target needs no special code: no [c]#Include[/c], no exported pointers, no callback, and no embedded metadata. [c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c] resolves the PID from the image name, so the PID file in the test harness is only test orchestration.
 
-Live verification: start [c]tests\remote_hotkey_target.ahk[/c], redirect [c]Abs[/c] to [c]Sin[/c], then run [c]tests\remote_hotkey_trigger.ahk[/c]. The [c]F7[/c] hotkey writes [c]0.8414709848078965[/c] ([c]Sin(1)[/c]) instead of [c]1[/c] ([c]Abs(1)[/c]).
+Live verification: start [c]tests\remote_hook_resident_target.ahk[/c], redirect [c]Abs[/c] to [c]Sin[/c], then send [c]F7[/c] to the target. It writes [c]0.8414709848078965[/c] ([c]Sin(1)[/c]) instead of [c]1[/c] ([c]Abs(1)[/c]). Remote eval [c]x := 1 + 2 * 3[/c] is verified by sending [c]F8[/c], which writes [c]7[/c].
 
 [codebox=text file=compiled]
 # Plain compile

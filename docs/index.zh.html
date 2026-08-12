@@ -473,13 +473,17 @@ try {
 F2:: {
     global hook
     AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+    Send "{F7}"          ; 触发目标热键校验
+    Sleep 400
 }
 F3:: {
     global hook
-    MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")
+    AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
+    Send "{F8}"          ; 触发目标热键校验
+    Sleep 400
 }</code></pre>
         <p><code>RemoteEval(hook, expr)</code>把 Hook 再推进一步：向目标进程注入线程 stub、内部定位器和求值 blob，用 <code>CreateRemoteThread</code> 执行并读回结果。</p>
-        <p>实测验证：启动 <code>tests/remote_hotkey_target.ahk</code>，把 <code>Abs</code> 重定向为 <code>Sin</code>，再运行 <code>tests/remote_hotkey_trigger.ahk</code>。<code>F7</code> 热键会输出 <code>0.8414709848078965</code>（即 <code>Sin(1)</code>），而不是原来的 <code>1</code>。</p>
+        <p>实测验证：启动 <code>tests/remote_hook_resident_target.ahk</code>，把 <code>Abs</code> 重定向为 <code>Sin</code>，再向目标发送 <code>F7</code>。它会输出 <code>0.8414709848078965</code>（即 <code>Sin(1)</code>），而不是原来的 <code>1</code>。远程执行 <code>x := 1 + 2 * 3</code> 后发送 <code>F8</code>，目标会写出 <code>7</code>。</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk

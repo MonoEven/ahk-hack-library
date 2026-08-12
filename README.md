@@ -238,21 +238,31 @@ discovers `gScript`, `finalize`, `findOrAddVar`, `crtFree`, and `symInvalid`
 inside the target, then calls the same expression pipeline used by
 `EvalNative`.
 
+Resident hotkey verification pattern:
+
+- `tests/remote_hook_resident_target.ahk` is the target. It stays resident and
+  binds `F7` to write dynamic `%name%(1)` and `F8` to write global `x`.
+- `tests/remote_hook_resident_demo.ahk` is the attacher. Every hook step sends
+  the matching target hotkey and reads the result back.
+
 ```ahk
-; Attacher hotkeys: run this script, then press F1/F2/F3
 F1:: {
     global hook
     hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
-    ToolTip "attached " hook["pid"]
 }
 F2:: {
     global hook
     AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
-    ToolTip "Abs -> Sin"
+    Send "{F7}"          ; activate target hotkey to verify
+    Sleep 400
+    ; read back f7=0.8414709848078965
 }
 F3:: {
     global hook
-    ToolTip AhkMagic.RemoteEval(hook, "1 + 2 * 3")  ; 7, inside the target
+    AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
+    Send "{F8}"          ; activate target hotkey to verify
+    Sleep 400
+    ; read back f8=7
 }
 ```
 
@@ -263,11 +273,13 @@ python tools\ahk_remote_attach.py --pid 1234 --eval "1 + 2 * 3"
 python tools\ahk_remote_attach.py --name AutoHotkey64.exe --eval "1 + 2 * 3"
 ```
 
-A runnable hotkey demo is in `tests/remote_hook_hotkey_demo.ahk`. Start any
-AutoHotkey v2 target, start the demo, then press `F1` to attach, `F2` to
-redirect `Abs` to `Sin`, and `F3` to evaluate `1 + 2 * 3` remotely. The target
-hotkey demo in `tests/remote_hotkey_target.ahk` then shows the redirect taking
-effect on `F7`.
+After each hook step, the target hotkey output changes:
+
+```text
+attached 28504
+after redirect f7=0.8414709848078965
+after eval f8=7
+```
 
 The target needs no special code: no `#Include`, no exported pointers, no
 callback, and no embedded metadata. `--name` resolves the PID from the image

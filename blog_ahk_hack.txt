@@ -202,7 +202,8 @@ python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
 把目标进程想象成一台正在运行的机器。我们不往里面安装任何东西，它也不需要配合：不需要[c]#Include[/c]、不需要导出指针、不需要回调。我们读取它的内存地图，找到内部架子上的标签，再通过操作系统的远程线程入口放进一个小工人。同一套流程也做成了 AHK Hook API。[c]AttachRemoteByName("AutoHotkey64.exe")[/c]按映像名找到运行中的目标进程，用[c]OpenProcess[/c]打开，用[c]ReadProcessMemory[/c]读取 PE 头和 data 节，扫描锚点名和连续排序记录定位三张表，返回包含[c]image_base[/c]、[c]table_rva[/c]和条目的 Map。[c]RemoteRedirect(hook, "Abs", "Sin")[/c]以写权限重新打开目标，把目标函数指针写进源条目对应的[c]fn_ptr[/c]槽。
 
 [codebox=autohotkey file=remote-hook]
-; Attacher 热键
+; 目标：tests\remote_hook_resident_target.ahk（常驻，F7/F8）
+; Attacher：tests\remote_hook_resident_demo.ahk
 F1:: {
     global hook
     hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
@@ -210,10 +211,16 @@ F1:: {
 F2:: {
     global hook
     AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+    Send "{F7}"          ; 触发目标热键校验
+    Sleep 400
+    ; 读回 f7=0.8414709848078965
 }
 F3:: {
     global hook
-    MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")
+    AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
+    Send "{F8}"          ; 触发目标热键校验
+    Sleep 400
+    ; 读回 f8=7
 }
 [/codebox]
 
@@ -221,7 +228,7 @@ F3:: {
 
 目标进程不需要任何特殊代码：不需要[c]#Include[/c]、不需要导出指针、不需要回调，也不需要内嵌元数据。[c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c]可以直接按映像名解析 PID，测试脚本里写 PID 文件只是测试编排用的。
 
-实测验证：启动[c]tests\remote_hotkey_target.ahk[/c]，把[c]Abs[/c]重定向为[c]Sin[/c]，再运行[c]tests\remote_hotkey_trigger.ahk[/c]。[c]F7[/c]热键会输出[c]0.8414709848078965[/c]（即[c]Sin(1)[/c]），而不是原来的[c]1[/c]。
+实测验证：启动[c]tests\remote_hook_resident_target.ahk[/c]，把[c]Abs[/c]重定向为[c]Sin[/c]，再向目标发送[c]F7[/c]。它会输出[c]0.8414709848078965[/c]（即[c]Sin(1)[/c]），而不是原来的[c]1[/c]。远程执行[c]x := 1 + 2 * 3[/c]后发送[c]F8[/c]，目标会写出[c]7[/c]。
 
 [codebox=text file=compiled]
 # 普通编译

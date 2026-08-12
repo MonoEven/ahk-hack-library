@@ -473,13 +473,17 @@ try {
 F2:: {
     global hook
     AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+    Send "{F7}"          ; activate target hotkey to verify
+    Sleep 400
 }
 F3:: {
     global hook
-    MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")
+    AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
+    Send "{F8}"          ; activate target hotkey to verify
+    Sleep 400
 }</code></pre>
         <p><code>RemoteEval(hook, expr)</code> takes the hook one level further: it injects a thread stub plus the internal locator and evaluator blobs, runs them with <code>CreateRemoteThread</code>, and reads the result back.</p>
-        <p>Live verification: start <code>tests/remote_hotkey_target.ahk</code>, redirect <code>Abs</code> to <code>Sin</code>, then run <code>tests/remote_hotkey_trigger.ahk</code>. The <code>F7</code> hotkey writes <code>0.8414709848078965</code> (<code>Sin(1)</code>) instead of <code>1</code> (<code>Abs(1)</code>).</p>
+        <p>Live verification: start <code>tests/remote_hook_resident_target.ahk</code>, redirect <code>Abs</code> to <code>Sin</code>, then send <code>F7</code> to the target. It writes <code>0.8414709848078965</code> (<code>Sin(1)</code>) instead of <code>1</code> (<code>Abs(1)</code>). Remote eval <code>x := 1 + 2 * 3</code> is verified by sending <code>F8</code>, which writes <code>7</code>.</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
