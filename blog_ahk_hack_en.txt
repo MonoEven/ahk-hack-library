@@ -193,7 +193,11 @@ Verified on 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
 
 Ahk2Exe packaging was also verified. The compiled exe embeds the same AutoHotkey runtime, so [c]Init[/c], [c]EvalNative[/c], and [c]EvalScript[/c] keep scanning the module and evaluating in-process. The probe below passed on all four versions when [c]AutoHotkey64.exe[/c] was passed to Ahk2Exe as [c]/base[/c]. [c]EvalSubprocess[/c] also works: the regular v2 runtime accepts [c]/script[/c], so the compiled exe is relaunched in interpreter mode to run the temp script.
 
-UPX and MPRESS compression were verified too. Packed executables rename the interpreter sections, so the scanner falls back to content-based section classification and still finds the tables; [c]EvalNative[/c], [c]EvalScript[/c], and [c]EvalSubprocess[/c] all pass. This Ahk2Exe build rejects [c]/pass[/c] encryption with an explicit error.
+UPX and MPRESS compression were verified too. Packed executables rename the interpreter sections, so the scanner falls back to content-based section classification and still finds the tables; [c]EvalNative[/c], [c]EvalScript[/c], and [c]EvalSubprocess[/c] all pass. A running process can also be inspected from outside: [c]tools\ahk_remote_attach.py --pid <pid>[/c] attaches with [c]ReadProcessMemory[/c], reuses the same anchor/run scan, and reports the three interpreter tables without injecting anything. It can also redirect a builtin in the live table, for example [c]--redirect Abs Sin[/c].
+
+[codebox=text file=remote]
+python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
+[/codebox]
 
 [codebox=text file=compiled]
 # Plain compile
@@ -246,7 +250,7 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - Verified [c]Init[/c], [c]EvalNative[/c], and [c]EvalScript[/c] in Ahk2Exe-compiled executables on all four versions; the compiled exe embeds the same runtime and the dynamic locators still work;
 - [c]EvalSubprocess[/c] now works in compiled executables by relaunching them with [c]/script[/c], which lets the regular v2 runtime interpret the temporary [c].ahk[/c].
 - Added fallback section classification so UPX/MPRESS-compressed executables keep working;
-- Confirmed this Ahk2Exe build rejects [c]/pass[/c] password encryption.
+- Added [c]tools\ahk_remote_attach.py[/c] to attach to a running AutoHotkey process by PID, scan its interpreter tables remotely, and redirect builtins in the live table (for example [c]Abs -> Sin[/c]).
 
 
 [b]7. Known limitations[/b]

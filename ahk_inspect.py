@@ -264,8 +264,15 @@ def _find_candidates(pe, kind):
         }[kind]
     min_run = {"bif": 30, "mdfunc": 20, "biv": 30}[kind]
     candidates = []
+    data_names = [
+        s["name"] for s in pe.sections if s["name"] in (".data", ".rdata")
+    ]
+    if not data_names:
+        # Packed executables (UPX, MPRESS) rename the interpreter sections,
+        # so fall back to every non-resource section for the same anchors.
+        data_names = [s["name"] for s in pe.sections if s["name"] != ".rsrc"]
     for sec in pe.sections:
-        if sec["name"] not in (".data", ".rdata"):
+        if sec["name"] not in data_names:
             continue
         max_off = min(len(sec["data"]), sec["size"])
         n = (max_off - 2 * pe.ptr_size) // pe.ptr_size + 1

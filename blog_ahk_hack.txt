@@ -193,7 +193,11 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 Ahk2Exe 打包同样验证过。编译出的 exe 内嵌的还是同一个 AutoHotkey 运行时，[c]Init[/c]、[c]EvalNative[/c]、[c]EvalScript[/c] 仍会扫描该模块并在进程内求值。下面这个探针在四个版本上全部通过，打包时把[c]AutoHotkey64.exe[/c]作为[c]/base[/c]传给 Ahk2Exe 即可。[c]EvalSubprocess[/c]现在也能正常工作：普通 v2 运行时支持[c]/script[/c]，可以让编译后的 exe 重新进入解释器模式，再运行临时脚本。
 
-UPX 和 MPRESS 压缩也验证过。压缩后的 exe 会改写解释器节名，扫描器会退回到基于内容的节分类，仍然能找到三张表；[c]EvalNative[/c]、[c]EvalScript[/c]、[c]EvalSubprocess[/c]全部通过。当前这个 Ahk2Exe 版本不支持[c]/pass[/c]加密，会直接报错。
+UPX 和 MPRESS 压缩也验证过。压缩后的 exe 会改写解释器节名，扫描器会退回到基于内容的节分类，仍然能找到三张表；[c]EvalNative[/c]、[c]EvalScript[/c]、[c]EvalSubprocess[/c]全部通过。正在运行的进程也可以从外部挂载：[c]tools\ahk_remote_attach.py --pid <pid>[/c]用[c]ReadProcessMemory[/c]读取目标进程，复用同一套锚点和连续记录扫描，直接报告三张内部表，不需要注入；还可以改写运行中的内置函数表，例如[c]--redirect Abs Sin[/c]。
+
+[codebox=text file=remote]
+python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
+[/codebox]
 
 [codebox=text file=compiled]
 # 普通编译
@@ -246,7 +250,7 @@ UPX 和 MPRESS 压缩也验证过。压缩后的 exe 会改写解释器节名，
 - 在四个版本上用 Ahk2Exe 编译后验证[c]Init[/c]、[c]EvalNative[/c]、[c]EvalScript[/c]仍然可用；编译 exe 内嵌同一个运行时，动态定位器照常工作；
 - [c]EvalSubprocess[/c]现在在编译版里也能工作：编译 exe 通过[c]/script[/c]重新进入解释器模式来执行临时[c].ahk[/c]。
 - 增加基于内容的节分类回退，UPX/MPRESS 压缩后的 exe 仍然可用；
-- 确认当前 Ahk2Exe 版本不支持[c]/pass[/c]密码加密。
+- 新增[c]tools\ahk_remote_attach.py[/c]，按 PID 挂到正在运行的 AutoHotkey 进程，远程扫描解释器三张表，并支持改写运行中的内置函数表（例如[c]Abs -> Sin[/c]）。
 
 
 [b]7. 已知限制[/b]

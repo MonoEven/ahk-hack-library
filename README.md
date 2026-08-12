@@ -294,8 +294,9 @@ mode to run the temporary script.
 
 UPX/MPRESS compression also keeps the pipeline working. The scanner falls back
 to content-based section classification when packers rename `.text`,
-`.rdata`, and `.data` (UPX0/UPX1, .MPRESS1/...). This Ahk2Exe build does not
-support `/pass` encryption and rejects it explicitly.
+`.rdata`, and `.data` (UPX0/UPX1, .MPRESS1/...). A separate
+`tools/ahk_remote_attach.py` can attach to a running AutoHotkey process by PID
+and scan the same tables remotely with `ReadProcessMemory`.
 
 ## Project Layout
 
@@ -309,6 +310,7 @@ tools/
   build_mcode.py            compiles and embeds the machine code
   ahk_inspect.py            Python/PE cross-check analyzer
   locate_internal_functions.py locates the internal expression parser/evaluator
+  ahk_remote_attach.py      attach to a running AutoHotkey process and scan its tables
 tests/                      core, export, and eval tests
 examples/                   export inventory and built-in probe demos
 fork/cnumpy-ahk-bridge/     cnumpy integration tests and benchmarks
@@ -389,6 +391,12 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 # Per-version internal address probe
 & D:\...\AutoHotkey64.exe tests\version_probe.ahk
+
+# Attach to a running AutoHotkey process and scan its tables remotely
+python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
+
+# Redirect a builtin in the live table (e.g. Abs -> Sin)
+python tools\ahk_remote_attach.py --pid 1234 --redirect Abs Sin
 
 # cnumpy integration, including 1D/2D/3D native construction
 & D:\...\AutoHotkey64.exe fork\cnumpy-ahk-bridge\tests\cnumpy_bridge.test.ahk
