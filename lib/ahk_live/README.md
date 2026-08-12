@@ -32,6 +32,18 @@ session.Close()
 
 `AhkLive.VERSION` is `1.0.0`.
 
+## Headless CLI
+
+```powershell
+AutoHotkey64.exe ahk_live_cli.ahk --eval <pid> "1 + 2 * 3"
+AutoHotkey64.exe ahk_live_cli.ahk --functions <pid>
+AutoHotkey64.exe ahk_live_cli.ahk --classes <pid>
+AutoHotkey64.exe ahk_live_cli.ahk --version
+```
+
+Output is written to `%TEMP%\ahk_live_cli.out`; the process returns a nonzero
+exit code on failure.
+
 ## API
 
 | Method | Purpose |
