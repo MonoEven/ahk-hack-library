@@ -158,6 +158,8 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
   with an optional name filter.
 - `examples/ahk_hack_builtin_probe.ahk` - prints RVA, absolute address, and
   parameter counts for built-in functions by name.
+- `examples/ahk_hack_compiled_demo.ahk` - MsgBox demo for Ahk2Exe-compiled
+  exes: in-process Eval, function definition, and class access.
 
 ```powershell
 & D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
@@ -370,6 +372,10 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 # Ahk2Exe packaged exe (use the AutoHotkey v2 runtime as /base)
 & D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
 & build\compiled_eval_probe.exe
+
+# Interactive compiled demo (shows a MsgBox)
+& D:\...\Compiler2\Ahk2Exe.exe /in examples\ahk_hack_compiled_demo.ahk /out build\compiled_eval_demo.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /silent verbose
+& build\compiled_eval_demo.exe
 
 # Per-version internal address probe
 & D:\...\AutoHotkey64.exe tests\version_probe.ahk
