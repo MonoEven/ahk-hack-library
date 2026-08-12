@@ -468,6 +468,7 @@ try {
         <p><code>AttachRemote(pid)</code> exposes the same scan as an AHK hook API: <code>OpenProcess</code> plus <code>ReadProcessMemory</code>, PE section parsing, and the anchor/run table scan. <code>RemoteRedirect(hook, "Abs", "Sin")</code> then writes the new function pointer into the live BIF slot.</p>
         <pre><code>hook := AhkMagic.AttachRemote(pid)
 AhkMagic.RemoteRedirect(hook, "Abs", "Sin")</code></pre>
+        <p><code>RemoteEval(hook, expr)</code> takes the hook one level further: it injects a thread stub plus the internal locator and evaluator blobs, runs them with <code>CreateRemoteThread</code>, and reads the result back.</p>
         <p>Live verification: start <code>tests/remote_hotkey_target.ahk</code>, redirect <code>Abs</code> to <code>Sin</code>, then run <code>tests/remote_hotkey_trigger.ahk</code>. The <code>F7</code> hotkey writes <code>0.8414709848078965</code> (<code>Sin(1)</code>) instead of <code>1</code> (<code>Abs(1)</code>).</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk

@@ -33,9 +33,15 @@ PROCESS_QUERY_INFORMATION = 0x0400
 PROCESS_VM_READ = 0x0010
 PROCESS_VM_WRITE = 0x0020
 PROCESS_VM_OPERATION = 0x0008
+PROCESS_CREATE_THREAD = 0x0002
 TH32CS_SNAPMODULE = 0x00000008
 TH32CS_SNAPMODULE32 = 0x00000010
 MAX_PATH = 260
+MEM_COMMIT = 0x1000
+MEM_RESERVE = 0x2000
+MEM_RELEASE = 0x8000
+PAGE_EXECUTE_READWRITE = 0x40
+INFINITE = 0xFFFFFFFF
 
 
 class MODULEENTRY32W(ctypes.Structure):
@@ -80,6 +86,30 @@ kernel32.Module32FirstW.argtypes = [wt.HANDLE, ctypes.POINTER(MODULEENTRY32W)]
 kernel32.Module32FirstW.restype = wt.BOOL
 kernel32.Module32NextW.argtypes = [wt.HANDLE, ctypes.POINTER(MODULEENTRY32W)]
 kernel32.Module32NextW.restype = wt.BOOL
+kernel32.VirtualAllocEx.argtypes = [
+    wt.HANDLE,
+    wt.LPVOID,
+    ctypes.c_size_t,
+    wt.DWORD,
+    wt.DWORD,
+]
+kernel32.VirtualAllocEx.restype = wt.LPVOID
+kernel32.VirtualFreeEx.argtypes = [wt.HANDLE, wt.LPVOID, ctypes.c_size_t, wt.DWORD]
+kernel32.VirtualFreeEx.restype = wt.BOOL
+kernel32.CreateRemoteThread.argtypes = [
+    wt.HANDLE,
+    wt.LPVOID,
+    ctypes.c_size_t,
+    wt.LPVOID,
+    wt.LPVOID,
+    wt.DWORD,
+    ctypes.POINTER(wt.DWORD),
+]
+kernel32.CreateRemoteThread.restype = wt.HANDLE
+kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
+kernel32.WaitForSingleObject.restype = wt.DWORD
+kernel32.GetExitCodeThread.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+kernel32.GetExitCodeThread.restype = wt.BOOL
 
 
 class RemoteProcess:
@@ -87,7 +117,11 @@ class RemoteProcess:
         self.pid = pid
         access = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
         if write_access:
-            access |= PROCESS_VM_WRITE | PROCESS_VM_OPERATION
+            access |= (
+                PROCESS_VM_WRITE
+                | PROCESS_VM_OPERATION
+                | PROCESS_CREATE_THREAD
+            )
         self.handle = kernel32.OpenProcess(
             access, False, pid
         )
@@ -120,6 +154,34 @@ class RemoteProcess:
         if not ok:
             raise ctypes.WinError(ctypes.get_last_error())
         return written.value
+
+    def alloc(self, size: int) -> int:
+        addr = kernel32.VirtualAllocEx(
+            self.handle,
+            None,
+            size,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE,
+        )
+        if not addr:
+            raise ctypes.WinError(ctypes.get_last_error())
+        return addr
+
+    def read_string(self, address: int, maxlen: int = 4096) -> str:
+        out = b""
+        chunk = 256
+        while len(out) < maxlen:
+            try:
+                data = self.read(address + len(out), chunk)
+            except OSError:
+                break
+            if not data:
+                break
+            out += data
+            if b"\x00\x00" in out:
+                break
+        text = out.split(b"\x00\x00", 1)[0]
+        return text.decode("utf-16-le", errors="replace")
 
     def close(self):
         if self.handle:
@@ -238,8 +300,217 @@ class RemotePE:
         return None
 
 
-def attach(pid: int, redirect=None):
-    proc = RemoteProcess(pid, write_access=redirect is not None)
+def _ahk_hex_const(name: str) -> bytes:
+    text = (ROOT / "ahk_hack_single.ahk").read_text(encoding="utf-8")
+    marker = '%s := "' % name
+    start = text.index(marker) + len(marker)
+    end = text.index('"', start)
+    return bytes.fromhex(text[start:end])
+
+
+def _remote_find_utf16(secs, text: str):
+    needle = text.encode("utf-16-le") + b"\x00\x00"
+    hits = []
+    for sec in secs:
+        if sec["name"] == ".rsrc" or not sec["data"]:
+            continue
+        pos = sec["data"].find(needle)
+        while pos >= 0 and len(hits) < 8:
+            hits.append(sec["rva"] + pos)
+            pos = sec["data"].find(needle, pos + 2)
+    return hits
+
+
+def _remote_rip_refs(text_sec, target_rva: int):
+    data = text_sec["data"]
+    base = text_sec["rva"]
+    refs = []
+    for i in range(len(data) - 7):
+        if data[i] not in (0x48, 0x4C):
+            continue
+        if data[i + 1] != 0x8D:
+            continue
+        if data[i + 2] not in (0x05, 0x0D, 0x15, 0x1D, 0x25, 0x2D, 0x35, 0x3D):
+            continue
+        disp = struct.unpack_from("<i", data, i + 3)[0]
+        if base + i + 7 + disp == target_rva:
+            refs.append(base + i)
+    return refs
+
+
+def _remote_function_start(text_sec, ref_rva: int) -> int:
+    data = text_sec["data"]
+    base = text_sec["rva"]
+    off = ref_rva - base
+    i = off
+    while i > 0:
+        if data[i - 1] == 0xCC and i >= 2 and data[i - 2] == 0xCC:
+            break
+        i -= 1
+    return base + i
+
+
+def _remote_best_start(text_sec, refs):
+    starts = {}
+    for ref in refs:
+        start = _remote_function_start(text_sec, ref)
+        starts[start] = starts.get(start, 0) + 1
+    if not starts:
+        return 0
+    return max(starts, key=starts.get)
+
+
+def _remote_text_section(pe):
+    text = pe.section(".text")
+    if text:
+        return text
+    for sec in pe.sections:
+        if sec["name"] != ".rsrc" and sec["data"]:
+            return sec
+    raise RuntimeError("remote text section not found")
+
+
+def remote_locate_internal(pe):
+    text = _remote_text_section(pe)
+    postfix_refs = []
+    for str_rva in _remote_find_utf16(pe.sections, "Missing operand."):
+        postfix_refs.extend(_remote_rip_refs(text, str_rva))
+    postfix = _remote_best_start(text, postfix_refs)
+    expand_refs = []
+    for str_rva in _remote_find_utf16(pe.sections, "Error evaluating expression."):
+        expand_refs.extend(_remote_rip_refs(text, str_rva))
+    expand = _remote_best_start(text, expand_refs)
+    if not postfix or not expand:
+        raise RuntimeError("remote expression functions not found")
+    return postfix, expand
+
+
+def remote_curr_line_slot(pe, getter_rva: int) -> int:
+    text = _remote_text_section(pe)
+    off = getter_rva - text["rva"]
+    data = text["data"]
+    if data[off : off + 3] != b"\x48\x8b\x05":
+        raise RuntimeError("unexpected A_LineNumber getter code")
+    disp = struct.unpack_from("<i", data, off + 3)[0]
+    return pe.image_base + getter_rva + 7 + disp
+
+
+def remote_eval_in_target(proc: RemoteProcess, pe: RemotePE, expr: str, report):
+    text = _remote_text_section(pe)
+    postfix_rva, expand_rva = remote_locate_internal(pe)
+    biv = report["tables"].get("builtin_vars") or {}
+    line_entry = next(
+        (e for e in biv.get("entries", []) if e["name"] == "LineNumber"), None
+    )
+    if not line_entry:
+        raise RuntimeError("LineNumber getter not found")
+    curr_slot = remote_curr_line_slot(pe, line_entry["getter_rva"])
+
+    stub = _ahk_hex_const("MC_REMOTE_EVAL_STUB_X64")
+    locator = _ahk_hex_const("MC_INTERNAL_LOCATOR_X64")
+    eval_blob = _ahk_hex_const("MC_INPROC_EVAL_X64")
+    code_size = len(stub) + len(locator) + len(eval_blob)
+    param_off = (code_size + 15) // 16 * 16
+    loc_off = param_off + 136
+    out_off = loc_off + 64
+    expr_off = out_off + 512
+    scratch_off = expr_off + (len(expr) + 1) * 2
+    total = scratch_off + 8 * 1024 * 1024
+
+    block = proc.alloc(total)
+    try:
+        proc.write(block, stub)
+        proc.write(block + len(stub), locator)
+        proc.write(block + len(stub) + len(locator), eval_blob)
+
+        loc_out = block + loc_off
+        out = block + out_off
+        expr_ptr = block + expr_off
+        scratch = block + scratch_off
+        param = bytearray(136)
+        struct.pack_into("<Q", param, 0, block + len(stub))
+        struct.pack_into("<Q", param, 8, block + len(stub) + len(locator))
+        struct.pack_into("<Q", param, 16, pe.image_base)
+        struct.pack_into("<Q", param, 24, text["rva"])
+        struct.pack_into("<Q", param, 32, text["size"])
+        struct.pack_into("<Q", param, 40, postfix_rva)
+        struct.pack_into("<Q", param, 48, expand_rva)
+        struct.pack_into("<Q", param, 56, loc_out)
+        struct.pack_into("<Q", param, 64, pe.image_base + postfix_rva)
+        struct.pack_into("<Q", param, 72, pe.image_base + expand_rva)
+        struct.pack_into("<Q", param, 80, curr_slot)
+        struct.pack_into("<Q", param, 88, scratch)
+        struct.pack_into("<Q", param, 96, expr_ptr)
+        struct.pack_into("<Q", param, 104, out)
+        struct.pack_into("<Q", param, 112, 0)
+        struct.pack_into("<i", param, 120, 0)
+        struct.pack_into("<i", param, 124, 0)
+        proc.write(block + param_off, bytes(param))
+        proc.write(expr_ptr, expr.encode("utf-16-le") + b"\x00\x00")
+
+        thread_id = wt.DWORD(0)
+        thread = kernel32.CreateRemoteThread(
+            proc.handle,
+            None,
+            0,
+            block,
+            block + param_off,
+            0,
+            ctypes.byref(thread_id),
+        )
+        if not thread:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if kernel32.WaitForSingleObject(thread, 10000) != 0:
+                raise RuntimeError("remote eval thread timed out")
+            param_data = proc.read(block + param_off, 136)
+            loc_rc = struct.unpack_from("<i", param_data, 120)[0]
+            eval_rc = struct.unpack_from("<i", param_data, 124)[0]
+            loc_out_data = proc.read(loc_out, 64)
+            thread_code = wt.DWORD(0)
+            kernel32.GetExitCodeThread(thread, ctypes.byref(thread_code))
+            report["eval_debug"] = {
+                "loc_rc": loc_rc,
+                "eval_rc": eval_rc,
+                "thread_code": thread_code.value,
+                "loc_out_head": loc_out_data[:40].hex(),
+                "param_head": param_data[:80].hex(),
+            }
+            if loc_rc:
+                raise RuntimeError("remote internal locator rc=%d" % loc_rc)
+            if eval_rc:
+                raise RuntimeError("remote eval rc=%d" % eval_rc)
+            out_data = proc.read(out, 512)
+            status = struct.unpack_from("<I", out_data, 0)[0]
+            result_type = struct.unpack_from("<I", out_data, 4)[0]
+            if status:
+                raise RuntimeError("remote eval status=%d" % status)
+            if result_type == 1:
+                return struct.unpack_from("<q", out_data, 8)[0]
+            if result_type == 2:
+                return struct.unpack_from("<d", out_data, 8)[0]
+            if result_type == 0:
+                ptr = struct.unpack_from("<Q", out_data, 16)[0]
+                text = proc.read_string(ptr) if ptr else ""
+                report["eval_debug"].update({
+                    "status": status,
+                    "type": result_type,
+                    "ptr": ptr,
+                    "text_len": len(text),
+                    "out_head": out_data[:32].hex(),
+                })
+                return text
+            raise RuntimeError("unknown remote result type %d" % result_type)
+        finally:
+            kernel32.CloseHandle(thread)
+    finally:
+        kernel32.VirtualFreeEx(proc.handle, block, 0, MEM_RELEASE)
+
+
+def attach(pid: int, redirect=None, eval_expr=None):
+    proc = RemoteProcess(
+        pid, write_access=redirect is not None or eval_expr is not None
+    )
     try:
         base, module_path = find_main_module(pid)
         pe = RemotePE(proc, base, module_path)
@@ -296,6 +567,10 @@ def attach(pid: int, redirect=None):
                 "dst": dst,
                 "fn_slot": fn_slot,
             }
+        if eval_expr is not None:
+            report["eval_result"] = remote_eval_in_target(
+                proc, pe, eval_expr, report
+            )
         return report
     finally:
         proc.close()
@@ -318,9 +593,13 @@ def main(argv=None):
         metavar=("SRC", "DST"),
         help="redirect a builtin in the running process (e.g. Abs Sin)",
     )
+    parser.add_argument(
+        "--eval",
+        help="evaluate an expression inside the running process",
+    )
     args = parser.parse_args(argv)
 
-    report = attach(args.pid, redirect=args.redirect)
+    report = attach(args.pid, redirect=args.redirect, eval_expr=args.eval)
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
@@ -337,6 +616,8 @@ def main(argv=None):
             "redirected %s -> %s at 0x%X"
             % (r["src"], r["dst"], r["fn_slot"])
         )
+    if "eval_result" in report:
+        print("eval: %s" % report["eval_result"])
     for key, label in (
         ("builtins", "builtins"),
         ("native_functions", "native functions"),

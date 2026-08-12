@@ -185,6 +185,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `EvalNative(expr)` | Evaluates literals, operators, variables, and function calls through the interpreter's in-process expression pipeline |
 | `AttachRemote(pid)` | Opens another AutoHotkey process, reads its PE sections and the three interpreter tables remotely; returns a hook map |
 | `RemoteRedirect(hook, name, newName)` | Writes a new function pointer into a running process's BIF table |
+| `RemoteEval(hook, expr)` | Injects a thread into the target and evaluates an expression through its own expression pipeline |
 
 ### CnpBridge
 
@@ -222,11 +223,29 @@ injecting anything:
 function pointer into that slot. Already-resolved `Func` objects are not
 retroactively affected, matching the in-process `PatchBif` limitation.
 
+`AhkMagic.RemoteEval(hook, expr)` allocates executable memory in the target,
+copies the internal locator and expression-evaluator blobs plus a tiny thread
+stub into it, and runs them with `CreateRemoteThread`. The stub first
+discovers `gScript`, `finalize`, `findOrAddVar`, `crtFree`, and `symInvalid`
+inside the target, then calls the same expression pipeline used by
+`EvalNative`.
+
 ```ahk
 hook := AhkMagic.AttachRemote(pid)
 MsgBox hook["builtins"]["count"]
 AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")  ; 7, evaluated inside the target
 ```
+
+The Python tool exposes the same path:
+
+```powershell
+python tools\ahk_remote_attach.py --pid 1234 --eval "1 + 2 * 3"
+```
+
+`RemoteEval` is verified for numeric expressions and simple builtin calls.
+Expressions that depend on string-result buffers may need interpreter-thread
+context calibration.
 
 Live hotkey verification:
 

@@ -468,6 +468,7 @@ try {
         <p><code>AttachRemote(pid)</code>把同一套扫描做成 AHK Hook API：<code>OpenProcess</code>加<code>ReadProcessMemory</code>、解析 PE 节、用锚点和连续记录定位三张表。<code>RemoteRedirect(hook, "Abs", "Sin")</code>再把新函数指针写进运行中的 BIF 槽。</p>
         <pre><code>hook := AhkMagic.AttachRemote(pid)
 AhkMagic.RemoteRedirect(hook, "Abs", "Sin")</code></pre>
+        <p><code>RemoteEval(hook, expr)</code>把 Hook 再推进一步：向目标进程注入线程 stub、内部定位器和求值 blob，用 <code>CreateRemoteThread</code> 执行并读回结果。</p>
         <p>实测验证：启动 <code>tests/remote_hotkey_target.ahk</code>，把 <code>Abs</code> 重定向为 <code>Sin</code>，再运行 <code>tests/remote_hotkey_trigger.ahk</code>。<code>F7</code> 热键会输出 <code>0.8414709848078965</code>（即 <code>Sin(1)</code>），而不是原来的 <code>1</code>。</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk

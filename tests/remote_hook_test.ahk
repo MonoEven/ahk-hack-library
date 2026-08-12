@@ -13,6 +13,8 @@ Log(msg) {
 
 try {
     hook := AhkMagic.AttachRemote(pid)
+    Log("internal=" (hook.Has("internal") and hook["internal"].Has("error")
+        ? hook["internal"]["error"] : "ok"))
     Log("bif=" hook["builtins"]["count"]
         . " native=" hook["native_functions"]["count"]
         . " biv=" hook["builtin_vars"]["count"])
@@ -21,6 +23,8 @@ try {
     Log("redirected at 0x" Format("{:X}", r["fn_slot"]))
     hook2 := AhkMagic.AttachRemote(pid)
     Log("after Abs rva=0x" Format("{:X}", hook2["builtins"]["entries"]["Abs"]["rva"]))
+    Log("eval=" AhkMagic.RemoteEval(hook, "1 + 2 * 3"))
+    Log("evalfloat=" AhkMagic.RemoteEval(hook, "2 * 3.5"))
     Log("PASS")
     ExitApp 0
 } catch as e {

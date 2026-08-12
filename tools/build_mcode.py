@@ -18,6 +18,7 @@ EXPORT_SCANNER_C = ROOT / "lib" / "mcode" / "export_scanner.c"
 INPROC_EVAL_C = ROOT / "lib" / "mcode" / "inproc_eval.c"
 INTERNAL_LOCATOR_C = ROOT / "lib" / "mcode" / "internal_locator.c"
 MEM_SCRIPT_C = ROOT / "lib" / "mcode" / "mem_script.c"
+REMOTE_EVAL_STUB_C = ROOT / "lib" / "mcode" / "remote_eval_stub.c"
 AHK_OUT = ROOT / "ahk_hack_single.ahk"
 
 
@@ -125,6 +126,7 @@ def main(argv=None):
     eval_code = build_blob(INPROC_EVAL_C)
     locator_code = build_blob(INTERNAL_LOCATOR_C)
     mem_script_code = build_blob(MEM_SCRIPT_C)
+    remote_eval_stub_code = build_blob(REMOTE_EVAL_STUB_C)
     if args.embed_only:
         text = args.out.read_text(encoding="utf-8")
         text = replace_marker(text, 'MC_BIF_SCANNER_X64 := "', code)
@@ -132,6 +134,7 @@ def main(argv=None):
         text = replace_marker(text, 'MC_INPROC_EVAL_X64 := "', eval_code)
         text = replace_marker(text, 'MC_INTERNAL_LOCATOR_X64 := "', locator_code)
         text = replace_marker(text, 'MC_MEM_SCRIPT_X64 := "', mem_script_code)
+        text = replace_marker(text, 'MC_REMOTE_EVAL_STUB_X64 := "', remote_eval_stub_code)
         args.out.write_text(text, encoding="utf-8")
     else:
         # The placeholder file is generated once by ahk_mcode.ahk's author;
@@ -144,6 +147,7 @@ def main(argv=None):
     print("inproc eval size: %d bytes" % len(eval_code))
     print("internal locator size: %d bytes" % len(locator_code))
     print("mem script loader size: %d bytes" % len(mem_script_code))
+    print("remote eval stub size: %d bytes" % len(remote_eval_stub_code))
     print("embedded into: %s" % args.out)
     return 0
 

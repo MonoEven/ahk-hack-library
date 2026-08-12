@@ -5,6 +5,7 @@
 ; The x64 blob below is generated from lib/mcode/scanner.c by
 ; tools/build_mcode.py; it locates g_BIF, sMdFunc and g_BIV_A inside the
 ; running interpreter and copies entry metadata into a caller buffer.
+MC_REMOTE_EVAL_STUB_X64 := "564883ec704889ce0f1041304c8b49284c8b4120488b4910488b56180f11442420ff1689c1894678b80100000085c9754f488b4638488b4e400f10000f104810488b40200f1056604c8b4e584c8b4650488b564848894424680f114c24580f114424480f57c00f114424380f11542420c744243001000000ff560889467c31c04883c4705ec3"
 MC_PE_EXPORT_SCANNER_X64 := "4157415641545657534885c90f94c04885d2410f94c04108c0b8010000000f85fb0000006681394d5a0f85f0000000448b413c41813c08504500000f85de0000006641817c08180b020f85d0000000418b8408880000004885c00f84ab0000004183bc088c000000000f849c0000004c8d0408448b4c08108b7c0818448b540820448b5c08248b74081c4c890248c7421000000000b80800000085ff747881ff0010000041b800100000440f42c74801ce4901ca4901cb4a8d3cc500000000488d3c7f31db66662e0f1f840000000000458b32450fb73b468b24be4901ce4c89741a184c89641a204501cf44897c1a28c7441a2c000000004983c2044983c3024883c3184839df75c7eb0e0f57c00f1102b8100000004531c04c89040231c05b5f5e415c415e415fc3"
 MC_BIF_SCANNER_X64 := "41574156565755534881ec780200004885c90f94c04885d2410f94c04108c0be010000000f85da0600006681394d5a0f85cf0600008b413c813c08504500000f85bf06000066817c08180b020f85b2060000440fb74c0806664183f91041b810000000450f42c1664585c90f84e4020000440fb74c0814410fb7f84801c84c01c8448d04fd000000004f8d04804c8d4c24704531d241bb0100000031ed31dbeb50660f7f442450440fb6742452440fb67c24534180f6614180f7744508f7440fb67424544180f6610fb6db4508fe410f44db66666666662e0f1f8400000000004983c2284983c1204d39d00f84d7000000468b7410204585f6460f44741028468b7c10244901cf4d89394d01f74d8979084e8b74101866490f6ec6660f7f442460440fb67c24604d8971134180ff2e75af66410f7ec641c1ee084180fe640f845dffffff450fb6f64183fe72743d4183fe74758c660f7f442430440fb6742432440fb67c24334180f6654180f7784508f7440fb67424344180f674400fb6ed4508fe410f44ebe955ffffff660f7f442440807c2442640f8544ffffff807c2443610f8539ffffff807c2444740f852effffff66440fc5f00241c1ee084180fe610fb6dbe906ffffff4084ed0f95c184db0f95c020c889f9c1e1054531c0eb24906642c784048000000000004531c946888c04820000004983c0204c39c10f8454010000460fb69404830000004180fa2e753e4280bc04840000007275434280bc04850000007375384280bc048600000072752d4280bc048700000063410f94c184c0746ceb21662e0f1f84000000000084c0758c4531c9eb570f1f80000000004531c984c074494180fa2e0f856fffffff4280bc048400000074754d4280bc04850000006575424280bc04860000007875374280bc048700000074410f94c1eb2b6666666666662e0f1f8400000000004180f10146888c048000000046888c0481000000e925ffffff4531c946888c04800000004280bc04840000007275304280bc04850000006475254280bc048600000061751a4280bc048700000074750f4280bc048800000061410f94c1eb034531c946888c04810000004280bc04840000006475284280bc048500000061751d4280bc04860000007475124280bc048700000061410f94c1e9a1feffff4531c9e999feffff31ff488d420848894424284989d74889542420488d4c247041b92000000089fa4531c0e8a303000085c00f847f0300004d8d7720498d47184c897424284889442420488d4c2470be0100000041b92800000089fa41b801000000e86c03000085c00f8448030000498d5f38498d473048895c24284889442420488d4c247041b91800000089fa41b802000000e83a03000085c00f84160300004c89f849c747102000000049c747282800000049c747401800000049c7474800000000418b570885d27e6dffca4881faff010000b9ff010000480f42ca488b10c1e1054883c1204531c00f1f8400000000004e8b0c024e894c00504e8b4c02084e894c0058460fb64c021046894c0060460fb64c021146894c0064460fb64c021246894c006842c744006c000000004983c0204c39c175ba418b0e85c90f8ea5010000ffc94881f9ff010000baff010000480f42d1488b4818488d1492488d14d5280000004531c0662e0f1f8400000000004e8b0c014e898c00504000004e8b4c01084e898c0058400000460fb64c011046888c0060400000460fb64c011146888c0061400000460fb64c011246888c0062400000460fb64c011346888c0063400000460fb64c011446888c0064400000460fb64c011546888c0065400000460fb64c011646888c0066400000460fb64c011746888c0067400000460fb64c011846888c0068400000460fb64c011946888c0069400000460fb64c011a46888c006a400000460fb64c011b46888c006b400000460fb64c011c46888c006c400000460fb64c011d46888c006d400000460fb64c011e46888c006e400000460fb64c011f46888c006f400000460fb64c012046888c0070400000460fb64c012146888c0071400000460fb64c012246888c0072400000460fb64c012346888c0073400000460fb64c012446888c0074400000460fb64c012546888c0075400000460fb64c012646888c0076400000460fb64c012746888c00774000004983c0284c39c20f858afeffff448b034585c00f8e8c00000041ffc84181f8ff000000baff000000410f42d0488b4830ffc231f64585c074704189d14181e1fe0100004531d24531c04e8b1c114e899c10509000004e8b5c11084e899c10589000004e8b5c11104e899c10609000004e8b5c11184e899c10689000004e8b5c11204e899c10709000004e8b5c11284e899c10789000004983c0024983c2304d39c175a6eb0731f6eb324531c0f6c201742a48055090000049c1e0034b8d14404c8b04114c8904104c8b4411084c89441008488b4c111048894c101089f04881c4780200005b5d5f5e415e415fc3662e0f1f8400000000004157415641554154565755534883ec3085d20f8e76040000488bac24a00000004c8b94249800000089d64889f748c1e70531db48c74424200000000048c744242800000000eb15660f1f84000000000048ffc34839f30f84170400004889da48c1e205488d0411807c11110075068078120074dc4c8b384c8b7008498d47104c39f077cc4d8b27eb404c8b9424980000004c8b0c244c8b5c2408488b4424284939c3490f47c34889442428488b442420490f47c548894424200f1f80000000004983c5184d39f577874d89fd4c89e04983c7084d8b650831d2eb0e0f1f4400004883c2204839d774d7807c1111007507807c11120074e9483944110876e24839041177dc31d2662e0f1f840000000000440fb71c10664585db74254183c381664183fba1729a4c8d5a024883fa7e4c89da75ddeb8b66662e0f1f84000000000031d2eb196666662e0f1f8400000000004883c2204839d70f8463ffffff807c11100074ec4c3964110876e54c39241177df0fb7104183f8010f840f0200004585c00f857d0200006683fa410f852fffffff66837802620f8524ffffffba0600000066837804730f8514ffffff66833c02000f8509ffffff4b8d04294883c01041bb010000004c39f00f87ccfeffff4b8d14294c89e84c890c244c895c240848894424184889d04c8b124c8b5a084531c9eb1b66666666662e0f1f8400000000004983c1204c39cf0f847cfeffff42807c091100750842807c09120074e34e3954090876dc4e39140977d631d20f1f4000450fb70c12664585c974214183c181664183f9a10f823ffeffff4c8d4a024883fa7e4c89ca75d9e92dfeffff31d2eb0d4883c2204839d70f841cfeffff807c11100074ec4c395c110876e54c391c1177df4183f802488944241075406641833a590f85bf0000006641837a02590f85b30000006641837a04590f85a70000006641837a06590f859b0000006641837a08000f858f000000e98e010000488b542418488b1248895424184531db488b542418460fb70c1a430fb7141a664585c974476685d274428d42bf8d6a203c1a400fb6c50f43c2418d51bf418d692080fa1a400fb6d5410f43d138c275274983c3024981fb80000000488bac24a0000000488b44241075a6eb1e664139d17618e946fdffff488bac24a0000000488b4424100f8333fdffff4c8b5c240849ffc34c8b0c244a8d1408488b4424104c01c84883c0104c39f0488b4424104c8b9424980000000f8651feffffe90dfdffff6683fa420f8529fdffff668378026c0f851efdffff668378046f0f8513fdffff66837806630f8508fdffff668378086b0f85fdfcffff6683780a490f85f2fcffff6683780c6e0f85e7fcffff6683780e700f85dcfcffff66837810750f85d1fcffffba1400000066837812740f85c1fcffffe9a8fdffff6683fa410f85b2fcffff66837802680f85a7fcffff668378046b0f859cfcffff66837806500f8591fcffff66837808610f8586fcffff6683780a740f857bfcffffba0e0000006683780c680f856bfcffffe952fdffff4c8b5c240849ffc34c8b9424980000004c8b0c24e927fcffff4c8b4424204d85c00f94c0488b5424284883fa0a0f92c108c1740431c0eb0c4d890248895500b8010000004883c4305b5d5f5e415c415d415e415fc3"
 
@@ -311,6 +312,8 @@ class AhkMagic {
         hits := []
         for name, sec in secs {
             if name = ".rsrc"
+                continue
+            if !sec["ptr"] or sec["size"] < 2 * len
                 continue
             p := sec["ptr"]
             count := sec["size"] >= 2 * len
@@ -1327,7 +1330,7 @@ ahkHackLayoutProbe() {
         optSize := NumGet(pe, 20, "UShort")
         secTable := base + e_lfanew + 24 + optSize
         hdrs := AhkMagic._RemoteRead(h, secTable, num * 40)
-        secs := []
+        secs := Map()
         hasText := false
         hasData := false
         loop num {
@@ -1341,12 +1344,14 @@ ahkHackLayoutProbe() {
                 hasText := true
             if name = ".rdata" or name = ".data"
                 hasData := true
-            secs.Push(Map("name", name, "rva", va, "size", size
-                , "start", base + va, "end", base + va + size, "data", Buffer(0)))
+            secs[name] := Map("name", name, "rva", va, "size", size
+                , "start", base + va, "end", base + va + size
+                , "data", Buffer(0), "ptr", 0)
         }
         strict := hasText and hasData
-        for sec in secs {
-            if strict and sec["name"] != ".rdata" and sec["name"] != ".data"
+        for _, sec in secs {
+            if strict and sec["name"] != ".text"
+                and sec["name"] != ".rdata" and sec["name"] != ".data"
                 continue
             if sec["name"] = ".rsrc"
                 continue
@@ -1355,13 +1360,14 @@ ahkHackLayoutProbe() {
                     sec["data"] := AhkMagic._RemoteRead(h, sec["start"], sec["size"])
                 catch
                     sec["data"] := Buffer(0)
+                sec["ptr"] := sec["data"].Ptr
             }
         }
         return secs
     }
 
     static _RemoteReadUtf16(secs, addr, maxLen := 64) {
-        for sec in secs {
+        for _, sec in secs {
             if addr >= sec["start"] and addr < sec["end"]
                 and sec["data"].Size > 0 {
                 off := addr - sec["start"]
@@ -1381,10 +1387,10 @@ ahkHackLayoutProbe() {
 
     static _RemotePtrInText(secs, ptr) {
         hasText := false
-        for sec in secs
+        for _, sec in secs
             if sec["name"] = ".text"
                 hasText := true
-        for sec in secs {
+        for _, sec in secs {
             if ptr < sec["start"] or ptr >= sec["end"]
                 continue
             if sec["name"] = ".text"
@@ -1408,7 +1414,7 @@ ahkHackLayoutProbe() {
         }
         bestStart := 0
         bestCount := 0
-        for sec in secs {
+        for _, sec in secs {
             if sec["data"].Size < 32
                 continue
             p := sec["data"].Ptr
@@ -1451,7 +1457,7 @@ ahkHackLayoutProbe() {
         if bestCount < 10
             return empty
         sec := 0
-        for s in secs
+        for _, s in secs
             if bestStart >= s["rva"] and bestStart < s["rva"] + s["size"] {
                 sec := s
                 break
@@ -1489,6 +1495,82 @@ ahkHackLayoutProbe() {
             , "count", bestCount, "entries", entries, "names", names)
     }
 
+    static _RemoteLocateInternal(secs, base) {
+        text := AhkMagic._TextSection(secs)
+        if !text["ptr"]
+            throw Error("remote text section not loaded", -1)
+        postfixRefs := AhkMagic._RipRefs(text
+            , AhkMagic._FindUtf16(secs, "Missing operand.")[1])
+        postfix2 := AhkMagic._BestStart(text, postfixRefs)
+        expandRefs := AhkMagic._RipRefs(text
+            , AhkMagic._FindUtf16(secs, "Error evaluating expression.")[1])
+        expand := AhkMagic._BestStart(text, expandRefs)
+        if !postfix2 or !expand
+            throw Error("remote expression functions not found", -1)
+        return Map("postfix_rva", postfix2, "expand_rva", expand)
+    }
+
+    static _RemoteCurrLineSlot(secs, base, getterRva) {
+        text := AhkMagic._TextSection(secs)
+        p := text["ptr"]
+        off := getterRva - text["rva"]
+        if NumGet(p + off, "UChar") != 0x48
+            or NumGet(p + off + 1, "UChar") != 0x8B
+            or NumGet(p + off + 2, "UChar") != 0x05
+            throw Error("unexpected remote A_LineNumber getter code", -1)
+        disp := NumGet(p + off + 3, "Int")
+        return base + getterRva + 7 + disp
+    }
+
+    static _HexBuffer(hex) {
+        size := StrLen(hex) // 2
+        buf := Buffer(size)
+        loop size {
+            byte := Integer("0x" SubStr(hex, 2 * A_Index - 1, 2))
+            NumPut("UChar", byte, buf, A_Index - 1)
+        }
+        return buf
+    }
+
+    static _RemoteWrite(h, addr, buf) {
+        written := 0
+        if !DllCall("WriteProcessMemory", "Ptr", h, "Ptr", addr
+            , "Ptr", buf.Ptr, "UPtr", buf.Size, "UPtr*", &written)
+            throw Error("WriteProcessMemory failed", -1)
+    }
+
+    static _RemoteReadString(h, addr, maxLen := 4096) {
+        out := Buffer(0)
+        chunk := 256
+        loop {
+            if out.Size >= maxLen
+                break
+            try
+                part := AhkMagic._RemoteRead(h, addr + out.Size, chunk)
+            catch
+                break
+            if part.Size = 0
+                break
+            combined := Buffer(out.Size + part.Size)
+            if out.Size
+                DllCall("RtlMoveMemory", "Ptr", combined.Ptr, "Ptr", out.Ptr
+                    , "UPtr", out.Size)
+            DllCall("RtlMoveMemory", "Ptr", combined.Ptr + out.Size
+                , "Ptr", part.Ptr, "UPtr", part.Size)
+            out := combined
+            found := 0
+            loop out.Size - 1 {
+                if NumGet(out, A_Index - 1, "UShort") = 0 {
+                    found := A_Index - 1
+                    break
+                }
+            }
+            if found
+                return StrGet(out.Ptr, found // 2, "UTF-16")
+        }
+        return StrGet(out.Ptr, "UTF-16")
+    }
+
     static AttachRemote(pid) {
         if !(pid is Integer)
             throw TypeError("pid must be an integer", -1)
@@ -1496,13 +1578,32 @@ ahkHackLayoutProbe() {
         try {
             mod := AhkMagic._RemoteModuleBase(h, pid)
             secs := AhkMagic._RemoteSections(h, mod["base"])
+            bif := AhkMagic._RemoteTable(h, secs, mod["base"], "bif")
+            mdfunc := AhkMagic._RemoteTable(h, secs, mod["base"], "mdfunc")
+            biv := AhkMagic._RemoteTable(h, secs, mod["base"], "biv")
+            internal := Map()
+            try {
+                loc := AhkMagic._RemoteLocateInternal(secs, mod["base"])
+                textSec := AhkMagic._TextSection(secs)
+                loc["text_rva"] := textSec["rva"]
+                loc["text_size"] := textSec["size"]
+                if biv["found"] and biv["entries"].Has("LineNumber") {
+                    loc["curr_line_slot"] := AhkMagic._RemoteCurrLineSlot(
+                        secs, mod["base"]
+                        , biv["entries"]["LineNumber"]["getter_rva"])
+                    internal := loc
+                }
+            } catch as e {
+                internal := Map("error", e.What " | " e.Message)
+            }
             return Map(
                 "pid", pid,
                 "module", mod["path"],
                 "image_base", mod["base"],
-                "builtins", AhkMagic._RemoteTable(h, secs, mod["base"], "bif"),
-                "native_functions", AhkMagic._RemoteTable(h, secs, mod["base"], "mdfunc"),
-                "builtin_vars", AhkMagic._RemoteTable(h, secs, mod["base"], "biv")
+                "builtins", bif,
+                "native_functions", mdfunc,
+                "builtin_vars", biv,
+                "internal", internal
             )
         } finally {
             DllCall("CloseHandle", "Ptr", h)
@@ -1539,6 +1640,102 @@ ahkHackLayoutProbe() {
             DllCall("CloseHandle", "Ptr", h)
         }
         return Map("src", name, "dst", newName, "fn_slot", fnSlot)
+    }
+
+    static RemoteEval(hook, expr) {
+        if !(hook is Map) or !hook.Has("pid") or !hook.Has("internal")
+            or !hook["internal"].Has("postfix_rva")
+            throw Error("hook has no remote eval context", -1)
+        if !(expr is String)
+            throw TypeError("expr must be a string", -1)
+
+        internal := hook["internal"]
+        stub := AhkMagic._HexBuffer(MC_REMOTE_EVAL_STUB_X64)
+        locator := AhkMagic._HexBuffer(MC_INTERNAL_LOCATOR_X64)
+        evalBlob := AhkMagic._HexBuffer(MC_INPROC_EVAL_X64)
+        codeSize := stub.Size + locator.Size + evalBlob.Size
+        paramOff := (codeSize + 15) // 16 * 16
+        locOff := paramOff + 136
+        outOff := locOff + 64
+        exprLen := (StrLen(expr) + 1) * 2
+        exprOff := outOff + 512
+        scratchOff := exprOff + exprLen
+        total := scratchOff + 8 * 1024 * 1024
+
+        h := AhkMagic._RemoteOpen(hook["pid"], true)
+        try {
+            block := DllCall("VirtualAllocEx", "Ptr", h, "Ptr", 0
+                , "UPtr", total, "UInt", 0x3000, "UInt", 0x40, "Ptr")
+            if !block
+                throw Error("VirtualAllocEx failed", -1)
+            try {
+                AhkMagic._RemoteWrite(h, block, stub)
+                AhkMagic._RemoteWrite(h, block + stub.Size, locator)
+                AhkMagic._RemoteWrite(h, block + stub.Size + locator.Size, evalBlob)
+
+                param := Buffer(136)
+                NumPut("Ptr", block + stub.Size, param, 0)
+                NumPut("Ptr", block + stub.Size + locator.Size, param, 8)
+                NumPut("Ptr", hook["image_base"], param, 16)
+                NumPut("UInt64", internal["text_rva"], param, 24)
+                NumPut("UInt64", internal["text_size"], param, 32)
+                NumPut("UInt64", internal["postfix_rva"], param, 40)
+                NumPut("UInt64", internal["expand_rva"], param, 48)
+                NumPut("Ptr", block + locOff, param, 56)
+                NumPut("Ptr", hook["image_base"] + internal["postfix_rva"], param, 64)
+                NumPut("Ptr", hook["image_base"] + internal["expand_rva"], param, 72)
+                NumPut("Ptr", internal["curr_line_slot"], param, 80)
+                NumPut("Ptr", block + scratchOff, param, 88)
+                NumPut("Ptr", block + exprOff, param, 96)
+                NumPut("Ptr", block + outOff, param, 104)
+                NumPut("UInt64", 0, param, 112)
+                NumPut("Int", 0, param, 120)
+                NumPut("Int", 0, param, 124)
+                AhkMagic._RemoteWrite(h, block + paramOff, param)
+
+                exprBuf := Buffer(exprLen)
+                StrPut(expr, exprBuf, "UTF-16")
+                AhkMagic._RemoteWrite(h, block + exprOff, exprBuf)
+
+                tid := 0
+                thread := DllCall("CreateRemoteThread", "Ptr", h, "Ptr", 0
+                    , "UPtr", 0, "Ptr", block, "Ptr", block + paramOff
+                    , "UInt", 0, "UInt*", &tid, "Ptr")
+                if !thread
+                    throw Error("CreateRemoteThread failed", -1)
+                try {
+                    DllCall("WaitForSingleObject", "Ptr", thread, "UInt", 10000)
+                    paramBack := AhkMagic._RemoteRead(h, block + paramOff, 136)
+                    locRc := NumGet(paramBack, 120, "Int")
+                    evalRc := NumGet(paramBack, 124, "Int")
+                    if locRc != 0
+                        throw Error("remote internal locator rc=" locRc, -1)
+                    if evalRc != 0
+                        throw Error("remote eval rc=" evalRc, -1)
+                    out := AhkMagic._RemoteRead(h, block + outOff, 512)
+                    status := NumGet(out, 0, "UInt")
+                    type := NumGet(out, 4, "UInt")
+                    if status != 0
+                        throw Error("remote eval status=" status, -1)
+                    if type = 1
+                        return NumGet(out, 8, "Int64")
+                    if type = 2
+                        return NumGet(out, 8, "Double")
+                    if type = 0 {
+                        ptr := NumGet(out, 16, "Ptr")
+                        return ptr ? AhkMagic._RemoteReadString(h, ptr) : ""
+                    }
+                    throw Error("remote eval returned unknown type " type, -1)
+                } finally {
+                    DllCall("CloseHandle", "Ptr", thread)
+                }
+            } finally {
+                DllCall("VirtualFreeEx", "Ptr", h, "Ptr", block, "UPtr", 0
+                    , "UInt", 0x8000)
+            }
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
     }
 
     static EvalSubprocess(expr) {
