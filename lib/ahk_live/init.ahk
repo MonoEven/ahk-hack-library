@@ -6,3 +6,4 @@
 #Include patch.ahk
 #Include trace.ahk
 #Include reload.ahk
+#Include api.ahk

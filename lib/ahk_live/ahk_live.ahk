@@ -5,6 +5,7 @@
 ; and trace/replace helpers live here.
 
 class AhkLive {
+    static VERSION := "1.0.0"
     static renameSeq := 0
 
     static Attach(pid) {
@@ -63,7 +64,7 @@ class AhkLive {
         return state
     }
 
-    static TraceFunction(hook, name, outFile) {
+    static TraceFunction(hook, name, outFile, journal := 0) {
         if !(hook is Map) or !hook.Has("pid")
             throw TypeError("hook must be an AttachRemote result", -1)
         if !(name is String) or Trim(name) = ""
@@ -88,7 +89,7 @@ class AhkLive {
         params := AhkLive._JoinList(paramNames)
         callArgs := params
 
-        AhkLive._RenameFunc(hook, name, oldName)
+        AhkLive._RenameFunc(hook, name, oldName, journal)
         script := "`n" retName "(v, label) {`n"
             . "    FileAppend(`"TRACE exit `" label `"=`" v Chr(10), `"" escPath "`")`n"
             . "    return v`n"
@@ -121,15 +122,15 @@ class AhkLive {
         return Map("name", tracer["name"], "restoredFrom", tracer["oldName"])
     }
 
-    static ReplaceFunction(hook, oldName, newName) {
+    static ReplaceFunction(hook, oldName, newName, journal := 0) {
         if !(hook is Map) or !hook.Has("pid")
             throw TypeError("hook must be an AttachRemote result", -1)
         nonce := Format("{:x}", A_TickCount) Format("{:x}", Random(1, 0x7fffffff))
         copyName := "_ahk_live_copy_" . nonce
         script := "`n" copyName "(a*) {`n    return -1`n}`nStrLen(`"`")"
         AhkMagic.RemoteEvalScript(hook, script)
-        AhkLive._ReplaceFuncBodyExact(hook, copyName, oldName)
-        AhkLive._ReplaceFuncBodyExact(hook, oldName, newName)
+        AhkLive._ReplaceFuncBodyExact(hook, copyName, oldName, journal)
+        AhkLive._ReplaceFuncBodyExact(hook, oldName, newName, journal)
         return Map("hook", hook, "name", oldName, "newName", newName
             , "copyName", copyName, "script", script)
     }
@@ -206,7 +207,7 @@ class AhkLive {
         return classes
     }
 
-    static _RenameFunc(hook, oldName, newName) {
+    static _RenameFunc(hook, oldName, newName, journal := 0) {
         layout := AhkLive._EnsureLayout(hook)
         nameOff := AhkLive._EnsureNameOffset(hook, layout)
         h := AhkMagic._RemoteOpen(hook["pid"], true)
@@ -246,9 +247,15 @@ class AhkLive {
                     }
                 }
                 if inlineOff
+                {
+                    if journal
+                        journal.Record(nf + inlineOff, nameBuf.Size)
                     DllCall("WriteProcessMemory", "Ptr", h
                         , "Ptr", nf + inlineOff, "Ptr", nameBuf.Ptr
                         , "UPtr", nameBuf.Size, "UPtr*", &written)
+                }
+                if journal
+                    journal.Record(nf + nameOff, A_PtrSize)
                 DllCall("WriteProcessMemory", "Ptr", h, "Ptr", nf + nameOff
                     , "Ptr", ptrBuf.Ptr, "UPtr", 8, "UPtr*", &written)
             }
@@ -468,7 +475,7 @@ class AhkLive {
         return result
     }
 
-    static _ReplaceFuncBodyExact(hook, oldName, newName) {
+    static _ReplaceFuncBodyExact(hook, oldName, newName, journal := 0) {
         layout := AhkLive._EnsureLayout(hook)
         nameOff := AhkLive._EnsureNameOffset(hook, layout)
         h := AhkMagic._RemoteOpen(hook["pid"], true)
@@ -481,8 +488,11 @@ class AhkLive {
             newJump := AhkMagic._RPtr(h, newList[1] + jumpOff)
             if !newJump
                 throw Error("new function body not found", -1)
-            for oldPtr in oldList
+            for oldPtr in oldList {
+                if journal
+                    journal.Record(oldPtr + jumpOff, A_PtrSize)
                 AhkMagic._WPtr(h, oldPtr + jumpOff, newJump)
+            }
             return Map("old", oldList, "new", newList[1], "count", oldList.Length)
         } finally {
             DllCall("CloseHandle", "Ptr", h)

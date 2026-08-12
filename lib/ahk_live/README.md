@@ -11,6 +11,27 @@ primitives. It does not modify `ahk_hack_single.ahk`.
 
 The entry point loads the AhkMagic core and then `ahk_live.ahk`.
 
+## Product API
+
+New integrations should use `AhkLiveSession`, `AhkLiveResult`, and
+`AhkLivePatchSession` from `api.ahk`. They add structured errors and a patch
+transaction boundary without changing the low-level research API.
+
+```ahk
+session := AhkLiveSession()
+if !session.Attach(pid).ok
+    throw Error("attach failed")
+
+snap := session.Snapshot(Map("mul", "Mul(4)"))
+patch := session.BeginPatch()
+ps := patch.value
+ps.Replace("Mul", "NewMul")
+ps.Rollback()
+session.Close()
+```
+
+`AhkLive.VERSION` is `1.0.0`.
+
 ## API
 
 | Method | Purpose |
