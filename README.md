@@ -179,7 +179,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `PatchBifObject(fnObj, newName)` / `RestoreBifObject(fnObj, state)` | Deep-redirect an already-resolved built-in so direct calls are affected |
 | `Eval(expr)` | Tries the in-process pipeline, then `EvalSubprocess()` for unsupported expressions |
 | `EvalScript(text)` | Loads multi-line script text in-process and evaluates the last expression |
-| `EvalSubprocess(expr)` | Evaluates an expression string in a hidden child process |
+| `EvalSubprocess(expr)` | Evaluates an expression string in a hidden child process; unavailable in compiled scripts and raises an explicit error there |
 | `EvalNative(expr)` | Evaluates literals, operators, variables, and function calls through the interpreter's in-process expression pipeline |
 
 ### CnpBridge
@@ -283,6 +283,12 @@ per-version table: `mFuncs`, `mFuncsCount`, `mLastLine`, `mJumpLine`, the
 parser-state anchors, and the `TextStream` layout are all discovered at
 runtime by a one-time probe.
 
+Ahk2Exe packaging does not disable the in-process Eval pipeline. When
+`AutoHotkey64.exe` is selected as the base file, the compiled exe embeds that
+runtime, so `Init`, `EvalNative`, and `EvalScript` keep working. This was
+verified on all four versions. `EvalSubprocess` is not available in a compiled
+exe and now raises an explicit error.
+
 ## Project Layout
 
 ```text
@@ -360,6 +366,10 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 # Repeated in-memory loads in one process
 & D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
+
+# Ahk2Exe packaged exe (use the AutoHotkey v2 runtime as /base)
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
+& build\compiled_eval_probe.exe
 
 # Per-version internal address probe
 & D:\...\AutoHotkey64.exe tests\version_probe.ahk

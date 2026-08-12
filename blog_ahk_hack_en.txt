@@ -191,6 +191,18 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 Verified on 2.1-alpha.30, 2.0.26, 2.0.0, 2.0-beta.10 (all 64-bit).
 
+Ahk2Exe packaging was also verified. The compiled exe embeds the same
+AutoHotkey runtime, so [c]Init[/c], [c]EvalNative[/c], and [c]EvalScript[/c]
+keep scanning the module and evaluating in-process. The probe below passed on
+all four versions when [c]AutoHotkey64.exe[/c] was passed to Ahk2Exe as
+[c]/base[/c]. [c]EvalSubprocess[/c] is not available in a compiled exe and now
+raises an explicit error instead of launching the exe against a temp script.
+
+[codebox=text file=compiled]
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
+& build\compiled_eval_probe.exe
+[/codebox]
+
 
 [b]5. Security[/b]
 
@@ -225,12 +237,20 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 interpreter's own [c]ExpressionToPostfix[/c]/[c]ExpandExpression[/c] pipeline;
 - Fixed hardcoded structural offsets in the optional integration layer by switching to runtime layout discovery and native fill interfaces.
 
+2026-08-12:
+
+- Verified [c]Init[/c], [c]EvalNative[/c], and [c]EvalScript[/c] in
+Ahk2Exe-compiled executables on all four versions; the compiled exe embeds
+the same runtime and the dynamic locators still work;
+- [c]EvalSubprocess[/c] now raises an explicit error in compiled scripts
+instead of launching the compiled exe against a temporary [c].ahk[/c].
+
 
 [b]7. Known limitations[/b]
 
 - The machine-code blocks are x64 only;
 - [c]EvalNative()[/c] runs the interpreter's in-process expression pipeline
-for literals, operators, global variables, and function calls on all verified builds. [c]Eval()[/c] remains the subprocess fallback for arbitrary expressions;
+for literals, operators, global variables, and function calls on all verified builds. [c]Eval()[/c] falls back to [c]EvalSubprocess()[/c] only in script mode; in a compiled exe the in-process paths still work, but [c]EvalSubprocess()[/c] raises an explicit error because the compiled exe cannot interpret a temporary script;
 - [c]PatchBif()[/c] does not retroactively affect already-cached function objects;
 - native construction relies on source-derived or runtime-discovered layout, so cross-version verification is mandatory.
 

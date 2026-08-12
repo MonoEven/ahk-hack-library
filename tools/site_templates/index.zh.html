@@ -464,12 +464,15 @@ try {
             <tr><td>2.0-beta.10 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
           </tbody>
         </table>
+        <p>Ahk2Exe 打包不会让进程内 Eval 失效。编译出的 exe 内嵌同一个 AutoHotkey 运行时，<code>Init</code>、<code>EvalNative</code>、<code>EvalScript</code> 照常工作；四个版本都用 <code>AutoHotkey64.exe</code> 作为 Ahk2Exe base 验证过。<code>EvalSubprocess</code> 在编译版里不可用，会直接抛出明确错误。</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
-& D:\...\AutoHotkey64.exe tests\version_probe.ahk</code></pre>
+& D:\...\AutoHotkey64.exe tests\version_probe.ahk
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
+& build\compiled_eval_probe.exe</code></pre>
       </section>
 
       <section id="debugging">
