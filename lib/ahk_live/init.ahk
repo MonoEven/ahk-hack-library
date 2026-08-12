@@ -2,3 +2,7 @@
 ; directly so the AhkMagic core is loaded first.
 #Include ..\ahk_hack.ahk
 #Include ahk_live.ahk
+#Include inspect.ahk
+#Include patch.ahk
+#Include trace.ahk
+#Include reload.ahk
