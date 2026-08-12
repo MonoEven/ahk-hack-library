@@ -186,6 +186,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `AttachRemote(pid)` | Opens another AutoHotkey process, reads its PE sections and the three interpreter tables remotely; returns a hook map |
 | `AttachRemoteByName(name)` | Resolves a process ID from the image name, then attaches to it |
 | `RemoteRedirect(hook, name, newName)` | Writes a new function pointer into a running process's BIF table |
+| `RemoteDeepRedirect(hook, name, newName)` | Also patches already-resolved `Func` objects, so direct calls inside other functions change |
 | `RemoteEval(hook, expr)` | Injects a thread into the target and evaluates an expression through its own expression pipeline |
 
 ### CnpBridge
@@ -230,6 +231,11 @@ injecting anything:
 `image_base + table_rva + index * stride + 8`, and writes the destination
 function pointer into that slot. Already-resolved `Func` objects are not
 retroactively affected, matching the in-process `PatchBif` limitation.
+
+`AhkMagic.RemoteDeepRedirect(hook, name, newName)` goes one level deeper: it
+scans the target heap for the already-resolved `Func` object (matching the old
+function pointer and the entry's name pointer) and patches its `mBIF`. This is
+what changes a function like `B()` that directly calls `A()`.
 
 `AhkMagic.RemoteEval(hook, expr)` allocates executable memory in the target,
 copies the internal locator and expression-evaluator blobs plus a tiny thread
@@ -280,6 +286,19 @@ attached 28504
 after redirect f7=0.8414709848078965
 after eval f8=7
 ```
+
+Function-to-function verification:
+
+- `tests/remote_hook_function_target.ahk` defines `B_direct()` that calls
+  `Abs()` directly and `B_dynamic()` that calls `%name%()`.
+- `tests/remote_hook_function_demo.ahk` attaches, then deep redirects
+  `Abs -> Sin` and triggers both target hotkeys.
+
+```text
+direct=0.8414709848078965 dynamic=0.8414709848078965
+```
+
+Before the deep redirect, both output `1`; after it, both output `Sin(1)`.
 
 The target needs no special code: no `#Include`, no exported pointers, no
 callback, and no embedded metadata. `--name` resolves the PID from the image

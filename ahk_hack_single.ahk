@@ -1676,6 +1676,97 @@ ahkHackLayoutProbe() {
         return Map("src", name, "dst", newName, "fn_slot", fnSlot)
     }
 
+    static RemoteDeepRedirect(hook, name, newName) {
+        if !(hook is Map) or !hook.Has("pid")
+            throw TypeError("hook must be an AttachRemote result", -1)
+        bif := hook["builtins"]
+        if !bif["found"] or !bif["entries"].Has(name)
+            or !bif["entries"].Has(newName)
+            throw Error("builtin redirect names not found", -1)
+        idx := 0
+        for n in bif["names"] {
+            if n = name
+                break
+            idx += 1
+        }
+        if idx >= bif["names"].Length
+            throw Error("builtin index not found", -1)
+
+        h := AhkMagic._RemoteOpen(hook["pid"], true)
+        try {
+            slot := hook["image_base"] + bif["table_rva"] + idx * bif["stride"]
+            slotBuf := AhkMagic._RemoteRead(h, slot, 16)
+            namePtr := NumGet(slotBuf, 0, "Ptr")
+            oldFn := NumGet(slotBuf, 8, "Ptr")
+            newFn := hook["image_base"] + bif["entries"][newName]["rva"]
+
+            patches := []
+            addr := 0
+            mbi := Buffer(48)
+            loop {
+                if !DllCall("VirtualQueryEx", "Ptr", h, "Ptr", addr
+                    , "Ptr", mbi.Ptr, "UPtr", 48)
+                    break
+                state := NumGet(mbi, 32, "UInt")
+                protect := NumGet(mbi, 36, "UInt")
+                memType := NumGet(mbi, 40, "UInt")
+                regionSize := NumGet(mbi, 24, "Int64")
+                baseAddr := NumGet(mbi, 0, "Ptr")
+                if state = 0x1000 and memType = 0x20000
+                    and (protect & 0x4 or protect & 0x40)
+                    and regionSize > 0 and regionSize < 0x8000000 {
+                    chunkSize := 0x10000
+                    off := 0
+                    while off < regionSize {
+                        want := Min(chunkSize, regionSize - off)
+                        try
+                            data := AhkMagic._RemoteRead(h, baseAddr + off, want)
+                        catch {
+                            off += want
+                            continue
+                        }
+                        maxOff := data.Size - 8
+                        pos := 0
+                        while pos <= maxOff {
+                            if NumGet(data, pos, "Ptr") = oldFn {
+                                ok := false
+                                start := Max(0, pos - 0x200)
+                                end := Min(data.Size - 8, pos + 0x200)
+                                j := start
+                                while j <= end {
+                                    if NumGet(data, j, "Ptr") = namePtr {
+                                        ok := true
+                                        break
+                                    }
+                                    j += 8
+                                }
+                                if ok
+                                    patches.Push(baseAddr + off + pos)
+                            }
+                            pos += 8
+                        }
+                        off += want
+                    }
+                }
+                if regionSize <= 0
+                    break
+                nextAddr := baseAddr + regionSize
+                if nextAddr <= addr
+                    break
+                addr := nextAddr
+            }
+            if !patches.Length
+                throw Error("no Func object found for " name, -1)
+            data := Buffer(8)
+            NumPut("Ptr", newFn, data, 0)
+            for p in patches
+                AhkMagic._RemoteWrite(h, p, data)
+            return Map("src", name, "dst", newName, "count", patches.Length)
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
+    }
+
     static RemoteEval(hook, expr) {
         if !(hook is Map) or !hook.Has("pid") or !hook.Has("internal")
             or !hook["internal"].Has("postfix_rva")

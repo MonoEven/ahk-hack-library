@@ -201,6 +201,8 @@ python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
 
 Think of the target as a running machine. We do not install anything into it and it does not have to cooperate: no [c]#Include[/c], no exported pointer, no callback. We read its memory map, find the labels on its internal shelves, then insert a small worker thread through the OS remote-thread door. The same path is exposed as an AHK hook API. [c]AttachRemoteByName("AutoHotkey64.exe")[/c] finds the running process by image name, opens it with [c]OpenProcess[/c], reads PE headers and data sections through [c]ReadProcessMemory[/c], scans anchor names and sorted runs to locate the three tables, and returns a map with [c]image_base[/c], [c]table_rva[/c], and entries. [c]RemoteRedirect(hook, "Abs", "Sin")[/c] reopens with write access and writes the destination function pointer into the source entry's [c]fn_ptr[/c] slot.
 
+[c]RemoteDeepRedirect(hook, "Abs", "Sin")[/c] goes one level deeper: it scans the target heap for the already-resolved [c]Func[/c] object and patches its [c]mBIF[/c]. This is what changes a function like [c]B()[/c] that directly calls [c]A()[/c].
+
 [codebox=autohotkey file=remote-hook]
 ; Target: tests\remote_hook_resident_target.ahk (resident, F7/F8)
 ; Attacher: tests\remote_hook_resident_demo.ahk
@@ -229,6 +231,8 @@ The same injection path powers [c]RemoteEval[/c]: it copies the internal locator
 The target needs no special code: no [c]#Include[/c], no exported pointers, no callback, and no embedded metadata. [c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c] resolves the PID from the image name, so the PID file in the test harness is only test orchestration.
 
 Live verification: start [c]tests\remote_hook_resident_target.ahk[/c], redirect [c]Abs[/c] to [c]Sin[/c], then send [c]F7[/c] to the target. It writes [c]0.8414709848078965[/c] ([c]Sin(1)[/c]) instead of [c]1[/c] ([c]Abs(1)[/c]). Remote eval [c]x := 1 + 2 * 3[/c] is verified by sending [c]F8[/c], which writes [c]7[/c].
+
+Function-to-function verification: [c]tests\remote_hook_function_target.ahk[/c] defines [c]B_direct()[/c] (direct [c]Abs[/c] call) and [c]B_dynamic()[/c] (dynamic [c]%name%[/c] call). [c]tests\remote_hook_function_demo.ahk[/c] deep redirects [c]Abs -> Sin[/c] and triggers both hotkeys. Both outputs become [c]0.8414709848078965[/c].
 
 [codebox=text file=compiled]
 # Plain compile
@@ -1979,6 +1983,97 @@ ahkHackLayoutProbe() {
             DllCall("CloseHandle", "Ptr", h)
         }
         return Map("src", name, "dst", newName, "fn_slot", fnSlot)
+    }
+
+    static RemoteDeepRedirect(hook, name, newName) {
+        if !(hook is Map) or !hook.Has("pid")
+            throw TypeError("hook must be an AttachRemote result", -1)
+        bif := hook["builtins"]
+        if !bif["found"] or !bif["entries"].Has(name)
+            or !bif["entries"].Has(newName)
+            throw Error("builtin redirect names not found", -1)
+        idx := 0
+        for n in bif["names"] {
+            if n = name
+                break
+            idx += 1
+        }
+        if idx >= bif["names"].Length
+            throw Error("builtin index not found", -1)
+
+        h := AhkMagic._RemoteOpen(hook["pid"], true)
+        try {
+            slot := hook["image_base"] + bif["table_rva"] + idx * bif["stride"]
+            slotBuf := AhkMagic._RemoteRead(h, slot, 16)
+            namePtr := NumGet(slotBuf, 0, "Ptr")
+            oldFn := NumGet(slotBuf, 8, "Ptr")
+            newFn := hook["image_base"] + bif["entries"][newName]["rva"]
+
+            patches := []
+            addr := 0
+            mbi := Buffer(48)
+            loop {
+                if !DllCall("VirtualQueryEx", "Ptr", h, "Ptr", addr
+                    , "Ptr", mbi.Ptr, "UPtr", 48)
+                    break
+                state := NumGet(mbi, 32, "UInt")
+                protect := NumGet(mbi, 36, "UInt")
+                memType := NumGet(mbi, 40, "UInt")
+                regionSize := NumGet(mbi, 24, "Int64")
+                baseAddr := NumGet(mbi, 0, "Ptr")
+                if state = 0x1000 and memType = 0x20000
+                    and (protect & 0x4 or protect & 0x40)
+                    and regionSize > 0 and regionSize < 0x8000000 {
+                    chunkSize := 0x10000
+                    off := 0
+                    while off < regionSize {
+                        want := Min(chunkSize, regionSize - off)
+                        try
+                            data := AhkMagic._RemoteRead(h, baseAddr + off, want)
+                        catch {
+                            off += want
+                            continue
+                        }
+                        maxOff := data.Size - 8
+                        pos := 0
+                        while pos <= maxOff {
+                            if NumGet(data, pos, "Ptr") = oldFn {
+                                ok := false
+                                start := Max(0, pos - 0x200)
+                                end := Min(data.Size - 8, pos + 0x200)
+                                j := start
+                                while j <= end {
+                                    if NumGet(data, j, "Ptr") = namePtr {
+                                        ok := true
+                                        break
+                                    }
+                                    j += 8
+                                }
+                                if ok
+                                    patches.Push(baseAddr + off + pos)
+                            }
+                            pos += 8
+                        }
+                        off += want
+                    }
+                }
+                if regionSize <= 0
+                    break
+                nextAddr := baseAddr + regionSize
+                if nextAddr <= addr
+                    break
+                addr := nextAddr
+            }
+            if !patches.Length
+                throw Error("no Func object found for " name, -1)
+            data := Buffer(8)
+            NumPut("Ptr", newFn, data, 0)
+            for p in patches
+                AhkMagic._RemoteWrite(h, p, data)
+            return Map("src", name, "dst", newName, "count", patches.Length)
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
     }
 
     static RemoteEval(hook, expr) {

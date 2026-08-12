@@ -43,6 +43,10 @@ MEM_RESERVE = 0x2000
 MEM_RELEASE = 0x8000
 PAGE_EXECUTE_READWRITE = 0x40
 INFINITE = 0xFFFFFFFF
+MEM_COMMIT = 0x1000
+MEM_PRIVATE = 0x20000
+PAGE_READWRITE = 0x04
+PAGE_EXECUTE_READWRITE = 0x40
 
 
 class MODULEENTRY32W(ctypes.Structure):
@@ -130,6 +134,27 @@ kernel32.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
 kernel32.WaitForSingleObject.restype = wt.DWORD
 kernel32.GetExitCodeThread.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
 kernel32.GetExitCodeThread.restype = wt.BOOL
+
+
+class MEMORY_BASIC_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("BaseAddress", wt.LPVOID),
+        ("AllocationBase", wt.LPVOID),
+        ("AllocationProtect", wt.DWORD),
+        ("RegionSize", ctypes.c_size_t),
+        ("State", wt.DWORD),
+        ("Protect", wt.DWORD),
+        ("Type", wt.DWORD),
+    ]
+
+
+kernel32.VirtualQueryEx.argtypes = [
+    wt.HANDLE,
+    wt.LPCVOID,
+    ctypes.POINTER(MEMORY_BASIC_INFORMATION),
+    ctypes.c_size_t,
+]
+kernel32.VirtualQueryEx.restype = ctypes.c_size_t
 
 
 class RemoteProcess:
@@ -546,9 +571,78 @@ def remote_eval_in_target(proc: RemoteProcess, pe: RemotePE, expr: str, report):
         kernel32.VirtualFreeEx(proc.handle, block, 0, MEM_RELEASE)
 
 
-def attach(pid: int, redirect=None, eval_expr=None):
+def remote_deep_redirect(proc: RemoteProcess, pe: RemotePE, report, src: str, dst: str):
+    table = report["tables"].get("builtins") or {}
+    if not table.get("found"):
+        raise RuntimeError("builtins table not found")
+    entries = table.get("entries", [])
+    by_name = {e["name"]: e for e in entries}
+    if src not in by_name or dst not in by_name:
+        raise RuntimeError("deep redirect names not found")
+    names = [e["name"] for e in entries]
+    idx = names.index(src)
+    slot = pe.image_base + table["table_rva"] + idx * table["stride"]
+    name_ptr = struct.unpack_from("<Q", proc.read(slot, 8))[0]
+    old_fn = struct.unpack_from("<Q", proc.read(slot + 8, 8))[0]
+    new_fn = pe.image_base + by_name[dst]["bif_rva"]
+
+    patches = []
+    addr = 0
+    mbi = MEMORY_BASIC_INFORMATION()
+    old_bytes = struct.pack("<Q", old_fn)
+    name_bytes = struct.pack("<Q", name_ptr)
+    while True:
+        size = kernel32.VirtualQueryEx(
+            proc.handle,
+            ctypes.c_void_p(addr),
+            ctypes.byref(mbi),
+            ctypes.sizeof(mbi),
+        )
+        if not size:
+            break
+        if (
+            mbi.State == MEM_COMMIT
+            and mbi.Type == MEM_PRIVATE
+            and (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE))
+        ):
+            region = mbi.RegionSize
+            read_addr = mbi.BaseAddress or 0
+            chunk = 0x10000
+            off = 0
+            while off < region:
+                want = min(chunk, region - off)
+                try:
+                    data = proc.read(read_addr + off, want)
+                except OSError:
+                    off += want
+                    continue
+                pos = data.find(old_bytes)
+                while pos >= 0:
+                    start = max(0, pos - 0x200)
+                    end = min(len(data), pos + 0x200)
+                    if name_bytes in data[start:end]:
+                        patches.append(read_addr + off + pos)
+                    pos = data.find(old_bytes, pos + 1)
+                off += want
+        region = mbi.RegionSize or 0x1000
+        next_addr = addr + region
+        if next_addr <= addr:
+            break
+        addr = next_addr
+
+    if not patches:
+        raise RuntimeError("no Func object found for %s" % src)
+    for p in patches:
+        proc.write(p, struct.pack("<Q", new_fn))
+    return patches
+
+
+def attach(pid: int, redirect=None, eval_expr=None, deep_redirect=None):
     proc = RemoteProcess(
-        pid, write_access=redirect is not None or eval_expr is not None
+        pid,
+        write_access=redirect is not None
+        or eval_expr is not None
+        or deep_redirect is not None,
     )
     try:
         base, module_path = find_main_module(pid)
@@ -606,6 +700,14 @@ def attach(pid: int, redirect=None, eval_expr=None):
                 "dst": dst,
                 "fn_slot": fn_slot,
             }
+        if deep_redirect:
+            src, dst = deep_redirect
+            patches = remote_deep_redirect(proc, pe, report, src, dst)
+            report["deep_redirect"] = {
+                "src": src,
+                "dst": dst,
+                "patched": ["0x%X" % p for p in patches],
+            }
         if eval_expr is not None:
             report["eval_result"] = remote_eval_in_target(
                 proc, pe, eval_expr, report
@@ -637,6 +739,12 @@ def main(argv=None):
         help="redirect a builtin in the running process (e.g. Abs Sin)",
     )
     parser.add_argument(
+        "--deep-redirect",
+        nargs=2,
+        metavar=("SRC", "DST"),
+        help="also patch already-resolved Func objects (e.g. Abs Sin)",
+    )
+    parser.add_argument(
         "--eval",
         help="evaluate an expression inside the running process",
     )
@@ -648,7 +756,12 @@ def main(argv=None):
         pid = find_pid_by_name(args.name)
     else:
         parser.error("one of --pid or --name is required")
-    report = attach(pid, redirect=args.redirect, eval_expr=args.eval)
+    report = attach(
+        pid,
+        redirect=args.redirect,
+        eval_expr=args.eval,
+        deep_redirect=args.deep_redirect,
+    )
     if args.json:
         print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
@@ -667,6 +780,12 @@ def main(argv=None):
         )
     if "eval_result" in report:
         print("eval: %s" % report["eval_result"])
+    if report.get("deep_redirect"):
+        d = report["deep_redirect"]
+        print(
+            "deep redirected %s -> %s at %d object(s)"
+            % (d["src"], d["dst"], len(d["patched"]))
+        )
     for key, label in (
         ("builtins", "builtins"),
         ("native_functions", "native functions"),

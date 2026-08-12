@@ -466,6 +466,7 @@ try {
         </table>
         <p>Ahk2Exe 打包不会让进程内 Eval 失效。编译出的 exe 内嵌同一个 AutoHotkey 运行时，<code>Init</code>、<code>EvalNative</code>、<code>EvalScript</code> 照常工作；四个版本都用 <code>AutoHotkey64.exe</code> 作为 Ahk2Exe base 验证过。<code>EvalSubprocess</code> 也能正常工作：编译 exe 通过 <code>/script</code> 重新进入解释器模式来执行临时脚本。UPX 和 MPRESS 压缩也验证过；压缩包会改写节名，扫描器会退回到基于内容的节分类。正在运行的进程也可以通过 <code>tools/ahk_remote_attach.py</code> 按 PID 从外部扫描同一组表，无需注入，并支持改写运行中的内置函数表。</p>
         <p><code>AttachRemote(pid)</code>把同一套扫描做成 AHK Hook API：<code>OpenProcess</code>加<code>ReadProcessMemory</code>、解析 PE 节、用锚点和连续记录定位三张表。<code>RemoteRedirect(hook, "Abs", "Sin")</code>再把新函数指针写进运行中的 BIF 槽。</p>
+        <p><code>RemoteDeepRedirect(hook, "Abs", "Sin")</code>再深一层：扫描目标堆里已解析的 <code>Func</code> 对象并改写 <code>mBIF</code>，让直接调用 <code>A()</code> 的 <code>B()</code> 也跟着变化。</p>
         <pre><code>F1:: {
     global hook
     hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
@@ -484,6 +485,7 @@ F3:: {
 }</code></pre>
         <p><code>RemoteEval(hook, expr)</code>把 Hook 再推进一步：向目标进程注入线程 stub、内部定位器和求值 blob，用 <code>CreateRemoteThread</code> 执行并读回结果。</p>
         <p>实测验证：启动 <code>tests/remote_hook_resident_target.ahk</code>，把 <code>Abs</code> 重定向为 <code>Sin</code>，再向目标发送 <code>F7</code>。它会输出 <code>0.8414709848078965</code>（即 <code>Sin(1)</code>），而不是原来的 <code>1</code>。远程执行 <code>x := 1 + 2 * 3</code> 后发送 <code>F8</code>，目标会写出 <code>7</code>。</p>
+        <p>函数到函数验证：<code>tests/remote_hook_function_target.ahk</code>定义 <code>B_direct()</code>和 <code>B_dynamic()</code>；<code>tests/remote_hook_function_demo.ahk</code>深补丁 <code>Abs -&gt; Sin</code>后，两个输出都变成 <code>0.8414709848078965</code>。</p>
         <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk

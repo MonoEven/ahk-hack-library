@@ -1,0 +1,40 @@
+#SingleInstance Force
+#NoTrayIcon
+#Include ..\ahk_hack_single.ahk
+
+hook := 0
+targetOut := A_Temp "\ahk_remote_function.out"
+logFile := A_Temp "\ahk_hook_function_demo.log"
+try FileDelete(logFile)
+
+LastLine(prefix) {
+    global targetOut
+    text := FileRead(targetOut)
+    if RegExMatch(text, "m)^" prefix "=(.*)$", &m)
+        return m[1]
+    return ""
+}
+
+F1:: {
+    global hook
+    global logFile
+    name := A_Args.Length ? A_Args[1] : "AutoHotkey64.exe"
+    hook := AhkMagic.AttachRemoteByName(name)
+    FileAppend("attached " hook["pid"] "`n", logFile)
+}
+
+F2:: {
+    global hook
+    global logFile
+    if !hook {
+        FileAppend("press F1 first`n", logFile)
+        return
+    }
+    AhkMagic.RemoteDeepRedirect(hook, "Abs", "Sin")
+    Send "{F7}"
+    Sleep 400
+    Send "{F8}"
+    Sleep 400
+    FileAppend("direct=" LastLine("direct")
+        . " dynamic=" LastLine("dynamic") "`n", logFile)
+}
