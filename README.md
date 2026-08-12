@@ -188,6 +188,7 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 | `RemoteRedirect(hook, name, newName)` | Writes a new function pointer into a running process's BIF table |
 | `RemoteDeepRedirect(hook, name, newName)` | Also patches already-resolved `Func` objects, so direct calls inside other functions change |
 | `RemoteEval(hook, expr)` | Injects a thread into the target and evaluates an expression through its own expression pipeline |
+| `RemoteEvalScript(hook, text)` | Loads a multi-line script inside the target through its script-loading pipeline (function definitions verified) |
 
 ### CnpBridge
 
@@ -308,9 +309,10 @@ name, so the PID file in the test harness is only test orchestration.
 Expressions that depend on string-result buffers may need interpreter-thread
 context calibration.
 
-`RemoteEval` is expression-level (`EvalNative`-style). Remote `EvalScript`
-(loading multi-line script text with new function/class definitions into the
-target through the script-loading pipeline) is not implemented yet.
+`RemoteEvalScript` is implemented at function level: scripts that define new
+functions and evaluate the last expression work inside the target (for example
+`add(a, b)` plus `add(1, 2)` returns `3`). Class definitions are still blocked
+by the interpreter's `Super` parser context in the injected thread.
 
 Remote hooking was also verified against an Ahk2Exe-compiled UPX target:
 `RemoteEval("1 + 2 * 3")` returns `7`, `RemoteEval("x := 1 + 2 * 3")` makes the

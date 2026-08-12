@@ -25,6 +25,22 @@ try {
     Log("after Abs rva=0x" Format("{:X}", hook2["builtins"]["entries"]["Abs"]["rva"]))
     Log("eval=" AhkMagic.RemoteEval(hook, "1 + 2 * 3"))
     Log("evalfloat=" AhkMagic.RemoteEval(hook, "2 * 3.5"))
+    script := "
+    (
+    add(a, b) {
+        return a + b
+    }
+    add(1, 2)
+    )"
+    Log("evalScript=" AhkMagic.RemoteEvalScript(hook, script))
+    mulScript := "
+    (
+    mul(a, b) {
+        return a * b
+    }
+    mul(2, 3)
+    )"
+    Log("evalScriptSecond=" AhkMagic.RemoteEvalScript(hook, mulScript))
     Log("PASS")
     ExitApp 0
 } catch as e {

@@ -5,6 +5,7 @@
 ; The x64 blob below is generated from lib/mcode/scanner.c by
 ; tools/build_mcode.py; it locates g_BIF, sMdFunc and g_BIV_A inside the
 ; running interpreter and copies entry metadata into a caller buffer.
+MC_REMOTE_CALL_STUB_X64 := "564883ec304889ce0f1041284c8b49204c8b4118488b4908488b56100f11442420ff1689463831c04883c4305ec3"
 MC_REMOTE_EVAL_STUB_X64 := "564883ec704889ce0f1041304c8b49284c8b4120488b4910488b56180f11442420ff1689c1894678b80100000085c9754f488b4638488b4e400f10000f104810488b40200f1056604c8b4e584c8b4650488b564848894424680f114c24580f114424480f57c00f114424380f11542420c744243001000000ff560889467c31c04883c4705ec3"
 MC_PE_EXPORT_SCANNER_X64 := "4157415641545657534885c90f94c04885d2410f94c04108c0b8010000000f85fb0000006681394d5a0f85f0000000448b413c41813c08504500000f85de0000006641817c08180b020f85d0000000418b8408880000004885c00f84ab0000004183bc088c000000000f849c0000004c8d0408448b4c08108b7c0818448b540820448b5c08248b74081c4c890248c7421000000000b80800000085ff747881ff0010000041b800100000440f42c74801ce4901ca4901cb4a8d3cc500000000488d3c7f31db66662e0f1f840000000000458b32450fb73b468b24be4901ce4c89741a184c89641a204501cf44897c1a28c7441a2c000000004983c2044983c3024883c3184839df75c7eb0e0f57c00f1102b8100000004531c04c89040231c05b5f5e415c415e415fc3"
 MC_BIF_SCANNER_X64 := "41574156565755534881ec780200004885c90f94c04885d2410f94c04108c0be010000000f85da0600006681394d5a0f85cf0600008b413c813c08504500000f85bf06000066817c08180b020f85b2060000440fb74c0806664183f91041b810000000450f42c1664585c90f84e4020000440fb74c0814410fb7f84801c84c01c8448d04fd000000004f8d04804c8d4c24704531d241bb0100000031ed31dbeb50660f7f442450440fb6742452440fb67c24534180f6614180f7744508f7440fb67424544180f6610fb6db4508fe410f44db66666666662e0f1f8400000000004983c2284983c1204d39d00f84d7000000468b7410204585f6460f44741028468b7c10244901cf4d89394d01f74d8979084e8b74101866490f6ec6660f7f442460440fb67c24604d8971134180ff2e75af66410f7ec641c1ee084180fe640f845dffffff450fb6f64183fe72743d4183fe74758c660f7f442430440fb6742432440fb67c24334180f6654180f7784508f7440fb67424344180f674400fb6ed4508fe410f44ebe955ffffff660f7f442440807c2442640f8544ffffff807c2443610f8539ffffff807c2444740f852effffff66440fc5f00241c1ee084180fe610fb6dbe906ffffff4084ed0f95c184db0f95c020c889f9c1e1054531c0eb24906642c784048000000000004531c946888c04820000004983c0204c39c10f8454010000460fb69404830000004180fa2e753e4280bc04840000007275434280bc04850000007375384280bc048600000072752d4280bc048700000063410f94c184c0746ceb21662e0f1f84000000000084c0758c4531c9eb570f1f80000000004531c984c074494180fa2e0f856fffffff4280bc048400000074754d4280bc04850000006575424280bc04860000007875374280bc048700000074410f94c1eb2b6666666666662e0f1f8400000000004180f10146888c048000000046888c0481000000e925ffffff4531c946888c04800000004280bc04840000007275304280bc04850000006475254280bc048600000061751a4280bc048700000074750f4280bc048800000061410f94c1eb034531c946888c04810000004280bc04840000006475284280bc048500000061751d4280bc04860000007475124280bc048700000061410f94c1e9a1feffff4531c9e999feffff31ff488d420848894424284989d74889542420488d4c247041b92000000089fa4531c0e8a303000085c00f847f0300004d8d7720498d47184c897424284889442420488d4c2470be0100000041b92800000089fa41b801000000e86c03000085c00f8448030000498d5f38498d473048895c24284889442420488d4c247041b91800000089fa41b802000000e83a03000085c00f84160300004c89f849c747102000000049c747282800000049c747401800000049c7474800000000418b570885d27e6dffca4881faff010000b9ff010000480f42ca488b10c1e1054883c1204531c00f1f8400000000004e8b0c024e894c00504e8b4c02084e894c0058460fb64c021046894c0060460fb64c021146894c0064460fb64c021246894c006842c744006c000000004983c0204c39c175ba418b0e85c90f8ea5010000ffc94881f9ff010000baff010000480f42d1488b4818488d1492488d14d5280000004531c0662e0f1f8400000000004e8b0c014e898c00504000004e8b4c01084e898c0058400000460fb64c011046888c0060400000460fb64c011146888c0061400000460fb64c011246888c0062400000460fb64c011346888c0063400000460fb64c011446888c0064400000460fb64c011546888c0065400000460fb64c011646888c0066400000460fb64c011746888c0067400000460fb64c011846888c0068400000460fb64c011946888c0069400000460fb64c011a46888c006a400000460fb64c011b46888c006b400000460fb64c011c46888c006c400000460fb64c011d46888c006d400000460fb64c011e46888c006e400000460fb64c011f46888c006f400000460fb64c012046888c0070400000460fb64c012146888c0071400000460fb64c012246888c0072400000460fb64c012346888c0073400000460fb64c012446888c0074400000460fb64c012546888c0075400000460fb64c012646888c0076400000460fb64c012746888c00774000004983c0284c39c20f858afeffff448b034585c00f8e8c00000041ffc84181f8ff000000baff000000410f42d0488b4830ffc231f64585c074704189d14181e1fe0100004531d24531c04e8b1c114e899c10509000004e8b5c11084e899c10589000004e8b5c11104e899c10609000004e8b5c11184e899c10689000004e8b5c11204e899c10709000004e8b5c11284e899c10789000004983c0024983c2304d39c175a6eb0731f6eb324531c0f6c201742a48055090000049c1e0034b8d14404c8b04114c8904104c8b4411084c89441008488b4c111048894c101089f04881c4780200005b5d5f5e415e415fc3662e0f1f8400000000004157415641554154565755534883ec3085d20f8e76040000488bac24a00000004c8b94249800000089d64889f748c1e70531db48c74424200000000048c744242800000000eb15660f1f84000000000048ffc34839f30f84170400004889da48c1e205488d0411807c11110075068078120074dc4c8b384c8b7008498d47104c39f077cc4d8b27eb404c8b9424980000004c8b0c244c8b5c2408488b4424284939c3490f47c34889442428488b442420490f47c548894424200f1f80000000004983c5184d39f577874d89fd4c89e04983c7084d8b650831d2eb0e0f1f4400004883c2204839d774d7807c1111007507807c11120074e9483944110876e24839041177dc31d2662e0f1f840000000000440fb71c10664585db74254183c381664183fba1729a4c8d5a024883fa7e4c89da75ddeb8b66662e0f1f84000000000031d2eb196666662e0f1f8400000000004883c2204839d70f8463ffffff807c11100074ec4c3964110876e54c39241177df0fb7104183f8010f840f0200004585c00f857d0200006683fa410f852fffffff66837802620f8524ffffffba0600000066837804730f8514ffffff66833c02000f8509ffffff4b8d04294883c01041bb010000004c39f00f87ccfeffff4b8d14294c89e84c890c244c895c240848894424184889d04c8b124c8b5a084531c9eb1b66666666662e0f1f8400000000004983c1204c39cf0f847cfeffff42807c091100750842807c09120074e34e3954090876dc4e39140977d631d20f1f4000450fb70c12664585c974214183c181664183f9a10f823ffeffff4c8d4a024883fa7e4c89ca75d9e92dfeffff31d2eb0d4883c2204839d70f841cfeffff807c11100074ec4c395c110876e54c391c1177df4183f802488944241075406641833a590f85bf0000006641837a02590f85b30000006641837a04590f85a70000006641837a06590f859b0000006641837a08000f858f000000e98e010000488b542418488b1248895424184531db488b542418460fb70c1a430fb7141a664585c974476685d274428d42bf8d6a203c1a400fb6c50f43c2418d51bf418d692080fa1a400fb6d5410f43d138c275274983c3024981fb80000000488bac24a0000000488b44241075a6eb1e664139d17618e946fdffff488bac24a0000000488b4424100f8333fdffff4c8b5c240849ffc34c8b0c244a8d1408488b4424104c01c84883c0104c39f0488b4424104c8b9424980000000f8651feffffe90dfdffff6683fa420f8529fdffff668378026c0f851efdffff668378046f0f8513fdffff66837806630f8508fdffff668378086b0f85fdfcffff6683780a490f85f2fcffff6683780c6e0f85e7fcffff6683780e700f85dcfcffff66837810750f85d1fcffffba1400000066837812740f85c1fcffffe9a8fdffff6683fa410f85b2fcffff66837802680f85a7fcffff668378046b0f859cfcffff66837806500f8591fcffff66837808610f8586fcffff6683780a740f857bfcffffba0e0000006683780c680f856bfcffffe952fdffff4c8b5c240849ffc34c8b9424980000004c8b0c24e927fcffff4c8b4424204d85c00f94c0488b5424284883fa0a0f92c108c1740431c0eb0c4d890248895500b8010000004883c4305b5d5f5e415c415d415e415fc3"
@@ -1857,6 +1858,574 @@ ahkHackLayoutProbe() {
             } finally {
                 DllCall("VirtualFreeEx", "Ptr", h, "Ptr", block, "UPtr", 0
                     , "UInt", 0x8000)
+            }
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
+    }
+
+    static _RemoteCall(h, fnAddr, args) {
+        stub := AhkMagic._HexBuffer(MC_REMOTE_CALL_STUB_X64)
+        param := Buffer(72)
+        NumPut("Ptr", fnAddr, param, 0)
+        loop 6 {
+            val := args.Has(A_Index) ? args[A_Index] : 0
+            NumPut("Ptr", val, param, 8 + 8 * (A_Index - 1))
+        }
+        NumPut("Int", 0, param, 56)
+        block := DllCall("VirtualAllocEx", "Ptr", h, "Ptr", 0
+            , "UPtr", stub.Size + 72, "UInt", 0x3000, "UInt", 0x40, "Ptr")
+        if !block
+            throw Error("VirtualAllocEx failed", -1)
+        try {
+            AhkMagic._RemoteWrite(h, block, stub)
+            AhkMagic._RemoteWrite(h, block + stub.Size, param)
+            tid := 0
+            thread := DllCall("CreateRemoteThread", "Ptr", h, "Ptr", 0
+                , "UPtr", 0, "Ptr", block, "Ptr", block + stub.Size
+                , "UInt", 0, "UInt*", &tid, "Ptr")
+            if !thread
+                throw Error("CreateRemoteThread failed", -1)
+            try {
+                DllCall("WaitForSingleObject", "Ptr", thread, "UInt", 10000)
+                back := AhkMagic._RemoteRead(h, block + stub.Size, 72)
+                return NumGet(back, 56, "Int")
+            } finally {
+                DllCall("CloseHandle", "Ptr", thread)
+            }
+        } finally {
+            DllCall("VirtualFreeEx", "Ptr", h, "Ptr", block, "UPtr", 0
+                , "UInt", 0x8000)
+        }
+    }
+
+    static _RemoteInternalLocator(h, secs, base, postfixRva, expandRva) {
+        text := AhkMagic._TextSection(secs)
+        locator := AhkMagic._HexBuffer(MC_INTERNAL_LOCATOR_X64)
+        block := DllCall("VirtualAllocEx", "Ptr", h, "Ptr", 0
+            , "UPtr", locator.Size + 64, "UInt", 0x3000, "UInt", 0x40, "Ptr")
+        if !block
+            throw Error("VirtualAllocEx failed", -1)
+        try {
+            AhkMagic._RemoteWrite(h, block, locator)
+            locOut := block + locator.Size
+            rc := AhkMagic._RemoteCall(h, block
+                , [base, text["rva"], text["size"], postfixRva, expandRva, locOut])
+            if rc != 0
+                throw Error("remote internal locator rc=" rc, -1)
+            return AhkMagic._RemoteRead(h, locOut, 64)
+        } finally {
+            DllCall("VirtualFreeEx", "Ptr", h, "Ptr", block, "UPtr", 0
+                , "UInt", 0x8000)
+        }
+    }
+
+    static _RemoteLoadScript(h, base, loc, text) {
+        memScript := AhkMagic._HexBuffer(MC_MEM_SCRIPT_X64)
+        textLen := (StrLen(text) + 1) * 2
+        scratchSize := 0x400
+        block := DllCall("VirtualAllocEx", "Ptr", h, "Ptr", 0
+            , "UPtr", memScript.Size + textLen + scratchSize
+            , "UInt", 0x3000, "UInt", 0x40, "Ptr")
+        if !block
+            throw Error("VirtualAllocEx failed", -1)
+        try {
+            AhkMagic._RemoteWrite(h, block, memScript)
+            textAddr := block + memScript.Size
+            scratchAddr := textAddr + textLen
+            textBuf := Buffer(textLen)
+            StrPut(text, textBuf, "UTF-16")
+            AhkMagic._RemoteWrite(h, textAddr, textBuf)
+            gscript := NumGet(loc["loc_out"], 0, "Ptr")
+            loadTs := base + loc["load_ts_rva"]
+            srcCount := loc.Has("src_count_rva") and loc["src_count_rva"]
+                ? base + loc["src_count_rva"] : 0
+            return AhkMagic._RemoteCall(h, block
+                , [loadTs, gscript, srcCount, textAddr, StrLen(text) * 2
+                    , scratchAddr])
+        } finally {
+            DllCall("VirtualFreeEx", "Ptr", h, "Ptr", block, "UPtr", 0
+                , "UInt", 0x8000)
+        }
+    }
+
+    static _RemoteCurrOff(secs, preparseRva) {
+        text := AhkMagic._TextSection(secs)
+        callers := AhkMagic._FindCallers(text, preparseRva)
+        for caller in callers {
+            p := text["ptr"]
+            base := text["rva"]
+            off := AhkMagic._FnStart(text, caller) - base
+            limit := Min(text["size"] - 16, off + 0x4000)
+            i := off
+            while i < limit {
+                if NumGet(p + i, "UChar") = 0xCC
+                    and NumGet(p + i + 1, "UChar") = 0xCC
+                    break
+                if NumGet(p + i, "UChar") = 0x48
+                    and NumGet(p + i + 1, "UChar") = 0x8B
+                    and NumGet(p + i + 2, "UChar") = 0x05 {
+                    j := i + 7
+                    while j < Min(i + 24, limit) {
+                        if NumGet(p + j, "UChar") = 0x48
+                            and NumGet(p + j + 1, "UChar") = 0x89
+                            and (NumGet(p + j + 2, "UChar") = 0x58
+                            or NumGet(p + j + 2, "UChar") = 0x50)
+                            return NumGet(p + j + 3, "UChar")
+                        j += 1
+                    }
+                }
+                i += 1
+            }
+        }
+        return 0
+    }
+
+    static _RemoteParserOffsets(text, loadTsRva) {
+        p := text["ptr"]
+        base := text["rva"]
+        off := loadTsRva - base
+        limit := Min(text["size"] - 8, off + 0x100)
+        qCmp := -1
+        dCmp := -1
+        i := off
+        while i < limit {
+            b0 := NumGet(p + i, "UChar")
+            if b0 = 0x48 and NumGet(p + i + 1, "UChar") = 0x83 {
+                modrm := NumGet(p + i + 2, "UChar")
+                if modrm = 0x79 and NumGet(p + i + 4, "UChar") = 0
+                    and qCmp < 0
+                    qCmp := NumGet(p + i + 3, "UChar")
+                else if modrm = 0xB9 and NumGet(p + i + 7, "UChar") = 0
+                    and qCmp < 0
+                    qCmp := NumGet(p + i + 3, "Int")
+            }
+            if b0 = 0x83 and NumGet(p + i + 1, "UChar") = 0xB9
+                and (i = off or NumGet(p + i - 1, "UChar") != 0x48)
+                and NumGet(p + i + 6, "UChar") = 0
+                and dCmp < 0
+                dCmp := NumGet(p + i + 2, "Int")
+            if qCmp >= 0 and dCmp >= 0
+                break
+            i += 1
+        }
+        if qCmp < 0 or dCmp < 0
+            throw Error("parser state anchors not found", -1)
+        if dCmp > 0x100
+            return Map(
+                "mclass_count", dCmp,
+                "mline_parent", dCmp - 0x30,
+                "mpending_related", dCmp - 0x28,
+                "mlast_param_init", dCmp - 0x20,
+                "mpending_hotkey", dCmp - 0x18,
+                "mexpr_func", dCmp - 0x10,
+                "mexpr_func_index", dCmp - 8,
+                "mnext_func_body", dCmp - 4,
+                "mignore_block", dCmp - 3,
+                "mbackcompat", dCmp - 2,
+                "mcurrent_module", dCmp - 0x50,
+                "mlast_module", dCmp - 0x48)
+        return Map(
+            "mopen", qCmp,
+            "mpending_parent", qCmp + 8,
+            "mpending_related", qCmp + 16,
+            "mlast_param_init", qCmp + 24,
+            "mnext_func_body", qCmp + 32,
+            "mclass_count", dCmp)
+    }
+
+    static _RemoteLocateEvalScript(secs, base) {
+        text := AhkMagic._TextSection(secs)
+        postfixRefs := AhkMagic._RipRefs(text
+            , AhkMagic._FindUtf16(secs, "Missing operand.")[1])
+        postfixRva := AhkMagic._BestStart(text, postfixRefs)
+        expandRefs := AhkMagic._RipRefs(text
+            , AhkMagic._FindUtf16(secs, "Error evaluating expression.")[1])
+        expandRva := AhkMagic._BestStart(text, expandRefs)
+        if !postfixRva or !expandRva
+            throw Error("remote expression functions not found", -1)
+        preparse := 0
+        for caller in AhkMagic._FindCallers(text, postfixRva) {
+            start := AhkMagic._FnStart(text, caller)
+            if AhkMagic._FindBytePatternInFunc(text, start, "803B03")
+                and AhkMagic._FindBytePatternInFunc(text, start, "803B04") {
+                preparse := start
+                break
+            }
+        }
+        if !preparse
+            throw Error("PreparseExpressions not found", -1)
+        preprocess := AhkMagic._LocatePreprocessFunc(text)
+        if !preprocess
+            throw Error("PreprocessLocalVars not found", -1)
+        open := AhkMagic._FindBytePattern(text
+            , "48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200")
+        if !open
+            open := AhkMagic._FindBytePattern(text
+                , "40535556574154415541564157B8D8000100")
+        if !open
+            throw Error("OpenIncludedFile not found", -1)
+        loadTs := AhkMagic._LocateLoadTs(text, open)
+        if !loadTs
+            throw Error("LoadIncludedFile(TextStream) not found", -1)
+        gptr := AhkMagic._LocateGptr(text, preparse)
+        if !gptr
+            throw Error("g pointer not found", -1)
+        currOff := AhkMagic._RemoteCurrOff(secs, preparse)
+        if !currOff
+            throw Error("g->curr offset not found", -1)
+        parser := AhkMagic._RemoteParserOffsets(text, loadTs)
+        return Map(
+            "postfix_rva", postfixRva,
+            "expand_rva", expandRva,
+            "preparse_rva", preparse,
+            "preprocess_rva", preprocess,
+            "open_rva", open,
+            "load_ts_rva", loadTs,
+            "src_count_rva", 0,
+            "gptr_rva", gptr,
+            "curr_off", currOff,
+            "parser", parser)
+    }
+
+    static _RemoteDiscoverLayout(h, secs, base, loc) {
+        locOut := AhkMagic._RemoteInternalLocator(h, secs, base
+            , loc["postfix_rva"], loc["expand_rva"])
+        loc["loc_out"] := locOut
+        gscript := NumGet(locOut, 0, "Ptr")
+        gAddr := base + loc["gptr_rva"]
+        g := NumGet(AhkMagic._RemoteRead(h, gAddr, 8), 0, "Ptr")
+        currOff := loc["curr_off"]
+        snap := AhkMagic._RemoteRead(h, gscript, 0x200)
+        gsnap := AhkMagic._RemoteRead(h, g, 0x100)
+        savedCur := NumGet(AhkMagic._RemoteRead(h, g + currOff, 8), 0, "Ptr")
+        zeroBuf := Buffer(0x100, 0)
+        AhkMagic._RemoteWrite(h, g, zeroBuf)
+        curBuf := Buffer(8)
+        NumPut("Ptr", 0, curBuf, 0)
+        AhkMagic._RemoteWrite(h, g + currOff, curBuf)
+        parser := loc["parser"]
+        for key in ["mopen", "mpending_parent", "mline_parent"
+            , "mpending_related", "mlast_param_init", "mpending_hotkey"
+            , "mexpr_func"]
+            if parser.Has(key)
+                AhkMagic._WPtr(h, gscript + parser[key], 0)
+        if parser.Has("mexpr_func_index")
+            AhkMagic._WInt(h, gscript + parser["mexpr_func_index"], 0x7fffffff)
+        if parser.Has("mnext_func_body")
+            AhkMagic._WByte(h, gscript + parser["mnext_func_body"], 0)
+        if parser.Has("mignore_block")
+            AhkMagic._WByte(h, gscript + parser["mignore_block"], 0)
+        if parser.Has("mbackcompat")
+            AhkMagic._WByte(h, gscript + parser["mbackcompat"], 1)
+        if parser.Has("mclass_count")
+            AhkMagic._WInt(h, gscript + parser["mclass_count"], 0)
+        probe := "
+        (
+        ahkHackLayoutProbe() {
+            return 1
+        }
+        )"
+        rc := AhkMagic._RemoteLoadScript(h, base, loc, probe)
+        if rc != 0
+            throw Error("layout probe load rc=" rc, -1)
+        after := AhkMagic._RemoteRead(h, gscript, 0x200)
+        countOff := 0
+        loop 0x200 // 4 {
+            off := (A_Index - 1) * 4
+            before := NumGet(snap, off, "Int")
+            afterVal := NumGet(after, off, "Int")
+            if afterVal = before + 1 and before >= 0 and afterVal < 100000 {
+                countOff := off
+                break
+            }
+        }
+        if !countOff
+            throw Error("mFuncsCount offset not found", -1)
+        oldCount := NumGet(snap, countOff, "Int")
+        lastOff := -1
+        loop 0x200 // 8 {
+            off := (A_Index - 1) * 8
+            before := NumGet(snap, off, "Ptr")
+            afterVal := NumGet(after, off, "Ptr")
+            if before != afterVal and afterVal > 0x10000 {
+                lastOff := off
+                break
+            }
+        }
+        if lastOff < 0
+            throw Error("mLastLine offset not found", -1)
+        oldLast := NumGet(snap, lastOff, "Ptr")
+        newLast := NumGet(after, lastOff, "Ptr")
+        lineSet := Map()
+        line := oldLast ? NumGet(AhkMagic._RemoteRead(h, oldLast + 32, 8)
+            , 0, "Ptr") : 0
+        loop 10000 {
+            if !line
+                break
+            lineSet[line] := true
+            if line = newLast
+                break
+            line := NumGet(AhkMagic._RemoteRead(h, line + 32, 8), 0, "Ptr")
+        }
+        funcsOff := 0
+        jumpOff := 0
+        loop 0x200 // 8 {
+            off := (A_Index - 1) * 8
+            p := NumGet(after, off, "Ptr")
+            if p <= 0x10000 or p >= 0x7fffffffffff
+                continue
+            try {
+                newFunc := NumGet(AhkMagic._RemoteRead(h, p + oldCount * 8, 8)
+                    , 0, "Ptr")
+            } catch
+                continue
+            if newFunc <= 0x10000 or newFunc >= 0x7fffffffffff
+                continue
+            loop 0x100 // 8 {
+                joff := (A_Index - 1) * 8
+                try {
+                    q := NumGet(AhkMagic._RemoteRead(h, newFunc + joff, 8)
+                        , 0, "Ptr")
+                } catch
+                    continue
+                if q > 0x10000 and lineSet.Has(q) {
+                    funcsOff := off
+                    jumpOff := joff
+                    break
+                }
+            }
+            if funcsOff
+                break
+        }
+        if !funcsOff or !jumpOff
+            throw Error("mFuncs/mJumpLine offset not found", -1)
+        AhkMagic._RemoteWrite(h, gscript, snap)
+        AhkMagic._RemoteWrite(h, g, gsnap)
+        savedBuf := Buffer(8)
+        NumPut("Ptr", savedCur, savedBuf, 0)
+        AhkMagic._RemoteWrite(h, g + currOff, savedBuf)
+        return Map(
+            "gscript", gscript,
+            "g", g,
+            "curr_off", currOff,
+            "mfuncs_off", funcsOff,
+            "mfuncs_count_off", countOff,
+            "mlast_line_off", lastOff,
+            "mjump_line_off", jumpOff,
+            "parser", loc["parser"])
+    }
+
+    static _RPtr(h, addr) {
+        return NumGet(AhkMagic._RemoteRead(h, addr, 8), 0, "Ptr")
+    }
+
+    static _RInt(h, addr) {
+        return NumGet(AhkMagic._RemoteRead(h, addr, 4), 0, "Int")
+    }
+
+    static _WPtr(h, addr, val) {
+        buf := Buffer(8)
+        NumPut("Ptr", val, buf, 0)
+        AhkMagic._RemoteWrite(h, addr, buf)
+    }
+
+    static _WInt(h, addr, val) {
+        buf := Buffer(4)
+        NumPut("Int", val, buf, 0)
+        AhkMagic._RemoteWrite(h, addr, buf)
+    }
+
+    static _WByte(h, addr, val) {
+        buf := Buffer(1)
+        NumPut("UChar", val, buf, 0)
+        AhkMagic._RemoteWrite(h, addr, buf)
+    }
+
+    static RemoteEvalScript(hook, text) {
+        if !(hook is Map) or !hook.Has("pid")
+            throw TypeError("hook must be an AttachRemote result", -1)
+        if !(text is String) or Trim(text) = ""
+            throw TypeError("text must be a non-empty string", -1)
+
+        h := AhkMagic._RemoteOpen(hook["pid"], true)
+        try {
+            mod := AhkMagic._RemoteModuleBase(h, hook["pid"])
+            secs := AhkMagic._RemoteSections(h, mod["base"])
+            if hook.Has("script_loc") and hook.Has("script_layout") {
+                loc := hook["script_loc"]
+                layout := hook["script_layout"]
+            } else {
+                loc := AhkMagic._RemoteLocateEvalScript(secs, mod["base"])
+                layout := AhkMagic._RemoteDiscoverLayout(h, secs, mod["base"], loc)
+                hook["script_loc"] := loc
+                hook["script_layout"] := layout
+            }
+            locOut := loc["loc_out"]
+            gscript := layout["gscript"]
+            g := layout["g"]
+            currOff := layout["curr_off"]
+            parser := layout["parser"]
+            oldLast := AhkMagic._RPtr(h, gscript + layout["mlast_line_off"])
+            oldFuncCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
+            savedCur := AhkMagic._RPtr(h, g + currOff)
+
+            savedState := []
+            for key in ["mopen", "mpending_parent", "mline_parent"
+                , "mpending_related", "mlast_param_init", "mpending_hotkey"
+                , "mexpr_func", "mcurrent_module"]
+                if parser.Has(key)
+                    savedState.Push([key, "Ptr"
+                        , AhkMagic._RPtr(h, gscript + parser[key])])
+            for key in ["mexpr_func_index", "mclass_count"]
+                if parser.Has(key)
+                    savedState.Push([key, "Int"
+                        , AhkMagic._RInt(h, gscript + parser[key])])
+            for key in ["mnext_func_body", "mignore_block", "mbackcompat"]
+                if parser.Has(key)
+                    savedState.Push([key, "UChar"
+                        , NumGet(AhkMagic._RemoteRead(h, gscript + parser[key], 1)
+                            , 0, "UChar")])
+
+            try {
+                for key in ["mopen", "mpending_parent", "mline_parent"
+                    , "mpending_related", "mlast_param_init"
+                    , "mpending_hotkey", "mexpr_func"]
+                    if parser.Has(key)
+                        AhkMagic._WPtr(h, gscript + parser[key], 0)
+                if parser.Has("mexpr_func_index")
+                    AhkMagic._WInt(h, gscript + parser["mexpr_func_index"]
+                        , 0x7fffffff)
+                if parser.Has("mnext_func_body")
+                    AhkMagic._WByte(h, gscript + parser["mnext_func_body"], 0)
+                if parser.Has("mignore_block")
+                    AhkMagic._WByte(h, gscript + parser["mignore_block"], 0)
+                if parser.Has("mbackcompat")
+                    AhkMagic._WByte(h, gscript + parser["mbackcompat"], 1)
+                if parser.Has("mclass_count")
+                    AhkMagic._WInt(h, gscript + parser["mclass_count"], 0)
+                AhkMagic._WPtr(h, g + currOff, 0)
+
+                rc := AhkMagic._RemoteLoadScript(h, mod["base"], loc, text)
+                if rc != 0
+                    throw Error("LoadIncludedFile(memory) rc=" rc, -1)
+
+                funcsItem := AhkMagic._RPtr(h, gscript + layout["mfuncs_off"])
+                funcCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
+                if funcCount > oldFuncCount {
+                    firstNew := oldLast
+                        ? AhkMagic._RPtr(h, oldLast + 32) : 0
+                    if firstNew {
+                        rc := AhkMagic._RemoteCall(h
+                            , mod["base"] + loc["preparse_rva"]
+                            , [gscript, firstNew])
+                        if rc != 1
+                            throw Error("PreparseExpressions(tail) rc=" rc, -1)
+                    }
+                    loop funcCount - oldFuncCount {
+                        idx := oldFuncCount + A_Index - 1
+                        newFunc := AhkMagic._RPtr(h, funcsItem + idx * 8)
+                        jump := AhkMagic._RPtr(h
+                            , newFunc + layout["mjump_line_off"])
+                        if !jump
+                            continue
+                        rc := AhkMagic._RemoteCall(h
+                            , mod["base"] + loc["preparse_rva"]
+                            , [gscript, jump])
+                        if rc != 1
+                            throw Error("PreparseExpressions rc=" rc, -1)
+                        AhkMagic._WPtr(h, g + currOff, newFunc)
+                        line := jump
+                        while line {
+                            lineData := AhkMagic._RemoteRead(h, line, 40)
+                            action := NumGet(lineData, 0, "UChar")
+                            attr := NumGet(lineData, 16, "Ptr")
+                            argc := NumGet(lineData, 1, "UChar")
+                            arg := NumGet(lineData, 8, "Ptr")
+                            if action = 3 and attr
+                                AhkMagic._WPtr(h, g + currOff, attr)
+                            if argc and arg
+                                and NumGet(AhkMagic._RemoteRead(h, arg + 1, 1)
+                                    , 0, "UChar") {
+                                postfix := AhkMagic._RPtr(h, arg + 24)
+                                if postfix {
+                                    loop {
+                                        token := AhkMagic._RemoteRead(h
+                                            , postfix, 24)
+                                        symbol := NumGet(token, 16, "UInt")
+                                        if symbol = NumGet(locOut, 32, "UInt")
+                                            break
+                                        if symbol = 4
+                                            and NumGet(token, 8, "UInt") < 3 {
+                                            deref := NumGet(token, 0, "Ptr")
+                                            if deref {
+                                                derefData := AhkMagic._RemoteRead(h
+                                                    , deref, 24)
+                                                derefType := NumGet(derefData
+                                                    , 16, "UChar")
+                                                marker := NumGet(derefData
+                                                    , 0, "Ptr")
+                                                derefLen := NumGet(derefData
+                                                    , 20, "UInt")
+                                                if derefType = 7 {
+                                                    AhkMagic._WPtr(h, postfix
+                                                        , AhkMagic._RPtr(h
+                                                            , deref + 8))
+                                                } else if derefType = 0
+                                                    and marker
+                                                    and derefLen > 0
+                                                    and derefLen <= 64 {
+                                                    var := AhkMagic._RemoteCall(h
+                                                        , NumGet(locOut, 16, "Ptr")
+                                                        , [gscript, marker
+                                                            , derefLen, 0x103])
+                                                    if var
+                                                        AhkMagic._WPtr(h, postfix
+                                                            , var)
+                                                }
+                                            }
+                                        }
+                                        postfix += 24
+                                    }
+                                }
+                            }
+                            line := AhkMagic._RPtr(h, line + 32)
+                        }
+                        AhkMagic._WPtr(h, g + currOff, savedCur)
+                        rc := AhkMagic._RemoteCall(h
+                            , mod["base"] + loc["preprocess_rva"]
+                            , [gscript, newFunc])
+                        if rc != 1
+                            throw Error("PreprocessLocalVars rc=" rc, -1)
+                    }
+                }
+                AhkMagic._WPtr(h, g + currOff, 0)
+
+                last := ""
+                for raw in StrSplit(text, "`n", "`r") {
+                    t := Trim(raw)
+                    if t = ""
+                        continue
+                    if RegExMatch(t
+                        , "^(if|else|for|while|loop|try|catch|finally|return|break|continue|class|static|global|local|throw)\b")
+                        continue
+                    if SubStr(t, -1) = "{"
+                        continue
+                    last := t
+                }
+                if last = ""
+                    throw ValueError("no expression result found in script text")
+                return AhkMagic.RemoteEval(hook, last)
+            } finally {
+                for item in savedState {
+                    if item[2] = "Ptr"
+                        AhkMagic._WPtr(h, gscript + parser[item[1]], item[3])
+                    else if item[2] = "Int"
+                        AhkMagic._WInt(h, gscript + parser[item[1]], item[3])
+                    else
+                        AhkMagic._WByte(h, gscript + parser[item[1]], item[3])
+                }
+                AhkMagic._WPtr(h, g + currOff, savedCur)
             }
         } finally {
             DllCall("CloseHandle", "Ptr", h)
