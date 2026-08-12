@@ -167,6 +167,17 @@ view := CnpBridge.View(arr)         ; zero-copy read/write view
 & D:\...\AutoHotkey64.exe examples\ahk_hack_builtin_probe.ahk Abs StrLen
 ```
 
+### GUI console
+
+`ahk_hack_gui.ahk` provides a visual remote console: pick a running AutoHotkey
+process, attach, evaluate expressions, load scripts, redirect builtins, and
+watch expressions on a timer. It is aimed at live debugging and interpreter
+research; see [docs/gui-and-debugging.md](docs/gui-and-debugging.md).
+
+```powershell
+AutoHotkey64.exe ahk_hack_gui.ahk
+```
+
 ## API Reference
 
 ### AhkMagic
@@ -480,6 +491,7 @@ blog_ahk_hack_en.txt        blog post (EN)
 docs/                       bilingual GitHub Pages blog site
 ahk_hack_single.ahk         standalone single-file core
 ahk_hack_demo.ahk           runnable self-test demo
+ahk_hack_gui.ahk            visual remote console (attach/eval/script/hook)
 ```
 
 ## Building from Source

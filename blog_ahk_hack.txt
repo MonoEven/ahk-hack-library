@@ -58,6 +58,7 @@ python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk
 [codebox=text file=library-layout]
 ahk_hack_single.ahk        单文件核心
 ahk_hack_demo.ahk          可直接运行的演示
+ahk_hack_gui.ahk           可视化远程控制台
 lib/
   init.ahk                 核心入口，仅扫描
   ahk_hack.ahk             MCode() + AhkMagic

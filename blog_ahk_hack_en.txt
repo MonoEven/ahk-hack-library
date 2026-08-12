@@ -58,6 +58,7 @@ Library layout:
 [codebox=text file=library-layout]
 ahk_hack_single.ahk        single-file core
 ahk_hack_demo.ahk          runnable demo
+ahk_hack_gui.ahk           visual remote console
 lib/
   init.ahk                 core entry, scanning only
   ahk_hack.ahk             MCode() + AhkMagic
