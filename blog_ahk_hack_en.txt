@@ -462,7 +462,7 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - [c]PatchBif()[/c] and [c]RemoteRedirect()[/c] do not retroactively affect already-cached function objects; use [c]PatchBifObject()[/c]/[c]RemoteDeepRedirect()[/c] for that;
 - [c]RemoteReplaceFuncBody()[/c] requires both the source and destination functions to be loaded in the target process;
 - [c]RemoteEval[/c] is verified for numeric expressions and simple builtin calls; complex string-result paths still need interpreter-thread context calibration;
-- Remote script loading requires the target and the attacher to use the same runtime family; verified on four interpreter versions and a compiled UPX target.
+- Remote script loading does not require the target and attacher to be the same version; all 16 interpreter x interpreter combinations and the compiled UPX target passed. The target only needs to be a supported 64-bit AutoHotkey v2 runtime.
 
 
 [b]11. Closing[/b]

@@ -462,7 +462,7 @@ UPX 和 MPRESS 压缩也验证过。压缩后的 exe 会改写解释器节名，
 - [c]PatchBif()[/c]和[c]RemoteRedirect()[/c]对已经缓存的函数对象不追溯生效，需要[c]PatchBifObject()[/c]/[c]RemoteDeepRedirect()[/c]；
 - [c]RemoteReplaceFuncBody()[/c]要求源函数和目标函数都已加载进目标进程；
 - [c]RemoteEval[/c]已验证数字表达式和简单内置调用；依赖字符串结果缓冲的复杂表达式仍需在解释器线程上下文里进一步校准；
-- 远程脚本加载要求目标与挂载脚本使用同一运行时家族；已验证四个解释器版本与编译 UPX 目标。
+- 远程脚本加载不要求目标与挂载脚本版本一致；四个解释器版本互相组合和编译 UPX 目标均已验证，只要求目标是受支持的 x64 AutoHotkey v2 运行时。
 
 
 [b]11. 写在后面[/b]
