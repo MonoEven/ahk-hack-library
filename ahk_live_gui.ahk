@@ -47,10 +47,11 @@ global gReloadResult := 0
 global gReloader := 0
 global gForensicsResult := 0
 
-AhkLive_OnError(e) {
+AhkLive_OnError(e, exitCode := 0) {
     msg := FormatTime(, "HH:mm:ss") " ERR " e.What
         . " | " e.Message " | line " e.Line
         . (e.Extra = "" ? "" : " | " e.Extra)
+        . " | exit=" exitCode
     try {
         global gLog
         if gLog
