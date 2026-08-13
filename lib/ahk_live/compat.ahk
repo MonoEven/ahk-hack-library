@@ -2,7 +2,12 @@ class AhkLiveCompat {
     static ExportCsv(hook, path) {
         funcs := AhkLive.ListFunctions(hook)
         classes := AhkLive.ListClasses(hook)
-        try FileDelete(path)
+        if FileExist(path) {
+    try {
+        FileDelete(path)
+    } catch {
+    }
+}
         FileAppend("kind,name,arity,params`n", path, "UTF-8")
         for name, info in funcs {
             params := ""

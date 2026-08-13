@@ -85,20 +85,28 @@ static u8 ptr_in_text(u64 p, SecRange *secs, int n)
     return 0;
 }
 
+/* Upper bound (in u16 units) of a string starting at p: the section end
+ * caps every read so a name near the end of a section can never run into
+ * the next mapping.  Returns 0 when p lies in no data section. */
+static u64 str_limit(u64 p, SecRange *secs, int n)
+{
+    int i;
+    for (i = 0; i < n; ++i)
+        if ((secs[i].is_rdata || secs[i].is_data)
+            && in_range(p, secs[i].start, secs[i].end))
+            return (secs[i].end - p) / 2;
+    return 0;
+}
+
 static u8 str_valid(u64 p, SecRange *secs, int n)
 {
     u64 i;
-    int found = 0;
-    for (i = 0; i < (u64)n; ++i)
-        if ((secs[i].is_rdata || secs[i].is_data)
-            && in_range(p, secs[i].start, secs[i].end))
-        {
-            found = 1;
-            break;
-        }
-    if (!found)
+    u64 limit = str_limit(p, secs, n);
+    if (limit == 0)
         return 0;
-    for (i = 0; i < 64; ++i)
+    if (limit > 64)
+        limit = 64;
+    for (i = 0; i < limit; ++i)
     {
         u16 ch = *(u16 *)(p + 2 * i);
         if (ch == 0)
@@ -163,19 +171,28 @@ static u8 is_rsrc_name(u8 *np)
     return name_eq(np, ".rsrc", 5);
 }
 
-static u8 name_le(u64 a, u64 b)
+static u8 name_le(u64 a, u64 b, SecRange *secs, int n)
 {
     u64 i;
-    for (i = 0; i < 64; ++i)
+    u64 la = str_limit(a, secs, n);
+    u64 lb = str_limit(b, secs, n);
+    u64 limit = 64;
+    if (la && la < limit)
+        limit = la;
+    if (lb && lb < limit)
+        limit = lb;
+    if (limit == 0)
+        return 0; /* unreadable name; reject the record */
+    for (i = 0; i < limit; ++i)
     {
         u16 ca = *(u16 *)(a + 2 * i);
         u16 cb = *(u16 *)(b + 2 * i);
-        u8 la = lower((u8)ca);
-        u8 lb = lower((u8)cb);
+        u8 lca = lower((u8)ca);
+        u8 lcb = lower((u8)cb);
         if (ca == 0 || cb == 0)
             return ca <= cb;
-        if (la != lb)
-            return la < lb;
+        if (lca != lcb)
+            return lca < lcb;
     }
     return 1;
 }
@@ -202,7 +219,7 @@ static u64 count_run(u64 start, u64 section_end, SecRange *secs, int n,
                 break;
             }
         }
-        else if (!name_le(prev_name, curr_name))
+        else if (!name_le(prev_name, curr_name, secs, n))
             break;
         ++count;
         prev = q;
@@ -280,6 +297,8 @@ int AhkScanTables(u64 base, ScanOut *out)
     u8 has_text = 0;
     u8 has_data = 0;
     u8 strict;
+    u64 image_size;
+    u64 image_end;
 
     if (base == 0 || out == 0)
         return 1;
@@ -298,6 +317,8 @@ int AhkScanTables(u64 base, ScanOut *out)
     if (num_sections > 16)
         num_sections = 16;
     section_table = base + pe_offset + 24 + opt_size;
+    image_size = *(u32 *)(base + pe_offset + 24 + 56); /* SizeOfImage */
+    image_end = image_size ? base + image_size : 0;
 
     for (i = 0; i < num_sections; ++i)
     {
@@ -311,6 +332,10 @@ int AhkScanTables(u64 base, ScanOut *out)
         u64 size = vsize ? vsize : raw_size;
         secs[n].start = base + va;
         secs[n].end = secs[n].start + size;
+        /* A corrupt or adversarial header must never extend a section past
+         * the mapped image: every scan below walks [start, end). */
+        if (image_end && secs[n].end > image_end)
+            secs[n].end = image_end;
         for (k = 0; k < 8; ++k)
             secs[n].name[k] = np[k];
         if (name_eq(np, ".text", 5))

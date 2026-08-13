@@ -4,7 +4,12 @@
 #Include lib\ahk_live\init.ahk
 
 outFile := A_Temp "\ahk_live_cli.out"
-try FileDelete(outFile)
+if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
 
 if A_Args.Length >= 1 and A_Args[1] = "--version" {
     FileAppend(AhkLive.VERSION, outFile, "UTF-8")

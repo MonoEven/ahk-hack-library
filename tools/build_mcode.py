@@ -45,9 +45,17 @@ def parse_coff_text(obj: bytes):
                 "nreloc": nreloc,
             }
         )
-    text_sec = next((s for s in sections if s["name"] == b".text"), None)
-    if text_sec is None:
-        raise RuntimeError("no .text section found")
+    text_sections = [s for s in sections if s["name"] == b".text"]
+    if len(text_sections) != 1:
+        raise RuntimeError(
+            "expected exactly one .text section, found %d" % len(text_sections)
+        )
+    text_sec = text_sections[0]
+    if text_sec["raw_ptr"] + text_sec["raw_size"] > len(obj):
+        raise RuntimeError(
+            ".text section truncated: raw_ptr=%d raw_size=%d file=%d"
+            % (text_sec["raw_ptr"], text_sec["raw_size"], len(obj))
+        )
     text = bytearray(obj[text_sec["raw_ptr"] : text_sec["raw_ptr"] + text_sec["raw_size"]])
     if not text:
         raise RuntimeError("empty .text section")
@@ -72,6 +80,15 @@ def parse_coff_text(obj: bytes):
         if target_sec["name"] != b".text":
             raise RuntimeError("relocation escapes .text; not self-contained")
         target_off = value
+        if field_off + 4 > len(text):
+            raise RuntimeError(
+                "relocation field offset %d past end of .text" % field_off
+            )
+        if target_off >= len(text):
+            raise RuntimeError(
+                "relocation target 0x%X escapes the blob (size 0x%X)"
+                % (target_off, len(text))
+            )
         field_abs = field_off
         displacement = target_off - (field_abs + 4)
         struct.pack_into("<i", text, field_off, displacement)

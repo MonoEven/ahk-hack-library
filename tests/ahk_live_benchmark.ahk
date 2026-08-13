@@ -2,7 +2,12 @@
 
 pid := Integer(A_Args[1])
 outFile := A_Temp "\ahk_live_benchmark.out"
-try FileDelete(outFile)
+if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
 
 try {
     session := AhkLiveSession()

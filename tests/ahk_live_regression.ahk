@@ -3,8 +3,18 @@
 pid := Integer(A_Args[1])
 outFile := A_Temp "\ahk_live_regression.out"
 traceLog := A_Temp "\ahk_live_regression_trace.log"
-try FileDelete(outFile)
-try FileDelete(traceLog)
+if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
+if FileExist(traceLog) {
+    try {
+        FileDelete(traceLog)
+    } catch {
+    }
+}
 
 try {
     session := AhkLiveSession()

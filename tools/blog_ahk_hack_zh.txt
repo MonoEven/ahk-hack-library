@@ -124,7 +124,7 @@ MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0，同进程
 MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5，同进程
 [/codebox]
 
-[c]EvalNative[/c]构造临时[c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的[c]ExpressionToPostfix[/c]和[c]ExpandExpression[/c]。已验证的四个版本上都支持字面量、运算符、全局变量与函数调用；不支持的语法会直接报错。[c]Eval[/c]先走同进程管线，需要时再使用[c]EvalSubprocess[/c]。
+[c]EvalNative[/c]构造临时[c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的[c]ExpressionToPostfix[/c]和[c]ExpandExpression[/c]。已验证的四个版本上都支持字面量、运算符、全局变量与函数调用；不支持的语法会直接报错。[c]Eval[/c]先走同进程管线，需要时再使用[c]EvalSubprocess[/c]。对象也能求值：裸函数名返回活着的[c]Func[/c]对象、类名返回[c]Class[/c]对象，因此[c]EvalNative("Abs")[/c]可以直接拿来用。
 
 [color=#BF4000][b]5.2 函数定义[/b][/color]
 
@@ -162,13 +162,13 @@ MsgBox AhkMagic.EvalScript(classScript)     ; 1，类定义并实例化
 MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2，类已加载并在进程内使用
 [/codebox]
 
-[c]EvalScript[/c]不写临时[c].ahk[/c]文件：它把文本编码成 UTF-16，在 scratch 缓冲区里构造[c]TextMem[/c]兼容的[c]TextStream[/c]，直接交给[c]LoadIncludedFile(TextStream*)[/c]，所以函数定义和类定义都能在进程内生效。
+[c]EvalScript[/c]加载脚本文本本身不写临时[c].ahk[/c]文件：它把文本编码成 UTF-16，在 scratch 缓冲区里构造[c]TextMem[/c]兼容的[c]TextStream[/c]，直接交给[c]LoadIncludedFile(TextStream*)[/c]，所以函数定义和类定义都能在进程内生效。注入前会先用解释器自己的[c]/validate[/c]开关做语法预检（见 8.2 节），语法错误会携带真实的解析信息变成干净的库错误，而不是杀掉宿主进程；验证子进程静默运行并自行捕获输出，超时即杀掉整个进程树，不会在屏幕上留下对话框；只有这次预检使用临时文件，用后即删。
 
 [color=#BF4000][b]5.4 原理[/b][/color]
 
 [c]为什么这样就能 Eval：[/c]AutoHotkey 不会直接求值表达式字符串。脚本加载时，[c]Line::ExpressionToPostfix[/c]把每个表达式编译成后缀[c]ExprTokenType[/c]数组，[c]PreparseExpressions[/c]在加载期预编译表达式行，[c]PreprocessLocalVars[/c]绑定局部变量，最后[c]Line::ExpandExpression[/c]执行后缀。[c]EvalNative()[/c]构造同样的临时[c]Line[/c]/[c]ArgStruct[/c]并调用这些函数，所以复用的是解释器自己的语法和求值语义。[c]EvalScript()[/c]则通过内存[c]TextStream[/c]喂给同一条[c]LoadIncludedFile(TextStream*, int)[/c]管线；解析器不知道文本来自磁盘还是合成流，这就是函数和类能在进程内生效的原因。
 
-[c]动态获取原理：[/c]稳定错误字符串在每次构建里都由 RIP 相对的[c]lea[/c]指令引用，扫描这些交叉引用并回退到函数开头就能得到函数地址；全局变量也用同样方式物化。布局偏移则让运行中的解释器自己暴露：一次性探针加载一个临时函数，diff 存活[c]Script[/c]对象得到[c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c]，沿新函数的行链找到[c]mJumpLine[/c]，再从[c]LoadIncludedFile[/c]的[c]cmp[/c] prologue 读取解析器状态锚点。[c]TextStream[/c]对象同时填充两个[c]mData[/c]区域，不需要选择布局。
+[c]动态获取原理：[/c]稳定错误字符串在每次构建里都由 RIP 相对的[c]lea[/c]指令引用，扫描这些交叉引用并回退到函数开头就能得到函数地址；全局变量也用同样方式物化。布局偏移则让运行中的解释器自己暴露：一次性探针加载一个临时函数，diff 存活[c]Script[/c]对象得到[c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c]，沿新函数的行链找到[c]mJumpLine[/c]，再从[c]LoadIncludedFile[/c]的[c]cmp[/c] prologue 读取解析器状态锚点。[c]TextStream[/c]对象同时填充两个[c]mData[/c]区域，不需要选择布局；每次加载再以结果验证（[c]rc == 1[/c]，探针加载还要函数计数增加），布局不同的构建会在探针阶段显式报错而不是错解析文本。
 
 [c]多版本兼容：[/c]四版本矩阵用同一份 blob 跑 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30。稳定偏移在这些构建中没有变化；变化的都改为运行时发现。无法识别的布局会让探针抛错，不猜测偏移，失败因此是显式且隔离的。
 
@@ -279,7 +279,7 @@ F8:: {
 
 [color=#BF4000][b]6.4 RemoteEval[/b][/color]
 
-[c]RemoteEval(hook, expr)[/c]把内部定位器和表达式求值 blob 连同一个小型线程 stub 写进目标进程，用[c]CreateRemoteThread[/c]执行，再读回结果。[c]1 + 2 * 3[/c]、[c]2 * 3.5[/c]这类基础表达式已远程验证；字符串字面量和返回字符串的内置调用（如[c]SubStr[/c]、[c]Format[/c]）也能正确读回。
+[c]RemoteEval(hook, expr)[/c]把内部定位器和表达式求值 blob 连同一个小型线程 stub 写进目标进程，用[c]CreateRemoteThread[/c]执行，再读回结果。[c]1 + 2 * 3[/c]、[c]2 * 3.5[/c]这类基础表达式已远程验证；字符串字面量和返回字符串的内置调用（如[c]SubStr[/c]、[c]Format[/c]）也能正确读回。对象无法跨进程传递：[c]RemoteEval(hook, "Add")[/c]返回目标进程内对象地址（整数）。如果注入的求值挂起，调用会在 10 秒后超时并抛出清晰错误，同时有意泄漏注入块——释放目标仍在执行的内存会把它打崩（见 8.3 节）。
 
 目标进程不需要任何特殊代码：不需要[c]#Include[/c]、不需要导出指针、不需要回调，也不需要内嵌元数据。测试脚本里写 PID 文件只是测试编排用的，[c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c]可以直接按映像名解析 PID。
 
@@ -287,7 +287,7 @@ F8:: {
 
 [color=#BF4000][b]6.5 RemoteEvalScript[/b][/color]
 
-[c]RemoteEvalScript(hook, text)[/c]通过目标自己的脚本加载管线在目标里加载多行脚本。注入线程会在[c]PreparseExpressions[/c]前设置[c]g->CurrentFunc[/c]，所以函数和 class 定义都能正常工作。
+[c]RemoteEvalScript(hook, text)[/c]通过目标自己的脚本加载管线在目标里加载多行脚本。注入线程会在[c]PreparseExpressions[/c]前设置[c]g->CurrentFunc[/c]，所以函数和 class 定义都能正常工作。布局发现需要活的函数条目来校验，因此对脚本里没有任何用户函数的目标，会先经目标自己的加载器注入两个随机命名的探针函数并对其 preparse，再重试发现（见 8.5 节）——挂到全新空脚本上也能直接工作。
 
 [codebox=autohotkey file=remote-eval-script]
 #Include ahk_hack_single.ahk
@@ -494,7 +494,36 @@ demo ready
 [/codebox]
 
 
-[b]8. 安全性[/b]
+[b]8. 鲁棒性与失败行为[/b]
+
+库把自身的输入和目标进程的内存都当作不可信数据，所有失败模式都设计成显式报错而不是静默出错。
+
+[color=#BF4000][b]8.1 读取校验[/b][/color]
+
+[c]Init()[/c]与[c]ScanExports()[/c]按扫描器输出契约封顶记录数（512/512/256 与 4096 条）、校验表步长，并在解引用前对每个名字指针做内存映射检查。超出契约的运行时会得到明确的[c]unsupported interpreter layout[/c]错误而不是越界读取；Init 失败会重置自身状态，下次调用可干净重试。机器码扫描器同步加固：导出子表指针与序号按镜像边界校验、节尾用[c]SizeOfImage[/c]封顶、字符串扫描在节边界处停止。
+
+[color=#BF4000][b]8.2 语法预检[/b][/color]
+
+解释器自己的加载器遇到语法错误会中止整个进程，库无法捕获。因此[c]EvalScript()[/c]与[c]RemoteEvalScript()[/c]在注入前先用解释器自己的[c]/validate[/c]开关预检文本——远程路径使用目标自己的可执行文件。语法错误现在会在触碰任何解释器状态之前变成携带真实解析信息的干净库错误，宿主或目标进程保持存活。验证子进程以[c]/ErrorStdOut[/c]静默运行并把全部输出捕获到文件；个别构建若仍因对话框挂起，库会在六秒内杀掉验证器的整个进程树并退回加载器自身的失败检查。个别版本才有的语义加载警告会被容忍，因此引用宿主/目标中已有名字的合法脚本照常加载。
+
+[color=#BF4000][b]8.3 远程超时[/b][/color]
+
+挂起的表达式无法被安全杀死：终止一个正处在解释器内部的注入线程会损坏目标进程。[c]RemoteEval()[/c]与远程调用辅助函数等待 10 秒后抛出清晰的超时错误，并有意泄漏注入块，而不是释放目标可能仍在执行的内存。目标进程继续运行；代价是每次超时一个有界的 8 MiB 分配。
+
+[color=#BF4000][b]8.4 对象返回值[/b][/color]
+
+求值裸名字现在返回对象而不是“unknown type”错误：[c]EvalNative("Abs")[/c]返回活着的[c]Func[/c]对象，求值类名返回[c]Class[/c]对象。远程求值无法让对象跨进程，因此[c]RemoteEval(hook, "Add")[/c]返回对象在目标进程内的地址（整数），供远程原语继续使用。
+
+[color=#BF4000][b]8.5 空目标与布局探针[/b][/color]
+
+远程布局发现需要活的函数条目来校验，脚本里没有用户函数的目标过去会报[c]dynamic function layout not found[/c]。[c]RemoteEvalScript()[/c]现在会经目标自己的加载器注入两个随机命名的探针函数，preparse 后重试发现，挂到全新空脚本也能工作。探针名随机化以避免与用户代码冲突。
+
+[color=#BF4000][b]8.6 补丁原子性[/b][/color]
+
+补丁提交方式保证失败时不会留下半应用状态：[c]PatchBifObject()[/c]先改表再改对象、对象写入失败时回滚表；[c]RemoteDeepRedirect()[/c]写入前为每个槽位做快照、后续写入失败时恢复已写槽位，并用 vtable/布局检查收窄堆扫描避免误伤无关结构。进程内布局探针在[c]finally[/c]块中恢复解释器快照，发现失败不再残留临时函数。
+
+
+[b]9. 安全性[/b]
 
 [color=#BF4000]这个库会在你的进程里分配可执行内存、执行机器码，并直接读写解释器内部结构。请按逆向工程研究工具的标准来使用。[/color]
 
@@ -517,7 +546,7 @@ demo ready
 建议在虚拟机或隔离环境里验证，备份被分析的 exe 并记录 SHA256。这个库不用于绕过授权、DRM 或访问控制。
 
 
-[b]9. 更新记录[/b]
+[b]10. 更新记录[/b]
 
 2026-08-11：
 
@@ -559,10 +588,18 @@ demo ready
 - 修复进程列表的 Map 属性访问，以及快照配置里括号内逗号被错误拆分的问题；
 - 缓存[c]script_layout[/c]缺失[c]find_var[/c]时自动回填，[c]EvalScript[/c]之后执行[c]TraceFunction[/c]不再失败；
 - 为[c]RemoteEvalScript[/c]增加重复函数预检，重定义已有函数名会在目标进程不稳定之前明确报错；
-- 新增[c]tests\ahk_live_regression.ahk[/c]，覆盖 EvalScript 到 Trace 的顺序、快照中的逗号表达式与重复函数拒绝。
+- 新增[c]tests\ahk_live_regression.ahk[/c]，覆盖 EvalScript 到 Trace 的顺序、快照中的逗号表达式与重复函数拒绝；
+- 加固[c]Init[/c]/[c]ScanExports[/c]：记录数封顶、步长校验、每个名字指针的内存映射检查；
+- 为[c]EvalScript[/c]与[c]RemoteEvalScript[/c]加入[c]/validate[/c]语法预检，语法错误干净抛出而不是中止宿主或目标进程；验证器自行捕获输出（无弹窗），超时即杀进程树；
+- 加入远程超时处理：挂起的求值 10 秒后抛错，并泄漏注入块以保护目标免于 use-after-free；
+- 加入对象返回值：[c]EvalNative[/c]返回活的[c]Func[/c]/[c]Class[/c]对象，[c]RemoteEval[/c]返回目标侧对象地址；
+- 加入探针注入重试，[c]RemoteEvalScript[/c]可挂接没有任何用户函数的目标；
+- [c]PatchBifObject[/c]与[c]RemoteDeepRedirect[/c]改为原子提交并支持回滚，深重定向堆扫描加入布局校验收窄；
+- 加固机器码扫描器：导出表边界校验、token 遍历封顶、字符串按节尾截断；
+- 新增对象返回、语法错误存活、空目标与深重定向的回归测试。
 
 
-[b]10. 已知限制[/b]
+[b]11. 已知限制[/b]
 
 - 机器码块只支持 x64，32 位会显式报错；
 - [c]EvalNative()[/c]通过解释器内部的同进程表达式管线执行，已验证的四个版本上支持字面量、运算符、全局变量与函数调用。[c]Eval()[/c]在脚本模式和普通运行时编译出的 exe 里都能回退到[c]EvalSubprocess()[/c]；如果用[c]AUTOHOTKEYSC[/c]独立运行时作 base，则不支持[c]/script[/c]，需要单独验证；
@@ -572,13 +609,13 @@ demo ready
 - [c]TraceFunction[/c]目前要求至少两个必选参数，并拒绝可选/ByRef 参数；
 
 
-[b]11. 写在后面[/b]
+[b]12. 写在后面[/b]
 
 项目最后落在扫描上：把 exe 当作程序自身可以读取的结构化文档，先扫描出内部地图，再在地图上做实验。同进程 eval、远程 Hook、脚本加载与函数 Trace 现在已在 19 个验证构建上跑通；后续方向包括自动生成 DLL 绑定、更深的对象模型发现，以及对恶意加壳构建的更强处理。
 
 
 
-[b]12. 附录：单文件源码[/b]
+[b]13. 附录：单文件源码[/b]
 
 完整核心源码嵌入在下面。仓库中的 [c]ahk_hack_single.ahk[/c] 是同一份文件，
 本段由 [c]tools/build_blog.py[/c] 自动生成。

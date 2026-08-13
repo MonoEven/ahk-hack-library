@@ -5,7 +5,12 @@
 hook := 0
 targetOut := A_Temp "\ahk_remote_function.out"
 logFile := A_Temp "\ahk_hook_function_demo.log"
-try FileDelete(logFile)
+if FileExist(logFile) {
+    try {
+        FileDelete(logFile)
+    } catch {
+    }
+}
 
 LastLine(prefix) {
     global targetOut

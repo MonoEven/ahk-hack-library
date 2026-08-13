@@ -313,7 +313,12 @@ DumpTables() {
     try {
         hook := RequireHook()
         outFile := A_Temp "\ahk_hook_dump.txt"
-        try FileDelete(outFile)
+        if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
         FileAppend("module=" hook["module"] "`n"
             . "base=0x" Format("{:X}", hook["image_base"]) "`n", outFile)
         for kind, key in Map("builtins", "bif", "native_functions", "mdfunc"
@@ -351,7 +356,12 @@ Log(msg) {
 
 SelfTest(pid) {
     outFile := A_Temp "\ahk_hack_gui_selftest.out"
-    try FileDelete(outFile)
+    if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
     Write(msg) {
         FileAppend(msg "`n", outFile)
     }
@@ -385,7 +395,12 @@ SelfTest(pid) {
 
 SelfEval(pid, expr) {
     outFile := A_Temp "\ahk_hack_gui_eval.out"
-    try FileDelete(outFile)
+    if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
     try {
         hook := AhkMagic.AttachRemote(pid)
         r := AhkMagic.RemoteEval(hook, expr)
@@ -400,7 +415,12 @@ SelfEval(pid, expr) {
 
 SelfScript(pid, path) {
     outFile := A_Temp "\ahk_hack_gui_script.out"
-    try FileDelete(outFile)
+    if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
     try {
         text := FileRead(path, "UTF-8")
         hook := AhkMagic.AttachRemote(pid)

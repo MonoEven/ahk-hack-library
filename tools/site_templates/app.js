@@ -166,8 +166,7 @@
     pre.dataset.highlighted = "1";
   };
 
-  document.querySelectorAll("pre").forEach((pre) => {
-    tokenize(pre);
+  const attachCopy = (pre) => {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "copy";
@@ -191,5 +190,54 @@
     });
     pre.style.position = "relative";
     pre.appendChild(button);
+  };
+
+  // Copy buttons attach eagerly; syntax highlighting is deferred so the
+  // appendix mega-block and off-screen blocks never stall page load.
+  const pres = Array.from(document.querySelectorAll("pre"));
+  pres.forEach(attachCopy);
+
+  const closedDetails = new Set(
+    Array.from(document.querySelectorAll("details:not([open]) pre"))
+  );
+  const idleQueue = [];
+  const drain = () => {
+    while (idleQueue.length) idleQueue.shift()();
+  };
+  const schedule = (fn) => {
+    idleQueue.push(fn);
+    if ("requestIdleCallback" in window) {
+      window.requestIdleCallback(() => drain());
+    } else {
+      setTimeout(drain, 0);
+    }
+  };
+  const observer = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        schedule(() => tokenize(entry.target));
+        observer.unobserve(entry.target);
+      }
+    },
+    { rootMargin: "600px 0px" }
+  );
+
+  pres.forEach((pre) => {
+    if (closedDetails.has(pre)) return; // highlight when first opened
+    if (pre.getBoundingClientRect().top < window.innerHeight * 2) {
+      schedule(() => tokenize(pre));
+    } else {
+      observer.observe(pre);
+    }
+  });
+
+  document.querySelectorAll("details").forEach((d) => {
+    d.addEventListener("toggle", () => {
+      if (!d.open) return;
+      d.querySelectorAll("pre").forEach((p) => {
+        schedule(() => tokenize(p));
+      });
+    });
   });
 })();

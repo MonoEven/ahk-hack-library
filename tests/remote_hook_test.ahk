@@ -4,7 +4,12 @@
 
 pid := Integer(A_Args[1])
 outFile := A_ScriptDir "\remote_hook_test.out"
-try FileDelete(outFile)
+if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
 
 Log(msg) {
     global outFile

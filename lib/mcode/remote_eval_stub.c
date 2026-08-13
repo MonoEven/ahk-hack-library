@@ -29,7 +29,7 @@ typedef struct {
     u64 sym_invalid;
     i32 loc_rc;
     i32 eval_rc;
-    u64 reserved;
+    u64 layout;
 } RemoteEvalParam;
 
 typedef int (*LocatorFn)(u64 base, u64 text_rva, u64 text_size,
@@ -38,7 +38,7 @@ typedef int (*EvalFn)(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
                       u64 scratch, u64 expr, u64 out, i32 stage,
                       u64 line_override, u64 arg_override,
                       u64 g_script, u64 finalize_fn, u64 find_var_fn,
-                      u64 free_fn, u64 sym_invalid);
+                      u64 free_fn, u64 sym_invalid, u64 layout);
 
 u32 __stdcall RemoteEvalThread(void *param)
 {
@@ -64,6 +64,7 @@ u32 __stdcall RemoteEvalThread(void *param)
     p->eval_rc = ((EvalFn)p->eval)(p->postfix_fn, p->expand_fn,
                                    p->curr_line_slot, p->scratch, p->expr,
                                    p->out, 1, 0, 0, g_script, finalize_fn,
-                                   find_var_fn, free_fn, sym_invalid);
+                                   find_var_fn, free_fn, sym_invalid,
+                                   p->layout);
     return 0;
 }

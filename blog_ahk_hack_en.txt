@@ -124,7 +124,7 @@ MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0, in-process
 MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5, in-process
 [/codebox]
 
-[c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls the interpreter's own [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c] in this process. It covers literals, operators, global variables, and function calls on the verified builds. Unsupported syntax fails loudly. [c]Eval[/c] tries the in-process pipeline first and falls back to [c]EvalSubprocess[/c] when needed.
+[c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls the interpreter's own [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c] in this process. It covers literals, operators, global variables, and function calls on the verified builds. Unsupported syntax fails loudly. [c]Eval[/c] tries the in-process pipeline first and falls back to [c]EvalSubprocess[/c] when needed. Objects evaluate too: a bare function name returns the live [c]Func[/c] object and a class name returns the [c]Class[/c] object, so [c]EvalNative("Abs")[/c] is directly usable.
 
 [color=#BF4000][b]5.2 Function definitions[/b][/color]
 
@@ -162,13 +162,13 @@ MsgBox AhkMagic.EvalScript(classScript)     ; 1, class loaded and used in-proces
 MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2, class loaded and used in-process
 [/codebox]
 
-[c]EvalScript[/c] does not write a temp [c].ahk[/c] file. It encodes the text as UTF-16, builds a [c]TextMem[/c]-compatible [c]TextStream[/c] in a scratch buffer, and passes it directly to [c]LoadIncludedFile(TextStream*)[/c]. Function definitions and class definitions therefore work in-process.
+[c]EvalScript[/c] loads the script text without writing a temp [c].ahk[/c] for the load itself: it encodes the text as UTF-16, builds a [c]TextMem[/c]-compatible [c]TextStream[/c] in a scratch buffer, and passes it directly to [c]LoadIncludedFile(TextStream*)[/c]. Function definitions and class definitions therefore work in-process. The text is pre-checked with the interpreter's own [c]/validate[/c] switch first (section 8.2), so a syntax error throws a clean library error carrying the real parse message instead of aborting the host; the validator captures its output and kills its own process tree on timeout, so it never leaves a dialog on screen. Only that pre-check uses a temporary file, which is deleted afterwards.
 
 [color=#BF4000][b]5.4 Evaluation pipeline[/b][/color]
 
 [c]How the pipeline evaluates expressions:[/c] AutoHotkey compiles expression strings into postfix [c]ExprTokenType[/c] arrays during script load. [c]Line::ExpressionToPostfix[/c] performs the compilation, [c]PreparseExpressions[/c] pre-compiles expression lines, [c]PreprocessLocalVars[/c] binds local variables, and [c]Line::ExpandExpression[/c] evaluates the postfix. [c]EvalNative()[/c] builds the same temporary [c]Line[/c]/[c]ArgStruct[/c] and calls those functions, so it reuses the interpreter's own grammar and evaluation semantics. [c]EvalScript()[/c] feeds the same [c]LoadIncludedFile(TextStream*, int)[/c] pipeline through an in-memory [c]TextStream[/c]; the parser receives the text from a synthetic stream, and function and class definitions work in-process.
 
-[c]Why dynamic discovery works:[/c] stable error strings are referenced with RIP-relative [c]lea[/c] instructions in every build, so scanning those cross-references and walking back to the prologue yields function addresses. Globals are materialized the same way. Layout offsets are revealed by the running interpreter itself: a one-time probe loads a throwaway function, diffs the live [c]Script[/c] object for [c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c], walks the new function's line chain for [c]mJumpLine[/c], and reads parser-state anchors from [c]LoadIncludedFile[/c]'s [c]cmp[/c] prologue. The [c]TextStream[/c] object is built with both [c]mData[/c] regions populated, so no layout choice is needed.
+[c]Why dynamic discovery works:[/c] stable error strings are referenced with RIP-relative [c]lea[/c] instructions in every build, so scanning those cross-references and walking back to the prologue yields function addresses. Globals are materialized the same way. Layout offsets are revealed by the running interpreter itself: a one-time probe loads a throwaway function, diffs the live [c]Script[/c] object for [c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c], walks the new function's line chain for [c]mJumpLine[/c], and reads parser-state anchors from [c]LoadIncludedFile[/c]'s [c]cmp[/c] prologue. The [c]TextStream[/c] object is built with both [c]mData[/c] regions populated, so no layout choice is needed; every load is then validated by its result ([c]rc == 1[/c] plus, for the discovery probe, a function-count increase), so a build with a different TextStream layout fails loudly at probe time instead of misparsing text.
 
 [c]Multi-version compatibility:[/c] the four-version matrix runs the same blob on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30. Stable [c]Line[/c]/[c]ArgStruct[/c]/token offsets have not changed in those builds; everything that changed is discovered at runtime. An unrecognized layout makes the probe throw without guessing, which keeps failures explicit and isolated.
 
@@ -279,7 +279,7 @@ Start the target, press [c]F1[/c] to attach, then [c]F2[/c] to redirect [c]Abs[/
 
 [color=#BF4000][b]6.4 RemoteEval[/b][/color]
 
-[c]RemoteEval(hook, expr)[/c] copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely; string literals and string-returning builtins such as [c]SubStr[/c] and [c]Format[/c] are read back correctly too.
+[c]RemoteEval(hook, expr)[/c] copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely; string literals and string-returning builtins such as [c]SubStr[/c] and [c]Format[/c] are read back correctly too. Objects cannot cross process boundaries: [c]RemoteEval(hook, "Add")[/c] returns the target-side object address as an integer. If the injected evaluation hangs, the call times out after 10 seconds with a clear error and leaks the injected block on purpose, because freeing memory the target is still executing would crash it (section 8.3).
 
 The target needs no special code: no [c]#Include[/c], no exported pointers, no callback, and no embedded metadata. The PID file in the test harness is only test orchestration; [c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c] resolves the PID from the image name.
 
@@ -287,7 +287,7 @@ Function-to-function verification: [c]tests\remote_hook_function_target.ahk[/c] 
 
 [color=#BF4000][b]6.5 RemoteEvalScript[/b][/color]
 
-[c]RemoteEvalScript(hook, text)[/c] loads a multi-line script inside the target through its own script-loading pipeline. The injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c], so both function and class definitions work.
+[c]RemoteEvalScript(hook, text)[/c] loads a multi-line script inside the target through its own script-loading pipeline. The injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c], so both function and class definitions work. Layout discovery needs live function entries, so a target whose script defines no functions first receives two randomized probe functions through its own loader and discovery retries on them (section 8.5); attaching to a fresh, empty script works out of the box.
 
 [codebox=autohotkey file=remote-eval-script]
 #Include ahk_hack_single.ahk
@@ -494,7 +494,36 @@ demo ready
 [/codebox]
 
 
-[b]8. Security[/b]
+[b]8. Robustness and failure behavior[/b]
+
+The library treats its own inputs and the target's memory as untrusted, and every failure mode is designed to be explicit rather than silent.
+
+[color=#BF4000][b]8.1 Validated reads[/b][/color]
+
+[c]Init()[/c] and [c]ScanExports()[/c] cap the record counts against the scanner output contract (512/512/256 and 4096 entries), validate the table strides, and check every name pointer against the memory map before dereferencing it. A runtime that exceeds the contract fails with an explicit [c]unsupported interpreter layout[/c] error instead of reading past the buffer, and a failed init resets its state so the next call retries cleanly. The machine-code scanners got the same treatment: export sub-table pointers and ordinals are bounds-checked against the image, section ends are capped by [c]SizeOfImage[/c], and string scans stop at the section edge.
+
+[color=#BF4000][b]8.2 Syntax pre-check[/b][/color]
+
+A syntax error inside the interpreter's own loader aborts the whole process and cannot be caught by the library. [c]EvalScript()[/c] and [c]RemoteEvalScript()[/c] therefore run the text through the interpreter's own [c]/validate[/c] switch first — using the target's own executable for the remote path. A syntax error now surfaces as a clean library error carrying the real parse message, before any interpreter state is touched, and the host or target stays alive. The validator runs hidden with [c]/ErrorStdOut[/c] and captures all output to a file; if any build still hangs on a dialog, the library kills the validator's whole process tree within six seconds and falls back to the loader's own failure check. Only semantic load warnings that are version-specific are tolerated, so valid scripts that reference names which exist only in the host or target keep loading.
+
+[color=#BF4000][b]8.3 Remote timeouts[/b][/color]
+
+A hung expression cannot be killed safely: terminating an injected thread while it is inside the interpreter would corrupt the target. [c]RemoteEval()[/c] and the remote-call helper wait 10 seconds, then throw a clear timeout error and deliberately leak the injected block instead of freeing memory the target may still be executing. The target keeps running; the cost is one bounded 8 MiB allocation per timed-out call.
+
+[color=#BF4000][b]8.4 Object results[/b][/color]
+
+Evaluating a bare name now returns the object instead of an "unknown type" error: [c]EvalNative("Abs")[/c] returns the live [c]Func[/c] object, and evaluating a class name returns the [c]Class[/c] object. Remote evaluation cannot move objects across process boundaries, so [c]RemoteEval(hook, "Add")[/c] returns the object's address in the target as an integer for use with the remote primitives.
+
+[color=#BF4000][b]8.5 Empty targets and layout probes[/b][/color]
+
+Remote layout discovery needs live function entries to validate against, so a target whose script defines no functions used to fail with [c]dynamic function layout not found[/c]. [c]RemoteEvalScript()[/c] now injects two randomized probe functions through the target's own loader, preparses them, and retries discovery, so attaching to a fresh, empty script works. Probe names are randomized to avoid colliding with user code.
+
+[color=#BF4000][b]8.6 Patch atomicity[/b][/color]
+
+Patches are committed so a failure cannot leave a half-applied state: [c]PatchBifObject()[/c] rewrites the table first and rolls it back if the object write fails; [c]RemoteDeepRedirect()[/c] snapshots every slot before writing and restores the already-written slots if a later write fails, and narrows its heap scan with a vtable/layout check so unrelated structures are not patched. The in-process layout probe restores its interpreter snapshot in a [c]finally[/c] block, so a failed discovery no longer leaves a stray function behind.
+
+
+[b]9. Security[/b]
 
 [color=#BF4000]This library allocates executable memory, executes machine code, and reads or writes interpreter internals directly. Use it with reverse-engineering research discipline.[/color]
 
@@ -517,7 +546,7 @@ Risks to keep in mind:
 Recommended workflow: test in a VM or isolated environment, back up the exe, record its SHA256, and only analyze software you are authorized to research. This library is not intended to bypass licensing, DRM, or access controls.
 
 
-[b]9. Update log[/b]
+[b]10. Update log[/b]
 
 2026-08-11:
 
@@ -559,10 +588,18 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - Fixed process-list Map access and top-level comma parsing in snapshot specs;
 - Backfilled [c]find_var[/c] in cached [c]script_layout[/c] so [c]TraceFunction[/c] works after [c]EvalScript[/c];
 - Added duplicate-function preflight to [c]RemoteEvalScript[/c] so redefining an existing name fails before the target becomes unstable;
-- Added [c]tests\ahk_live_regression.ahk[/c] covering EvalScript-to-Trace ordering, comma expressions in snapshots, and duplicate-function rejection.
+- Added [c]tests\ahk_live_regression.ahk[/c] covering EvalScript-to-Trace ordering, comma expressions in snapshots, and duplicate-function rejection;
+- Hardened [c]Init[/c]/[c]ScanExports[/c] with record-count caps, stride validation, and memory-map checks on every name pointer;
+- Added [c]/validate[/c] pre-checks to [c]EvalScript[/c] and [c]RemoteEvalScript[/c] so syntax errors throw cleanly instead of aborting the host or target; the validator captures its output (no dialogs) and its process tree is killed on timeout;
+- Added remote timeout handling: a hung evaluation throws after 10 s and leaks its injected block to protect the target from use-after-free;
+- Added object return values: [c]EvalNative[/c] returns live [c]Func[/c]/[c]Class[/c] objects, [c]RemoteEval[/c] returns the target-side object address;
+- Added probe-injection retry so [c]RemoteEvalScript[/c] works against targets with no user functions;
+- Made [c]PatchBifObject[/c] and [c]RemoteDeepRedirect[/c] atomic with rollback, and narrowed the deep-redirect heap scan with a layout check;
+- Hardened the machine-code scanners: export-table bounds checks, capped token walks, section-end string reads;
+- Added regression tests for object returns, syntax-error survival, empty targets, and deep redirect.
 
 
-[b]10. Known limitations[/b]
+[b]11. Known limitations[/b]
 
 - The machine-code blocks are x64 only; 32-bit AutoHotkey raises an explicit error;
 - [c]EvalNative()[/c] runs the interpreter's in-process expression pipeline for literals, operators, global variables, and function calls on all verified builds. [c]Eval()[/c] falls back to [c]EvalSubprocess()[/c] in both script mode and compiled exes built from the regular runtime; an [c]AUTOHOTKEYSC[/c] standalone base would not support [c]/script[/c], so that build should be tested separately;
@@ -572,13 +609,13 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - [c]TraceFunction[/c] currently requires at least two required parameters and rejects optional/ByRef parameters;
 
 
-[b]11. Closing[/b]
+[b]12. Closing[/b]
 
 The project ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. In-process eval, remote hooking, script loading, and function tracing now work across 19 verified builds. Future directions include automatic DLL binding generation, deeper object model discovery, and more robust handling of hostile packers.
 
 
 
-[b]12. Appendix: single-file source[/b]
+[b]13. Appendix: single-file source[/b]
 
 The complete core is embedded below. The repository keeps the same file at
 [c]ahk_hack_single.ahk[/c] and regenerates this section with
@@ -593,9 +630,9 @@ The complete core is embedded below. The repository keeps the same file at
 ; tools/build_mcode.py; it locates g_BIF, sMdFunc and g_BIV_A inside the
 ; running interpreter and copies entry metadata into a caller buffer.
 MC_REMOTE_CALL_STUB_X64 := "564883ec304889ce0f1041284c8b49204c8b4118488b4908488b56100f11442420ff1689463831c04883c4305ec3"
-MC_REMOTE_EVAL_STUB_X64 := "564883ec704889ce0f1041304c8b49284c8b4120488b4910488b56180f11442420ff1689c1894678b80100000085c9754f488b4638488b4e400f10000f104810488b40200f1056604c8b4e584c8b4650488b564848894424680f114c24580f114424480f57c00f114424380f11542420c744243001000000ff560889467c31c04883c4705ec3"
-MC_PE_EXPORT_SCANNER_X64 := "4157415641545657534885c90f94c04885d2410f94c04108c0b8010000000f85fb0000006681394d5a0f85f0000000448b413c41813c08504500000f85de0000006641817c08180b020f85d0000000418b8408880000004885c00f84ab0000004183bc088c000000000f849c0000004c8d0408448b4c08108b7c0818448b540820448b5c08248b74081c4c890248c7421000000000b80800000085ff747881ff0010000041b800100000440f42c74801ce4901ca4901cb4a8d3cc500000000488d3c7f31db66662e0f1f840000000000458b32450fb73b468b24be4901ce4c89741a184c89641a204501cf44897c1a28c7441a2c000000004983c2044983c3024883c3184839df75c7eb0e0f57c00f1102b8100000004531c04c89040231c05b5f5e415c415e415fc3"
-MC_BIF_SCANNER_X64 := "41574156565755534881ec780200004885c90f94c04885d2410f94c04108c0be010000000f85da0600006681394d5a0f85cf0600008b413c813c08504500000f85bf06000066817c08180b020f85b2060000440fb74c0806664183f91041b810000000450f42c1664585c90f84e4020000440fb74c0814410fb7f84801c84c01c8448d04fd000000004f8d04804c8d4c24704531d241bb0100000031ed31dbeb50660f7f442450440fb6742452440fb67c24534180f6614180f7744508f7440fb67424544180f6610fb6db4508fe410f44db66666666662e0f1f8400000000004983c2284983c1204d39d00f84d7000000468b7410204585f6460f44741028468b7c10244901cf4d89394d01f74d8979084e8b74101866490f6ec6660f7f442460440fb67c24604d8971134180ff2e75af66410f7ec641c1ee084180fe640f845dffffff450fb6f64183fe72743d4183fe74758c660f7f442430440fb6742432440fb67c24334180f6654180f7784508f7440fb67424344180f674400fb6ed4508fe410f44ebe955ffffff660f7f442440807c2442640f8544ffffff807c2443610f8539ffffff807c2444740f852effffff66440fc5f00241c1ee084180fe610fb6dbe906ffffff4084ed0f95c184db0f95c020c889f9c1e1054531c0eb24906642c784048000000000004531c946888c04820000004983c0204c39c10f8454010000460fb69404830000004180fa2e753e4280bc04840000007275434280bc04850000007375384280bc048600000072752d4280bc048700000063410f94c184c0746ceb21662e0f1f84000000000084c0758c4531c9eb570f1f80000000004531c984c074494180fa2e0f856fffffff4280bc048400000074754d4280bc04850000006575424280bc04860000007875374280bc048700000074410f94c1eb2b6666666666662e0f1f8400000000004180f10146888c048000000046888c0481000000e925ffffff4531c946888c04800000004280bc04840000007275304280bc04850000006475254280bc048600000061751a4280bc048700000074750f4280bc048800000061410f94c1eb034531c946888c04810000004280bc04840000006475284280bc048500000061751d4280bc04860000007475124280bc048700000061410f94c1e9a1feffff4531c9e999feffff31ff488d420848894424284989d74889542420488d4c247041b92000000089fa4531c0e8a303000085c00f847f0300004d8d7720498d47184c897424284889442420488d4c2470be0100000041b92800000089fa41b801000000e86c03000085c00f8448030000498d5f38498d473048895c24284889442420488d4c247041b91800000089fa41b802000000e83a03000085c00f84160300004c89f849c747102000000049c747282800000049c747401800000049c7474800000000418b570885d27e6dffca4881faff010000b9ff010000480f42ca488b10c1e1054883c1204531c00f1f8400000000004e8b0c024e894c00504e8b4c02084e894c0058460fb64c021046894c0060460fb64c021146894c0064460fb64c021246894c006842c744006c000000004983c0204c39c175ba418b0e85c90f8ea5010000ffc94881f9ff010000baff010000480f42d1488b4818488d1492488d14d5280000004531c0662e0f1f8400000000004e8b0c014e898c00504000004e8b4c01084e898c0058400000460fb64c011046888c0060400000460fb64c011146888c0061400000460fb64c011246888c0062400000460fb64c011346888c0063400000460fb64c011446888c0064400000460fb64c011546888c0065400000460fb64c011646888c0066400000460fb64c011746888c0067400000460fb64c011846888c0068400000460fb64c011946888c0069400000460fb64c011a46888c006a400000460fb64c011b46888c006b400000460fb64c011c46888c006c400000460fb64c011d46888c006d400000460fb64c011e46888c006e400000460fb64c011f46888c006f400000460fb64c012046888c0070400000460fb64c012146888c0071400000460fb64c012246888c0072400000460fb64c012346888c0073400000460fb64c012446888c0074400000460fb64c012546888c0075400000460fb64c012646888c0076400000460fb64c012746888c00774000004983c0284c39c20f858afeffff448b034585c00f8e8c00000041ffc84181f8ff000000baff000000410f42d0488b4830ffc231f64585c074704189d14181e1fe0100004531d24531c04e8b1c114e899c10509000004e8b5c11084e899c10589000004e8b5c11104e899c10609000004e8b5c11184e899c10689000004e8b5c11204e899c10709000004e8b5c11284e899c10789000004983c0024983c2304d39c175a6eb0731f6eb324531c0f6c201742a48055090000049c1e0034b8d14404c8b04114c8904104c8b4411084c89441008488b4c111048894c101089f04881c4780200005b5d5f5e415e415fc3662e0f1f8400000000004157415641554154565755534883ec3085d20f8e76040000488bac24a00000004c8b94249800000089d64889f748c1e70531db48c74424200000000048c744242800000000eb15660f1f84000000000048ffc34839f30f84170400004889da48c1e205488d0411807c11110075068078120074dc4c8b384c8b7008498d47104c39f077cc4d8b27eb404c8b9424980000004c8b0c244c8b5c2408488b4424284939c3490f47c34889442428488b442420490f47c548894424200f1f80000000004983c5184d39f577874d89fd4c89e04983c7084d8b650831d2eb0e0f1f4400004883c2204839d774d7807c1111007507807c11120074e9483944110876e24839041177dc31d2662e0f1f840000000000440fb71c10664585db74254183c381664183fba1729a4c8d5a024883fa7e4c89da75ddeb8b66662e0f1f84000000000031d2eb196666662e0f1f8400000000004883c2204839d70f8463ffffff807c11100074ec4c3964110876e54c39241177df0fb7104183f8010f840f0200004585c00f857d0200006683fa410f852fffffff66837802620f8524ffffffba0600000066837804730f8514ffffff66833c02000f8509ffffff4b8d04294883c01041bb010000004c39f00f87ccfeffff4b8d14294c89e84c890c244c895c240848894424184889d04c8b124c8b5a084531c9eb1b66666666662e0f1f8400000000004983c1204c39cf0f847cfeffff42807c091100750842807c09120074e34e3954090876dc4e39140977d631d20f1f4000450fb70c12664585c974214183c181664183f9a10f823ffeffff4c8d4a024883fa7e4c89ca75d9e92dfeffff31d2eb0d4883c2204839d70f841cfeffff807c11100074ec4c395c110876e54c391c1177df4183f802488944241075406641833a590f85bf0000006641837a02590f85b30000006641837a04590f85a70000006641837a06590f859b0000006641837a08000f858f000000e98e010000488b542418488b1248895424184531db488b542418460fb70c1a430fb7141a664585c974476685d274428d42bf8d6a203c1a400fb6c50f43c2418d51bf418d692080fa1a400fb6d5410f43d138c275274983c3024981fb80000000488bac24a0000000488b44241075a6eb1e664139d17618e946fdffff488bac24a0000000488b4424100f8333fdffff4c8b5c240849ffc34c8b0c244a8d1408488b4424104c01c84883c0104c39f0488b4424104c8b9424980000000f8651feffffe90dfdffff6683fa420f8529fdffff668378026c0f851efdffff668378046f0f8513fdffff66837806630f8508fdffff668378086b0f85fdfcffff6683780a490f85f2fcffff6683780c6e0f85e7fcffff6683780e700f85dcfcffff66837810750f85d1fcffffba1400000066837812740f85c1fcffffe9a8fdffff6683fa410f85b2fcffff66837802680f85a7fcffff668378046b0f859cfcffff66837806500f8591fcffff66837808610f8586fcffff6683780a740f857bfcffffba0e0000006683780c680f856bfcffffe952fdffff4c8b5c240849ffc34c8b9424980000004c8b0c24e927fcffff4c8b4424204d85c00f94c0488b5424284883fa0a0f92c108c1740431c0eb0c4d890248895500b8010000004883c4305b5d5f5e415c415d415e415fc3"
+MC_REMOTE_EVAL_STUB_X64 := "564881ec800000004889ce0f1041304c8b49284c8b4120488b4910488b56180f11442420ff1689c1894678b80100000085c9755b488b4638488b4e400f10000f104810488b40204c8b96800000000f1056604c8b4e584c8b4650488b56484c8954247048894424680f114c24580f114424480f57c00f114424380f11542420c744243001000000ff560889467c31c04881c4800000005ec3"
+MC_PE_EXPORT_SCANNER_X64 := "415741564155415456575553504885c90f94c04885d2410f94c04108c0b8010000000f85f00000006681394d5a0f85e5000000448b413c41813c08504500000f85d30000006641817c08180b020f85c5000000418bb40888000000458b8c088c0000004885f6410f94c24585c9410f94c34508d34180fb0175190f57c00f1102be100000004531c94c890c3231c0e985000000458b4408504d85c0747b4439c673764589c94d89ca4901f24d39c2410f97c24183f928410f92c14508d17559448b740e18448b540e144d85d2410f94c14585f6410f95c34584d9753c4181fe0010000041b900100000450f42ce4c8d3c0e458b5f204b8d3c8b4c39c7771a8b7c0e244a8d1c4f4c39c3770d8b5c0e1c4e8d24934d39c476114883c4085b5d5f5e415c415d415e415fc38b740e10897424044c893a48c7421000000000be080000004585f60f843bffffff4801cb4901cb4801cf4e8d34cd000000004f8d34764531ff458b234539c473ae440fb72f4539ea76a5428b2cab4439c5739c4901cc4e89643a184a896c3a2044036c240446896c3a2842c7443a2c000000004983c3044883c7024983c7184d39fe75b5e9d6feffff"
+MC_BIF_SCANNER_X64 := "4157415641554154565755534881ec780200004885c90f94c04885d2410f94c04108c0be010000000f85060700006681394d5a0f85fb0600008b413c813c08504500000f85eb06000066817c08180b020f85de060000440fb7540806664183fa1041b910000000450f42ca448b5c08504d8d040b4d85db4d0f44c3664585d20f8400030000440fb7540814410fb7f94801c84c01d0448d0cfd000000004f8d0c894c8d5424704531dbbb010000004531f631edeb4c660f7f442450440fb67c2452440fb66424534180f7614180f4744508fc440fb67c24544180f761400fb6ed4508e70f44eb662e0f1f8400000000004983c3284983c2204d39d90f84ed000000468b7c18204585ff460f447c1828468b6418244901cc4d01e74d39c74d89c54d0f42ef4d85c04d0f44ef4d89224d896a084e8b7c181866490f6ec7660f7f442460440fb66424604d897a134180fc2e759e66410f7ec741c1ef084180ff640f8450ffffff450fb6ff4183ff7274414183ff740f8577ffffff660f7f442430440fb67c2432440fb66424334180f7654180f4784508fc440fb67c24344180f774450fb6f64508e7440f44f3e940ffffff660f7f442440807c2442640f852fffffff807c2443610f8524ffffff807c2444740f8519ffffff66440fc5f80241c1ef084180ff61400fb6ede9f5feffff4584f60f95c14084ed0f95c020c889f9c1e1054531c0eb2d662e0f1f8400000000006642c784048000000000004531c946888c04820000004983c0204c39c10f8454010000460fb69404830000004180fa2e753e4280bc04840000007275434280bc04850000007375384280bc048600000072752d4280bc048700000063410f94c184c0746ceb21662e0f1f84000000000084c0758c4531c9eb570f1f80000000004531c984c074494180fa2e0f856fffffff4280bc048400000074754d4280bc04850000006575424280bc04860000007875374280bc048700000074410f94c1eb2b6666666666662e0f1f8400000000004180f10146888c048000000046888c0481000000e925ffffff4531c946888c04800000004280bc04840000007275304280bc04850000006475254280bc048600000061751a4280bc048700000074750f4280bc048800000061410f94c1eb034531c946888c04810000004280bc04840000006475284280bc048500000061751d4280bc04860000007475124280bc048700000061410f94c1e9a1feffff4531c9e999feffff31ff488d420848894424284989d74889542420488d4c247041b92000000089fa4531c0e8a303000085c00f847f0300004d8d7720498d47184c897424284889442420488d4c2470be0100000041b92800000089fa41b801000000e86c03000085c00f8448030000498d5f38498d473048895c24284889442420488d4c247041b91800000089fa41b802000000e83a03000085c00f84160300004c89f849c747102000000049c747282800000049c747401800000049c7474800000000418b570885d27e6dffca4881faff010000b9ff010000480f42ca488b10c1e1054883c1204531c00f1f8400000000004e8b0c024e894c00504e8b4c02084e894c0058460fb64c021046894c0060460fb64c021146894c0064460fb64c021246894c006842c744006c000000004983c0204c39c175ba418b0e85c90f8ea5010000ffc94881f9ff010000baff010000480f42d1488b4818488d1492488d14d5280000004531c0662e0f1f8400000000004e8b0c014e898c00504000004e8b4c01084e898c0058400000460fb64c011046888c0060400000460fb64c011146888c0061400000460fb64c011246888c0062400000460fb64c011346888c0063400000460fb64c011446888c0064400000460fb64c011546888c0065400000460fb64c011646888c0066400000460fb64c011746888c0067400000460fb64c011846888c0068400000460fb64c011946888c0069400000460fb64c011a46888c006a400000460fb64c011b46888c006b400000460fb64c011c46888c006c400000460fb64c011d46888c006d400000460fb64c011e46888c006e400000460fb64c011f46888c006f400000460fb64c012046888c0070400000460fb64c012146888c0071400000460fb64c012246888c0072400000460fb64c012346888c0073400000460fb64c012446888c0074400000460fb64c012546888c0075400000460fb64c012646888c0076400000460fb64c012746888c00774000004983c0284c39c20f858afeffff448b034585c00f8e8c00000041ffc84181f8ff000000baff000000410f42d0488b4830ffc231f64585c074704189d14181e1fe0100004531d24531c04e8b1c114e899c10509000004e8b5c11084e899c10589000004e8b5c11104e899c10609000004e8b5c11184e899c10689000004e8b5c11204e899c10709000004e8b5c11284e899c10789000004983c0024983c2304d39c175a6eb0731f6eb324531c0f6c201742a48055090000049c1e0034b8d14404c8b04114c8904104c8b4411084c89441008488b4c111048894c101089f04881c4780200005b5d5f5e415c415d415e415fc3660f1f4400004157415641554154565755534883ec3885d20f8e270500004c894c241889d64889f748c1e70531db41be4000000048c74424200000000048c744242800000000eb1a66666666662e0f1f84000000000048ffc34839f30f84c80400004889da48c1e205488d0411807c11110075068078120074dc4c8b204c8b7808498d4424104c39f877cb4d8b2c24eb2e4c8b0c24488b4424284939c1490f47c14889442428488b442420480f47c5488944242066904883c5184c39fd77974c89e54c89e84983c4084c8b6d084531d2eb0d0f1f40004983c2204c39d774d742807c111100750842807c11120074e74e8b4c11084929c176dd4a39041177d74983f90272b149d1e94983f9404d0f43ce49ffc94989c2450fb71a664585db741f4183c3814983e9010f92c2664183fba172844983c20284d274dce977ffffff4531c9eb0f66904983c1204c39cf0f8463ffffff42807c09100074eb4e396c090876e44e392c0977de0fb7104183f8010f84de0200004585c00f854d0300006683fa410f852effffff66837802620f8523ffffff41b90600000066837804730f8512ffffff6641833c01000f8506ffffff488b4424184801e84883c01041b9010000004c39f80f87cafeffff488b4424184801e84889ea48895424104889c24c8b10488b400848894424084531dbeb140f1f80000000004983c3204c39df0f8492feffff42807c191100750842807c19120074e34a8b4419084c29d076d94e39141977d34883f8020f8268feffff48895424304c890c2448d1e84883f840490f43c648ffc84d89d36666666666662e0f1f840000000000410fb7136685d2742383c2814883e801410f92c16683faa10f821dfeffff4983c3024584c974d9e90ffeffff31c04c8b0c24488b542408eb140f1f80000000004883c0204839c70f84f2fdffff807c01100074ec483954010876e54839140177df4183f80275406641833a590f85620100006641837a02590f85560100006641837a04590f854a0100006641837a06590f853e0100006641837a08000f8532010000e925020000488b442410488b104531c9eb094983c1204c39cf742542807c091100750842807c09120074e74a8b4409084829d076dd4a39140977d748d1e8eb0231c04531c9eb094983c1204c39cf745542807c091100750842807c09120074e74e8b5c09084d29d376dd4e39140977d74d89d949d1e94889542408488d50ff4883fa3f488b542408490f43c64939c14c0f43c84983fb024c0f42c84c894c24104d85c9eb704989d1488d50ff4883fa3f4c89ca490f43c648894424104c8b0c240fb702450fb71a6685c07451664585db744b4889542408418d53bf458d4b2080fa1a410fb6d1410f43d3448d48bf448d58204180f91a450fb6cb440f43c84138d175254983c202488b5424084883c20248ff4c24104c8b0c2475a5eb15664439d8760fe975fcffff4c8b0c240f836bfcffff49ffc1488b5424184c8b542430498d04124c01d24883c2104c39fa4c89d20f8688fdffffe942fcffff6683fa420f8559fcffff668378026c0f854efcffff668378046f0f8543fcffff66837806630f8538fcffff668378086b0f852dfcffff6683780a490f8522fcffff6683780c6e0f8517fcffff6683780e700f850cfcffff66837810750f8501fcffff41b91400000066837812740f85f0fbffffe9d9fcffff6683fa410f85e1fbffff66837802680f85d6fbffff668378046b0f85cbfbffff66837806500f85c0fbffff66837808610f85b5fbffff6683780a740f85aafbffff41b90e0000006683780c680f8599fbffffe982fcffff49ffc1e96bfbffff4c8b4424204d85c00f94c0488b5424284883fa0a0f92c108c1740431c0eb1b488b8424a00000004c8900488b8424a8000000488910b8010000004883c4385b5d5f5e415c415d415e415fc3"
 
 
 ; Decode a raw hex machine-code blob and return an executable Buffer.
@@ -628,6 +665,7 @@ class AhkMagic {
     static evalMJumpLineOff := 0
     static evalCurrOff := 0
     static evalStructOffsets := 0
+    static evalLayoutArr := 0
     static evalParserLocated := false
     static evalParser := Map()
     static evalPreparse := 0
@@ -663,6 +701,23 @@ class AhkMagic {
             return
         if A_PtrSize != 8
             throw Error("this mcode blob is x64 only", -1)
+        try {
+            AhkMagic._InitTables()
+        } catch as e {
+            ; A half-initialized state would make later calls fail with
+            ; misleading errors; reset so Init can be retried cleanly.
+            AhkMagic.scanner := 0
+            AhkMagic.bif.Clear()
+            AhkMagic.mdfunc.Clear()
+            AhkMagic.biv.Clear()
+            throw e
+        }
+    }
+
+    ; Parse the scanner output into bif/mdfunc/biv maps.  The scanner copies
+    ; at most 512/512/256 entries into the 64 KiB output buffer; larger
+    ; tables are an explicit unsupported-layout error, never a silent read.
+    static _InitTables() {
         AhkMagic.scanner := MCode(MC_BIF_SCANNER_X64)
         AhkMagic.moduleBase := DllCall("GetModuleHandle", "Str", A_AhkPath, "Ptr")
         if !AhkMagic.moduleBase
@@ -683,6 +738,21 @@ class AhkMagic {
         AhkMagic.bivCount := NumGet(out, 56, "Int64")
         AhkMagic.bivStride := NumGet(out, 64, "Int64")
 
+        ; The copy loops below run on raw pointer arithmetic without any
+        ; buffer object, so validate every count and stride BEFORE looping.
+        if AhkMagic.bifCount < 1 or AhkMagic.bifCount > 512
+            throw Error("g_BIF table count out of scanner contract: "
+                . AhkMagic.bifCount, -1)
+        if AhkMagic.mdfuncCount < 1 or AhkMagic.mdfuncCount > 512
+            throw Error("sMdFunc table count out of scanner contract: "
+                . AhkMagic.mdfuncCount, -1)
+        if AhkMagic.bivCount < 1 or AhkMagic.bivCount > 256
+            throw Error("g_BIV_A table count out of scanner contract: "
+                . AhkMagic.bivCount, -1)
+        if AhkMagic.bifStride != 0x20 or AhkMagic.mdfuncStride != 0x28
+            or AhkMagic.bivStride != 0x18
+            throw Error("unexpected interpreter table strides", -1)
+
         bifBase := 80
         bifStride := 32
         loop AhkMagic.bifCount {
@@ -692,7 +762,9 @@ class AhkMagic {
             min := NumGet(p, 16, "UInt")
             max := NumGet(p, 20, "UInt")
             fid := NumGet(p, 24, "UInt")
-            name := StrGet(namePtr, "UTF-16")
+            if !AhkMagic._Readable(namePtr, 8)
+                throw Error("g_BIF entry " A_Index " has an invalid name pointer", -1)
+            name := StrGet(namePtr, 256, "UTF-16")
             AhkMagic.bif[name] := Map(
                 "index", A_Index - 1,
                 "rva", fnPtr - AhkMagic.moduleBase,
@@ -709,7 +781,9 @@ class AhkMagic {
             namePtr := NumGet(p, 0, "Ptr")
             fnPtr := NumGet(p, 8, "Ptr")
             retType := NumGet(p, 16, "UChar")
-            name := StrGet(namePtr, "UTF-16")
+            if !AhkMagic._Readable(namePtr, 8)
+                throw Error("sMdFunc entry " A_Index " has an invalid name pointer", -1)
+            name := StrGet(namePtr, 256, "UTF-16")
             AhkMagic.mdfunc[name] := Map(
                 "index", A_Index - 1,
                 "rva", fnPtr - AhkMagic.moduleBase,
@@ -724,13 +798,38 @@ class AhkMagic {
             namePtr := NumGet(p, 0, "Ptr")
             getter := NumGet(p, 8, "Ptr")
             setter := NumGet(p, 16, "Ptr")
-            name := StrGet(namePtr, "UTF-16")
+            if !AhkMagic._Readable(namePtr, 8)
+                throw Error("g_BIV_A entry " A_Index " has an invalid name pointer", -1)
+            name := StrGet(namePtr, 256, "UTF-16")
             AhkMagic.biv[name] := Map(
                 "index", A_Index - 1,
                 "getter_rva", getter ? getter - AhkMagic.moduleBase : 0,
                 "setter_rva", setter ? setter - AhkMagic.moduleBase : 0
             )
         }
+    }
+
+    ; True when [ptr, ptr+size) falls inside committed readable memory.
+    ; Used before dereferencing pointers that come from scanned tables.
+    static _Readable(ptr, size) {
+        if !ptr or ptr >= 0x7FFFFFFFFFFF
+            return false
+        mbi := Buffer(48)
+        if !DllCall("VirtualQuery", "Ptr", ptr, "Ptr", mbi.Ptr, "UPtr", 48)
+            return false
+        state := NumGet(mbi, 32, "UInt")
+        protect := NumGet(mbi, 36, "UInt")
+        if state != 0x1000 ; MEM_COMMIT
+            return false
+        if protect & 0x100 ; PAGE_GUARD
+            return false
+        readable := (protect & 0x02) or (protect & 0x04) or (protect & 0x08)
+            or (protect & 0x20) or (protect & 0x40) or (protect & 0x80)
+        if !readable
+            return false
+        regionBase := NumGet(mbi, 0, "Ptr")
+        regionSize := NumGet(mbi, 24, "Ptr")
+        return ptr >= regionBase and ptr + size <= regionBase + regionSize
     }
 
     static BifRva(name) {
@@ -792,13 +891,20 @@ class AhkMagic {
         off := AhkMagic._FindBifPtrOffset(rawPtr, oldAddr)
         if off < 0
             throw Error("could not locate mBIF in function object for " fnName)
-        NumPut("Ptr", newAddr, rawPtr, off)
-        ; Keep future table lookups consistent with the deep patch.
-        AhkMagic.PatchBif(fnName, newName)
+        ; Patch the table first, then the object.  If the object write ever
+        ; fails the table patch is rolled back, so callers never observe a
+        ; half-patched state.
+        old := AhkMagic.PatchBif(fnName, newName)
+        try
+            NumPut("Ptr", newAddr, rawPtr, off)
+        catch as e {
+            AhkMagic.RestoreBif(fnName, old)
+            throw e
+        }
         return Map(
             "fnName", fnName,
             "newName", newName,
-            "oldPtr", oldAddr,
+            "oldPtr", old,
             "offset", off
         )
     }
@@ -832,6 +938,8 @@ class AhkMagic {
 
     ; General PE export-table scanner (works for any loaded DLL/EXE module).
     static ScanExports(moduleBase) {
+        if !(moduleBase is Integer) or !moduleBase
+            throw TypeError("moduleBase must be a nonzero module address", -1)
         if !AhkMagic.exportScanner
             AhkMagic.exportScanner := MCode(MC_PE_EXPORT_SCANNER_X64)
         out := Buffer(100 * 1024)
@@ -844,13 +952,18 @@ class AhkMagic {
         if rc != 0
             throw Error("AhkScanExports failed with rc=" rc)
         count := NumGet(out, 8, "Int64")
+        ; The scanner writes at most 4096 entries into the 100 KiB buffer.
+        if count < 0 or count > 4096
+            throw Error("export count out of scanner contract: " count, -1)
         result := Map()
         loop count {
             p := out.Ptr + 24 + (A_Index - 1) * 24
             namePtr := NumGet(p, 0, "Ptr")
             fnRva := NumGet(p, 8, "Int64")
             ordinal := NumGet(p, 16, "UInt")
-            result[StrGet(namePtr, "UTF-8")] := Map(
+            if !AhkMagic._Readable(namePtr, 8)
+                throw Error("export entry " A_Index " has an invalid name pointer", -1)
+            result[StrGet(namePtr, 1024, "UTF-8")] := Map(
                 "rva", fnRva,
                 "ordinal", ordinal
             )
@@ -1364,6 +1477,149 @@ class AhkMagic {
         return AhkMagic.evalStructOffsets
     }
 
+    ; Assemble the 21-slot layout array consumed by the eval machine-code
+    ; blob.  Every slot comes from runtime discovery; slots with no
+    ; discovered equivalent are derived from a discovered anchor and
+    ; validated by _ArgShapeInProc/_RemoteArgShape.
+    static _BuildEvalLayout(structOffsets, shape) {
+        layout := Buffer(21 * 8, 0)
+        put := (slot, val) => NumPut("UInt64", val, layout, slot * 8)
+        put(0, structOffsets["line_action"])
+        put(1, structOffsets["line_argc"])
+        put(2, 0)  ; line number: never written, purely cosmetic in errors
+        put(3, structOffsets["line_arg"])
+        put(4, shape["type"])
+        put(5, structOffsets["arg_expression"])
+        put(6, shape["len"])
+        put(7, shape["text"])
+        put(8, shape["deref"])
+        put(9, structOffsets["arg_postfix"])
+        put(10, shape["max_stack"])
+        put(11, shape["max_alloc"])
+        put(12, structOffsets["token_value"])
+        put(13, structOffsets["token_symbol"])
+        put(14, structOffsets["token_stride"])
+        put(15, structOffsets["token_usage"])
+        put(16, structOffsets["deref_marker"])
+        put(17, structOffsets["deref_var"])
+        put(18, structOffsets["deref_type"])
+        put(19, structOffsets["deref_len"])
+        put(20, Max(24, structOffsets["deref_len"] + 4
+            , structOffsets["deref_marker"] + 8
+            , structOffsets["deref_var"] + 8))
+        return layout
+    }
+
+    ; Fallback layout for remote evaluation when the target layout has not
+    ; been discovered yet.  The blob validates the assumed token layout
+    ; before its first write and reports status 9 on a mismatch, so these
+    ; defaults can never corrupt a target with a different layout.
+    static _DefaultEvalLayout() {
+        layout := Buffer(21 * 8, 0)
+        vals := [0, 1, 0, 8, 0, 1, 4, 8, 16, 24, 32, 36
+            , 0, 16, 24, 8, 0, 8, 16, 20, 24]
+        loop 21
+            NumPut("UInt64", vals[A_Index], layout, (A_Index - 1) * 8)
+        return layout
+    }
+
+    ; Derive the ArgStruct fields from the discovered arg_postfix anchor and
+    ; validate them against the live arg.  text=postfix-16, len=postfix-12,
+    ; deref=postfix-8, type=isExpr-1, max_stack/max_alloc=postfix+8/+12.
+    ; Every derived field must be self-consistent on the live arg or
+    ; discovery fails loudly.
+    static _ArgShapeInProc(argPtr, postfixOff, isexprOff) {
+        typeOff := isexprOff - 1
+        if typeOff < 0 or NumGet(argPtr, typeOff, "UChar") != 0
+            throw Error("arg type field validation failed", -1)
+        textOff := postfixOff - 16
+        lenOff := postfixOff - 20
+        derefOff := postfixOff - 8
+        if textOff < 0 or lenOff < 0 or derefOff < 0
+            throw Error("arg field derivation out of range", -1)
+        textPtr := NumGet(argPtr, textOff, "Ptr")
+        if !AhkMagic._Readable(textPtr, 8)
+            throw Error("arg text pointer unreadable", -1)
+        alen := NumGet(argPtr, lenOff, "UInt")
+        if alen = 0 or alen > 4096
+            throw Error("arg length field implausible: " alen, -1)
+        if StrLen(StrGet(textPtr, alen, "UTF-16")) != alen
+            throw Error("arg text/length mismatch", -1)
+        dref := NumGet(argPtr, derefOff, "Ptr")
+        if dref and !AhkMagic._Readable(dref, 24)
+            throw Error("arg deref pointer unreadable", -1)
+        return Map(
+            "type", typeOff,
+            "len", lenOff,
+            "text", textOff,
+            "deref", derefOff,
+            "max_stack", postfixOff + 8,
+            "max_alloc", postfixOff + 12)
+    }
+
+    ; Remote mirror of _ArgShapeInProc: find a live expression arg among the
+    ; discovered functions and validate the derived field offsets by content.
+    static _RemoteArgShape(h, layout, s) {
+        for q in layout["funcs"] {
+            try
+                jump := AhkMagic._RPtr(h, q + layout["mjump_line_off"])
+            catch
+                continue
+            if !jump
+                continue
+            try
+                argc := NumGet(AhkMagic._RemoteRead(h, jump + s["line_argc"], 1)
+                    , 0, "UChar")
+            catch
+                continue
+            if !argc
+                continue
+            try
+                argPtr := AhkMagic._RPtr(h, jump + s["line_arg"])
+            catch
+                continue
+            try
+                postfix := AhkMagic._RPtr(h, argPtr + s["arg_postfix"])
+            catch
+                continue
+            if !postfix
+                continue
+            try {
+                typeOff := s["arg_expression"] - 1
+                if typeOff < 0
+                    continue
+                if NumGet(AhkMagic._RemoteRead(h, argPtr + typeOff, 1)
+                    , 0, "UChar") != 0
+                    continue
+                textOff := s["arg_postfix"] - 16
+                lenOff := s["arg_postfix"] - 20
+                derefOff := s["arg_postfix"] - 8
+                if textOff < 0 or lenOff < 0 or derefOff < 0
+                    continue
+                textPtr := AhkMagic._RPtr(h, argPtr + textOff)
+                alen := NumGet(AhkMagic._RemoteRead(h, argPtr + lenOff, 4)
+                    , 0, "UInt")
+                if alen = 0 or alen > 4096
+                    continue
+                if StrLen(AhkMagic._RemoteReadString(h, textPtr, alen))
+                    != alen
+                    continue
+                dref := AhkMagic._RPtr(h, argPtr + derefOff)
+                if dref
+                    AhkMagic._RemoteRead(h, dref, 24)
+                return Map(
+                    "type", typeOff,
+                    "len", lenOff,
+                    "text", textOff,
+                    "deref", derefOff,
+                    "max_stack", s["arg_postfix"] + 8,
+                    "max_alloc", s["arg_postfix"] + 12)
+            } catch
+                continue
+        }
+        throw Error("remote arg shape not found", -1)
+    }
+
     static _DiscoverCurrOff() {
         if AhkMagic.evalCurrOff
             return AhkMagic.evalCurrOff
@@ -1417,117 +1673,165 @@ class AhkMagic {
         DllCall("RtlMoveMemory", "Ptr", snap.Ptr, "Ptr", gScript, "UPtr", 0x200)
         oldSrcCount := AhkMagic.evalSrcCount ? NumGet(AhkMagic.evalSrcCount, "Int") : 0
 
-        probe := "
-(
-ahkHackLayoutProbe() {
-    return A_Args.Length + 1
-}
-)"
-        AhkMagic._LoadScriptMemory(probe)
+        ; The probe function name is randomized so it can never collide with
+        ; a function the host script already defines.
+        probeName := "ahkHackLayoutProbe" Format("{:x}", A_TickCount)
+        probe := probeName "() {`n    return A_Args.Length + 1`n}`n"
 
-        countOff := 0
-        loop 0x200 // 4 {
-            off := (A_Index - 1) * 4
-            before := NumGet(snap, off, "Int")
-            after := NumGet(gScript, off, "Int")
-            if after = before + 1 and before >= 0 and after > 0 {
-                countOff := off
-                break
+        ; The probe really loads a function and mutates interpreter state.
+        ; Every failure below must restore the snapshot, otherwise the host
+        ; interpreter is left with a stray function, a cleared g->curr and a
+        ; modified source count.
+        try {
+            AhkMagic._LoadScriptMemory(probe)
+
+            countOff := 0
+            loop 0x200 // 4 {
+                off := (A_Index - 1) * 4
+                before := NumGet(snap, off, "Int")
+                after := NumGet(gScript, off, "Int")
+                if after = before + 1 and before >= 0 and after > 0 {
+                    countOff := off
+                    break
+                }
             }
-        }
-        if !countOff
-            throw Error("mFuncsCount offset not found")
-        oldCount := NumGet(snap, countOff, "Int")
+            if !countOff
+                throw Error("probe load did not register a function: "
+                    . "TextStream layout validation failed (mFuncsCount "
+                    . "offset not found after rc=1 load)", -1)
+            oldCount := NumGet(snap, countOff, "Int")
 
-        funcsOff := 0
-        loop 0x200 // 8 {
-            off := (A_Index - 1) * 8
-            p := NumGet(gScript, off, "Ptr")
-            if p > 0x10000 and p < 0x7fffffffffff
-                and !DllCall("IsBadReadPtr", "Ptr", p, "UPtr", 0x100) {
+            funcsOff := 0
+            loop 0x200 // 8 {
+                off := (A_Index - 1) * 8
+                ; gScript[0] is the variable array on every known build, and
+                ; funcsOff=0 is also the "not found" sentinel below, so it
+                ; must never participate in the match.
+                if off = 0
+                    continue
+                p := NumGet(gScript, off, "Ptr")
+                if !(p > 0x10000 and p < 0x7fffffffffff)
+                    continue
+                if DllCall("IsBadReadPtr", "Ptr", p, "UPtr", 0x100)
+                    continue
                 newFunc := NumGet(p, oldCount * 8, "Ptr")
-                if newFunc > 0x10000 and newFunc < 0x7fffffffffff {
+                ; The new entry plus its two predecessors must all look like
+                ; 8-aligned objects: unrelated heap garbage adjacent to other
+                ; arrays must not impersonate mFuncs.
+                ok := newFunc > 0x10000 and newFunc < 0x7fffffffffff
+                    and Mod(newFunc, 8) = 0
+                if ok and oldCount >= 2 {
+                    prev := NumGet(p, (oldCount - 1) * 8, "Ptr")
+                    prev2 := NumGet(p, (oldCount - 2) * 8, "Ptr")
+                    ok := prev > 0x10000 and prev < 0x7fffffffffff
+                        and Mod(prev, 8) = 0
+                        and prev2 > 0x10000 and prev2 < 0x7fffffffffff
+                        and Mod(prev2, 8) = 0
+                }
+                if ok {
                     funcsOff := off
                     break
                 }
             }
-        }
-        if !funcsOff
-            throw Error("mFuncs offset not found")
+            if !funcsOff
+                throw Error("mFuncs offset not found")
 
-        lastOff := -1
-        loop 0x200 // 8 {
-            off := (A_Index - 1) * 8
-            if off = funcsOff
-                continue
-            before := NumGet(snap, off, "Ptr")
-            after := NumGet(gScript, off, "Ptr")
-            if before != after and after > 0x10000 {
-                lastOff := off
-                break
-            }
-        }
-        if lastOff < 0 {
-            detail := "count=" countOff " funcs=" funcsOff
+            lastOff := -1
             loop 0x200 // 8 {
                 off := (A_Index - 1) * 8
-                b := NumGet(snap, off, "Ptr")
-                a := NumGet(gScript, off, "Ptr")
-                if b != a
-                    detail .= " @" Format("{:X}", off) " " b "->" a
-                        . " bad=" DllCall("IsBadReadPtr", "Ptr", a, "UPtr", 0x40)
-            }
-            throw Error("mLastLine offset not found: " detail)
-        }
-
-        arrPtr := NumGet(gScript, funcsOff, "Ptr")
-        newFunc := NumGet(arrPtr, oldCount * 8, "Ptr")
-        oldLast := NumGet(snap, lastOff, "Ptr")
-        newLast := NumGet(gScript, lastOff, "Ptr")
-        jumpOff := 0
-        loop 0x200 // 8 {
-            off := (A_Index - 1) * 8
-            p := NumGet(newFunc, off, "Ptr")
-            if p <= 0x10000 or p >= 0x7fffffffffff
-                continue
-            try {
-                lineData := Buffer(0x100)
-                DllCall("RtlMoveMemory", "Ptr", lineData.Ptr, "Ptr", p
-                    , "UPtr", 0x100)
-            } catch
-                continue
-            found := false
-            loop lineData.Size // 8 {
-                if NumGet(lineData, (A_Index - 1) * 8, "Ptr") = newFunc {
-                    found := true
+                if off = funcsOff
+                    continue
+                before := NumGet(snap, off, "Ptr")
+                after := NumGet(gScript, off, "Ptr")
+                if before != after and after > 0x10000 {
+                    lastOff := off
                     break
                 }
             }
-            if found {
-                jumpOff := off
-                break
+            if lastOff < 0 {
+                detail := "count=" countOff " funcs=" funcsOff
+                loop 0x200 // 8 {
+                    off := (A_Index - 1) * 8
+                    b := NumGet(snap, off, "Ptr")
+                    a := NumGet(gScript, off, "Ptr")
+                    if b != a
+                        detail .= " @" Format("{:X}", off) " " b "->" a
+                            . " bad=" DllCall("IsBadReadPtr", "Ptr", a, "UPtr", 0x40)
+                }
+                throw Error("mLastLine offset not found: " detail)
             }
+
+            arrPtr := NumGet(gScript, funcsOff, "Ptr")
+            newFunc := NumGet(arrPtr, oldCount * 8, "Ptr")
+            oldLast := NumGet(snap, lastOff, "Ptr")
+            newLast := NumGet(gScript, lastOff, "Ptr")
+            jumpOff := 0
+            jumpLine := 0
+            loop 0x200 // 8 {
+                off := (A_Index - 1) * 8
+                p := NumGet(newFunc, off, "Ptr")
+                if p <= 0x10000 or p >= 0x7fffffffffff
+                    continue
+                try {
+                    lineData := Buffer(0x100)
+                    DllCall("RtlMoveMemory", "Ptr", lineData.Ptr, "Ptr", p
+                        , "UPtr", 0x100)
+                } catch
+                    continue
+                found := false
+                loop lineData.Size // 8 {
+                    if NumGet(lineData, (A_Index - 1) * 8, "Ptr") = newFunc {
+                        found := true
+                        break
+                    }
+                }
+                if found {
+                    jumpOff := off
+                    jumpLine := p
+                    break
+                }
+            }
+            if !jumpOff
+                throw Error("mJumpLine offset not found")
+
+            structOffsets := AhkMagic._DiscoverInProcStructs(
+                gScript, arrPtr, oldCount, newFunc, jumpOff)
+
+            ; Derive and validate the remaining ArgStruct fields from the
+            ; probe's own expression arg, then assemble the layout array the
+            ; eval blob consumes.
+            probeArg := NumGet(jumpLine, structOffsets["line_arg"], "Ptr")
+            if !probeArg
+                throw Error("probe arg not found", -1)
+            argShape := AhkMagic._ArgShapeInProc(probeArg
+                , structOffsets["arg_postfix"]
+                , structOffsets["arg_expression"])
+
+            AhkMagic.evalStructOffsets := structOffsets
+            AhkMagic.evalLayoutArr := AhkMagic._BuildEvalLayout(
+                structOffsets, argShape)
+            AhkMagic.evalMFuncsOff := funcsOff
+            AhkMagic.evalMFuncsCountOff := countOff
+            AhkMagic.evalMLastLineOff := lastOff
+            AhkMagic.evalMJumpLineOff := jumpOff
+        } finally {
+            ; Always roll the interpreter back to the pre-probe snapshot,
+            ; whether discovery succeeded or not.
+            DllCall("RtlMoveMemory", "Ptr", gScript, "Ptr", snap.Ptr, "UPtr", 0x200)
+            if AhkMagic.evalSrcCount
+                NumPut("Int", oldSrcCount, AhkMagic.evalSrcCount)
+            DllCall("RtlMoveMemory", "Ptr", g, "Ptr", gSnap.Ptr, "UPtr", 0x100)
+            NumPut("Ptr", savedProbeCur, g, AhkMagic.evalCurrOff)
         }
-        if !jumpOff
-            throw Error("mJumpLine offset not found")
 
-        AhkMagic.evalStructOffsets := AhkMagic._DiscoverInProcStructs(
-            gScript, arrPtr, oldCount, newFunc, jumpOff)
-
-        DllCall("RtlMoveMemory", "Ptr", gScript, "Ptr", snap.Ptr, "UPtr", 0x200)
-        if AhkMagic.evalSrcCount
-            NumPut("Int", oldSrcCount, AhkMagic.evalSrcCount)
-        DllCall("RtlMoveMemory", "Ptr", g, "Ptr", gSnap.Ptr, "UPtr", 0x100)
-        NumPut("Ptr", savedProbeCur, g, AhkMagic.evalCurrOff)
-
-        AhkMagic.evalMFuncsOff := funcsOff
-        AhkMagic.evalMFuncsCountOff := countOff
-        AhkMagic.evalMLastLineOff := lastOff
-        AhkMagic.evalMJumpLineOff := jumpOff
         AhkMagic._DiscoverParserOffsets()
         AhkMagic.evalLayoutLocated := true
     }
 
+    ; Discover the parser-state field offsets in THIS process.  Both known
+    ; region candidates (sentinel-anchored and qCmp-anchored) are built and
+    ; validated against the live Script object; the strictly-validating
+    ; candidate wins.  No version family is assumed.
     static _DiscoverParserOffsets() {
         if AhkMagic.evalParserLocated
             return
@@ -1545,13 +1849,11 @@ ahkHackLayoutProbe() {
             if b0 = 0x48 and NumGet(p + i + 1, "UChar") = 0x83 {
                 modrm := NumGet(p + i + 2, "UChar")
                 if modrm = 0x79 and NumGet(p + i + 4, "UChar") = 0 {
-                    if qCmp < 0 {
+                    if qCmp < 0
                         qCmp := NumGet(p + i + 3, "UChar")
-                    }
                 } else if modrm = 0xB9 and NumGet(p + i + 7, "UChar") = 0 {
-                    if qCmp < 0 {
+                    if qCmp < 0
                         qCmp := NumGet(p + i + 3, "Int")
-                    }
                 }
             }
             if b0 = 0x83 and NumGet(p + i + 1, "UChar") = 0xB9
@@ -1567,36 +1869,86 @@ ahkHackLayoutProbe() {
         if qCmp < 0 or dCmp < 0
             throw Error("parser state anchors not found")
 
-        parser := Map()
-        if dCmp > 0x100 {
-            ; 2.1 layout: ScriptModule/parser state sits below mClassObjectCount.
-            parser["mclass_count"] := dCmp
-            parser["mline_parent"] := dCmp - 0x30
-            parser["mpending_related"] := dCmp - 0x28
-            parser["mlast_param_init"] := dCmp - 0x20
-            parser["mpending_hotkey"] := dCmp - 0x18
-            parser["mexpr_func"] := dCmp - 0x10
-            parser["mexpr_func_index"] := dCmp - 8
-            parser["mnext_func_body"] := dCmp - 4
-            parser["mignore_block"] := dCmp - 3
-            parser["mbackcompat"] := dCmp - 2
-            parser["mcurrent_module"] := dCmp - 0x50
-            parser["mlast_module"] := dCmp - 0x48
-        } else {
-            ; 2.0 layout: parser fields grow upward from mOpenBlock.
-            parser["mopen"] := qCmp
-            parser["mpending_parent"] := qCmp + 8
-            parser["mpending_related"] := qCmp + 16
-            parser["mlast_param_init"] := qCmp + 24
-            parser["mnext_func_body"] := qCmp + 32
-            parser["mclass_count"] := dCmp
+        ; Validate both candidates against the live Script object and pick
+        ; the strictly-validating one.
+        gScript := AhkMagic.gScript
+        buf := Buffer(0x800)
+        DllCall("RtlMoveMemory", "Ptr", buf.Ptr, "Ptr", gScript, "UPtr", 0x800)
+        candidates := []
+        if dCmp > 0 and dCmp + 4 <= buf.Size
+            and NumGet(buf, dCmp, "Int") >= 0
+            and NumGet(buf, dCmp, "Int") <= 100000 {
+            exprIndexOff := 0
+            loop Min(0x40, dCmp) // 4 {
+                coff := dCmp - (A_Index - 1) * 4
+                if coff + 8 > buf.Size
+                    continue
+                if NumGet(buf, coff, "Int") = 0x7fffffff
+                    and NumGet(buf, coff + 4, "Int") = 0 {
+                    exprIndexOff := coff + 4
+                    break
+                }
+            }
+            if exprIndexOff and exprIndexOff + 8 <= buf.Size
+                candidates.Push(Map(
+                    "rich", true,
+                    "fields", Map(
+                        "mclass_count", dCmp,
+                        "mline_parent", exprIndexOff - 0x28,
+                        "mpending_related", exprIndexOff - 0x20,
+                        "mlast_param_init", exprIndexOff - 0x18,
+                        "mpending_hotkey", exprIndexOff - 0x10,
+                        "mexpr_func", exprIndexOff - 8,
+                        "mexpr_func_index", exprIndexOff,
+                        "mnext_func_body", exprIndexOff + 4,
+                        "mignore_block", exprIndexOff + 5,
+                        "mbackcompat", exprIndexOff + 6,
+                        "mcurrent_module", exprIndexOff - 0x48,
+                        "mlast_module", exprIndexOff - 0x40)))
         }
-        AhkMagic.evalParser := parser
+        if qCmp > 0 and qCmp + 0x28 <= buf.Size
+            candidates.Push(Map(
+                "fields", Map(
+                    "mopen", qCmp,
+                    "mpending_parent", qCmp + 8,
+                    "mpending_related", qCmp + 16,
+                    "mlast_param_init", qCmp + 24,
+                    "mnext_func_body", qCmp + 32,
+                    "mclass_count", dCmp)))
+
+        best := 0
+        bestScore := -1
+        for cand in candidates {
+            fields := cand["fields"]
+            valid := true
+            for key, foff in fields {
+                ; Value-level checks are deliberately absent: the parser
+                ; fields are saved and restored verbatim, so any plausible
+                ; offset round-trips harmlessly.  The only hard requirement
+                ; is that every offset stays inside the Script object.
+                if !(foff is Integer) or foff <= 0 or foff >= 0x800
+                    or foff + 8 > buf.Size {
+                    valid := false
+                    break
+                }
+            }
+            if valid {
+                ; The sentinel-anchored candidate has the richer field set
+                ; and only exists when its anchor was actually found.
+                score := cand.Has("rich") ? 10 : 0
+                if score > bestScore {
+                    bestScore := score
+                    best := cand["fields"]
+                }
+            }
+        }
+        if !best
+            throw Error("parser state layout candidates all failed validation"
+                , -1)
+        AhkMagic.evalParser := best
         AhkMagic.evalParserLocated := true
     }
 
-    ; Evaluate an expression inside this interpreter process.
-    ; Returns a number or string.  Throws on unsupported/invalid input.
     static EvalNative(expr) {
         AhkMagic.Init()
         if !(expr is String)
@@ -1606,6 +1958,12 @@ ahkHackLayoutProbe() {
         if !AhkMagic.inprocEval
             AhkMagic.inprocEval := MCode(MC_INPROC_EVAL_X64)
         AhkMagic._LocateInternalFunctions()
+        ; The eval blob takes every Line/ArgStruct/token/deref offset from a
+        ; runtime-discovered layout array; discover it once and reuse.
+        AhkMagic._DiscoverEvalLayout()
+        layoutArr := AhkMagic.evalLayoutArr
+        if !layoutArr
+            throw Error("eval layout not discovered", -1)
 
         scratch := Buffer(8 * 1024 * 1024, 0)
         out := Buffer(512, 0)
@@ -1627,11 +1985,17 @@ ahkHackLayoutProbe() {
             "Ptr", AhkMagic.findOrAddVar,
             "Ptr", AhkMagic.crtFree,
             "Ptr", AhkMagic.symInvalid,
+            "Ptr", layoutArr.Ptr,
             "Int"
         )
         if rc != 0
             throw Error("EvalNative harness failed with rc=" rc)
         status := NumGet(out, 0, "UInt")
+        if status = 9
+            throw Error("EvalNative token layout mismatch; "
+                . "unsupported runtime layout", -1)
+        if status = 10
+            throw Error("EvalNative layout validation failed", -1)
         if status != 0
             throw Error("EvalNative failed with status=" status)
         type := NumGet(out, 4, "UInt")
@@ -1641,6 +2005,15 @@ ahkHackLayoutProbe() {
             return NumGet(out, 8, "Double")
         if type = 0
             return StrGet(NumGet(out, 16, "Ptr"), "UTF-16")
+        if type = 5 {
+            ; SYM_OBJECT: wrap the interpreter's live object.  The eval
+            ; harness never finalizes its result token, so the object stays
+            ; alive; the reference returned here belongs to the caller.
+            ptr := NumGet(out, 8, "Ptr")
+            if !ptr
+                throw Error("EvalNative returned a null object", -1)
+            return ObjFromPtrAddRef(ptr)
+        }
         throw Error("EvalNative returned unknown symbol " type)
     }
 
@@ -1680,6 +2053,14 @@ ahkHackLayoutProbe() {
             throw TypeError("text must be a string", -1)
         if Trim(text) = ""
             throw ValueError("text must not be empty", -1)
+        ; Pre-check with the interpreter's own /validate switch so a syntax
+        ; error becomes a clean library error carrying the real parse
+        ; message.  The validator captures its output and kills its process
+        ; tree on timeout, so it never leaves a dialog on screen; the loader
+        ; rc check below remains as the fallback guard.  A compiled host has
+        ; no separate interpreter binary, so it keeps the fallback only.
+        if !A_IsCompiled
+            AhkMagic._ValidateScript(text, A_AhkPath)
 
         AhkMagic._DiscoverEvalLayout()
         off := AhkMagic._EvalStructOffsets()
@@ -1724,30 +2105,6 @@ ahkHackLayoutProbe() {
                 savedState.Push([key, "UChar", NumGet(gScript, parser[key], "UChar")])
         }
         try {
-            if parser.Has("mopen")
-                NumPut("Ptr", 0, gScript, parser["mopen"])
-            if parser.Has("mpending_parent")
-                NumPut("Ptr", 0, gScript, parser["mpending_parent"])
-            if parser.Has("mline_parent")
-                NumPut("Ptr", 0, gScript, parser["mline_parent"])
-            if parser.Has("mpending_related")
-                NumPut("Ptr", 0, gScript, parser["mpending_related"])
-            if parser.Has("mlast_param_init")
-                NumPut("Ptr", 0, gScript, parser["mlast_param_init"])
-            if parser.Has("mpending_hotkey")
-                NumPut("Ptr", 0, gScript, parser["mpending_hotkey"])
-            if parser.Has("mexpr_func")
-                NumPut("Ptr", 0, gScript, parser["mexpr_func"])
-            if parser.Has("mexpr_func_index")
-                NumPut("Int", 0x7fffffff, gScript, parser["mexpr_func_index"])
-            if parser.Has("mnext_func_body")
-                NumPut("UChar", 0, gScript, parser["mnext_func_body"])
-            if parser.Has("mignore_block")
-                NumPut("UChar", 0, gScript, parser["mignore_block"])
-            if parser.Has("mbackcompat")
-                NumPut("UChar", 1, gScript, parser["mbackcompat"])
-            if parser.Has("mclass_count")
-                NumPut("Int", 0, gScript, parser["mclass_count"])
             NumPut("Ptr", 0, g, currOff)
 
             if !AhkMagic.memScriptLoader
@@ -1768,6 +2125,12 @@ ahkHackLayoutProbe() {
 
             funcsItem := NumGet(gScript, mfuncsOff, "Ptr")
             funcCount := NumGet(gScript, mfuncsCountOff, "Int")
+            ; The count drives raw pointer walks below; refuse values that
+            ; cannot come from one script injection.
+            if funcCount < oldFuncCount
+                or funcCount > oldFuncCount + 4096
+                throw Error("mFuncs count changed unexpectedly: "
+                    . oldFuncCount " -> " funcCount, -1)
             if funcCount > oldFuncCount {
                 firstNew := oldLast ? NumGet(oldLast, off["line_next"], "Ptr") : 0
                 if firstNew {
@@ -1794,7 +2157,11 @@ ahkHackLayoutProbe() {
 
                     NumPut("Ptr", newFunc, g, currOff)
                     line := jump
+                    lineSteps := 0
                     while line {
+                        if lineSteps > 100000
+                            throw Error("line chain too long; layout likely wrong", -1)
+                        lineSteps += 1
                         if NumGet(line, off["line_action"], "UChar") = 3
                             and NumGet(line, off["line_attribute"], "Ptr")
                             NumPut("Ptr", NumGet(line, off["line_attribute"], "Ptr")
@@ -1806,7 +2173,11 @@ ahkHackLayoutProbe() {
                                 , "UChar") {
                                 postfix := NumGet(arg, off["arg_postfix"], "Ptr")
                                 if postfix {
+                                    tokenSteps := 0
                                     while NumGet(postfix, off["token_symbol"], "UInt") != AhkMagic.symInvalid {
+                                        if tokenSteps > 100000
+                                            throw Error("postfix token chain too long; layout likely wrong", -1)
+                                        tokenSteps += 1
                                         if NumGet(postfix, off["token_symbol"], "UInt") = 4
                                             and NumGet(postfix, off["token_usage"], "UInt") < 3 {
                                             deref := NumGet(postfix, off["token_value"], "Ptr")
@@ -1849,9 +2220,12 @@ ahkHackLayoutProbe() {
             }
             ; Detach the newly added lines from the running line list so the
             ; active execution cannot continue into them.  The new function
-            ; remains reachable through mFuncs.
-            ; NumPut("Ptr", 0, oldLast, off["line_next"])
-            ; NumPut("Ptr", oldLast, gScript, mlastLineOff)
+            ; remains reachable through mFuncs.  The tail was already
+            ; preparsed through firstNew above, so detaching now is safe.
+            if oldLast and off.Has("line_next") and mlastLineOff >= 0 {
+                NumPut("Ptr", 0, oldLast, off["line_next"])
+                NumPut("Ptr", oldLast, gScript, mlastLineOff)
+            }
             NumPut("Ptr", 0, g, currOff)
             r := AhkMagic.EvalNative(last)
             NumPut("Ptr", savedCur, g, currOff)
@@ -1881,7 +2255,6 @@ ahkHackLayoutProbe() {
         if rc != 0
             throw Error("LoadIncludedFile(memory) failed with rc=" rc)
     }
-
     ; ------------------------------------------------------------------
     ; Remote attach: read the three interpreter tables from another
     ; AutoHotkey process without injecting anything.
@@ -1960,6 +2333,11 @@ ahkHackLayoutProbe() {
         if !DllCall("ReadProcessMemory", "Ptr", h, "Ptr", addr, "Ptr", buf.Ptr
             , "UPtr", size, "UPtr*", &read)
             throw Error("ReadProcessMemory failed at 0x" Format("{:X}", addr), -1)
+        ; A partial success silently returns a half-garbage buffer and
+        ; corrupts every downstream parse; fail loudly instead.
+        if read != size
+            throw Error("ReadProcessMemory short read at 0x"
+                . Format("{:X}", addr) ": " read "/" size, -1)
         return buf
     }
 
@@ -2198,6 +2576,9 @@ ahkHackLayoutProbe() {
         if !DllCall("WriteProcessMemory", "Ptr", h, "Ptr", addr
             , "Ptr", buf.Ptr, "UPtr", buf.Size, "UPtr*", &written)
             throw Error("WriteProcessMemory failed", -1)
+        if written != buf.Size
+            throw Error("WriteProcessMemory short write at 0x"
+                . Format("{:X}", addr) ": " written "/" buf.Size, -1)
     }
 
     static _RemoteReadString(h, addr, maxLen := 4096) {
@@ -2334,6 +2715,15 @@ ahkHackLayoutProbe() {
             oldFn := NumGet(slotBuf, 8, "Ptr")
             newFn := hook["image_base"] + bif["entries"][newName]["rva"]
 
+            ; The vtable check below needs the module image bounds; read
+            ; SizeOfImage from the target's PE header once.  It sits at
+            ; optional-header offset 56 (i.e. 24 + 56 into the PE header).
+            dos := AhkMagic._RemoteRead(h, hook["image_base"], 0x40)
+            peOff := NumGet(dos, 0x3C, "UInt")
+            pe := AhkMagic._RemoteRead(h, hook["image_base"] + peOff, 0x80)
+            imageSize := NumGet(pe, 80, "UInt")
+            imageEnd := hook["image_base"] + imageSize
+
             patches := []
             addr := 0
             mbi := Buffer(48)
@@ -2374,8 +2764,36 @@ ahkHackLayoutProbe() {
                                     }
                                     j += 8
                                 }
-                                if ok
-                                    patches.Push(baseAddr + off + pos)
+                                ; The name window alone can false-positive on
+                                ; unrelated structs that happen to hold both
+                                ; pointers.  A real Func object matches one
+                                ; of two version layouts: 2.0 puts the
+                                ; vtable pointer right before the function
+                                ; pointer; 2.1 packs mMinParams/mMaxParams
+                                ; into the qword before it.
+                                if ok {
+                                    vtOk := false
+                                    for bc in [pos - 0x10, pos - 0x08] {
+                                        if bc < 0 or bc + 8 > data.Size
+                                            continue
+                                        vt := NumGet(data, bc, "Ptr")
+                                        if vt >= hook["image_base"]
+                                            and vt < imageEnd {
+                                            vtOk := true
+                                            break
+                                        }
+                                    }
+                                    if !vtOk and pos >= 0x10 {
+                                        minP := bif["entries"][name]["min"]
+                                        maxP := bif["entries"][name]["max"]
+                                        packed := (minP << 32) | maxP
+                                        if NumGet(data, pos - 0x10, "UInt64")
+                                            = packed
+                                            vtOk := true
+                                    }
+                                    if vtOk
+                                        patches.Push(baseAddr + off + pos)
+                                }
                             }
                             pos += 8
                         }
@@ -2393,8 +2811,27 @@ ahkHackLayoutProbe() {
                 throw Error("no Func object found for " name, -1)
             data := Buffer(8)
             NumPut("Ptr", newFn, data, 0)
+            ; Snapshot every slot before writing so a mid-loop failure can
+            ; roll the already-patched entries back instead of leaving the
+            ; target half-redirected.
+            originals := []
             for p in patches
-                AhkMagic._RemoteWrite(h, p, data)
+                originals.Push(AhkMagic._RemoteRead(h, p, 8))
+            written := []
+            try {
+                loop patches.Length {
+                    AhkMagic._RemoteWrite(h, patches[A_Index], data)
+                    written.Push(A_Index)
+                }
+            } catch as e {
+                for idx in written {
+                    try
+                        AhkMagic._RemoteWrite(h, patches[idx], originals[idx])
+                    catch
+                        continue
+                }
+                throw e
+            }
             return Map("src", name, "dst", newName, "count", patches.Length)
         } finally {
             DllCall("CloseHandle", "Ptr", h)
@@ -2405,8 +2842,13 @@ ahkHackLayoutProbe() {
         if !(hook is Map) or !hook.Has("pid") or !hook.Has("internal")
             or !hook["internal"].Has("postfix_rva")
             throw Error("hook has no remote eval context", -1)
+        if !hook["internal"].Has("curr_line_slot")
+            or !hook["internal"]["curr_line_slot"]
+            throw Error("hook has no current-line slot; attach again", -1)
         if !(expr is String)
             throw TypeError("expr must be a string", -1)
+        if StrLen(expr) > 4096
+            throw ValueError("expr too long", -1)
 
         internal := hook["internal"]
         stub := AhkMagic._HexBuffer(MC_REMOTE_EVAL_STUB_X64)
@@ -2414,12 +2856,26 @@ ahkHackLayoutProbe() {
         evalBlob := AhkMagic._HexBuffer(MC_INPROC_EVAL_X64)
         codeSize := stub.Size + locator.Size + evalBlob.Size
         paramOff := (codeSize + 15) // 16 * 16
-        locOff := paramOff + 136
+        layoutOff := paramOff + 136
+        locOff := ((layoutOff + 21 * 8 + 15) // 16) * 16
         outOff := locOff + 64
         exprLen := (StrLen(expr) + 1) * 2
         exprOff := outOff + 512
         scratchOff := exprOff + exprLen
         total := scratchOff + 8 * 1024 * 1024
+
+        ; Prefer the discovered target layout; fall back to the validated
+        ; defaults when the hook has no layout yet (the blob aborts with a
+        ; clear status before its first write if the assumption is wrong).
+        layoutBuf := 0
+        if hook.Has("script_layout") and hook["script_layout"].Has("struct")
+            and hook["script_layout"].Has("shape") {
+            layoutBuf := AhkMagic._BuildEvalLayout(
+                hook["script_layout"]["struct"]
+                , hook["script_layout"]["shape"])
+        } else {
+            layoutBuf := AhkMagic._DefaultEvalLayout()
+        }
 
         h := AhkMagic._RemoteOpen(hook["pid"], true)
         try {
@@ -2427,10 +2883,12 @@ ahkHackLayoutProbe() {
                 , "UPtr", total, "UInt", 0x3000, "UInt", 0x40, "Ptr")
             if !block
                 throw Error("VirtualAllocEx failed", -1)
+            threadExited := false
             try {
                 AhkMagic._RemoteWrite(h, block, stub)
                 AhkMagic._RemoteWrite(h, block + stub.Size, locator)
                 AhkMagic._RemoteWrite(h, block + stub.Size + locator.Size, evalBlob)
+                AhkMagic._RemoteWrite(h, block + layoutOff, layoutBuf)
 
                 param := Buffer(136)
                 NumPut("Ptr", block + stub.Size, param, 0)
@@ -2450,6 +2908,7 @@ ahkHackLayoutProbe() {
                 NumPut("UInt64", 0, param, 112)
                 NumPut("Int", 0, param, 120)
                 NumPut("Int", 0, param, 124)
+                NumPut("Ptr", block + layoutOff, param, 128)
                 AhkMagic._RemoteWrite(h, block + paramOff, param)
 
                 exprBuf := Buffer(exprLen)
@@ -2463,7 +2922,21 @@ ahkHackLayoutProbe() {
                 if !thread
                     throw Error("CreateRemoteThread failed", -1)
                 try {
-                    DllCall("WaitForSingleObject", "Ptr", thread, "UInt", 10000)
+                    wait := DllCall("WaitForSingleObject", "Ptr", thread
+                        , "UInt", 10000)
+                    if wait = 0x102 {
+                        ; The remote thread is still executing the injected
+                        ; block.  Freeing it would leave the target running
+                        ; freed memory; leak the block and fail loudly.
+                        throw Error("remote eval timed out after 10s; "
+                            . "injected block leaked to protect the target", -1)
+                    }
+                    if wait = 0xFFFFFFFF
+                        throw Error("WaitForSingleObject failed for remote eval", -1)
+                    if wait != 0
+                        throw Error("WaitForSingleObject returned 0x"
+                            . Format("{:X}", wait) " for remote eval", -1)
+                    threadExited := true
                     paramBack := AhkMagic._RemoteRead(h, block + paramOff, 136)
                     locRc := NumGet(paramBack, 120, "Int")
                     evalRc := NumGet(paramBack, 124, "Int")
@@ -2484,13 +2957,25 @@ ahkHackLayoutProbe() {
                         ptr := NumGet(out, 16, "Ptr")
                         return ptr ? AhkMagic._RemoteReadString(h, ptr) : ""
                     }
+                    if type = 5 {
+                        ; Objects cannot cross process boundaries; return the
+                        ; object's address in the target so callers can use
+                        ; it with the remote primitives.
+                        ptr := NumGet(out, 8, "Ptr")
+                        if !ptr
+                            throw Error("remote eval returned a null object", -1)
+                        return ptr
+                    }
                     throw Error("remote eval returned unknown type " type, -1)
                 } finally {
                     DllCall("CloseHandle", "Ptr", thread)
                 }
             } finally {
-                DllCall("VirtualFreeEx", "Ptr", h, "Ptr", block, "UPtr", 0
-                    , "UInt", 0x8000)
+                ; Only free the block once the remote thread has exited.
+                ; On timeout the block is deliberately leaked (see above).
+                if threadExited
+                    DllCall("VirtualFreeEx", "Ptr", h, "Ptr", block, "UPtr", 0
+                        , "UInt", 0x8000)
             }
         } finally {
             DllCall("CloseHandle", "Ptr", h)
@@ -2510,6 +2995,7 @@ ahkHackLayoutProbe() {
             , "UPtr", stub.Size + 72, "UInt", 0x3000, "UInt", 0x40, "Ptr")
         if !block
             throw Error("VirtualAllocEx failed", -1)
+        threadExited := false
         try {
             AhkMagic._RemoteWrite(h, block, stub)
             AhkMagic._RemoteWrite(h, block + stub.Size, param)
@@ -2520,15 +3006,29 @@ ahkHackLayoutProbe() {
             if !thread
                 throw Error("CreateRemoteThread failed", -1)
             try {
-                DllCall("WaitForSingleObject", "Ptr", thread, "UInt", 10000)
+                wait := DllCall("WaitForSingleObject", "Ptr", thread
+                    , "UInt", 10000)
+                if wait = 0x102 {
+                    ; Thread still executing the injected block; freeing it
+                    ; would corrupt the target, so leak it and fail loudly.
+                    throw Error("remote call timed out after 10s; "
+                        . "injected block leaked to protect the target", -1)
+                }
+                if wait = 0xFFFFFFFF
+                    throw Error("WaitForSingleObject failed for remote call", -1)
+                if wait != 0
+                    throw Error("WaitForSingleObject returned 0x"
+                        . Format("{:X}", wait) " for remote call", -1)
+                threadExited := true
                 back := AhkMagic._RemoteRead(h, block + stub.Size, 72)
                 return NumGet(back, 56, "Int")
             } finally {
                 DllCall("CloseHandle", "Ptr", thread)
             }
         } finally {
-            DllCall("VirtualFreeEx", "Ptr", h, "Ptr", block, "UPtr", 0
-                , "UInt", 0x8000)
+            if threadExited
+                DllCall("VirtualFreeEx", "Ptr", h, "Ptr", block, "UPtr", 0
+                    , "UInt", 0x8000)
         }
     }
 
@@ -2647,54 +3147,91 @@ ahkHackLayoutProbe() {
         return Map("q", qCmp, "d", dCmp)
     }
 
+    ; Build BOTH known parser-region candidate layouts and pick the one
+    ; that validates against the live target state.  No version family is
+    ; assumed: each candidate must satisfy its own structural checks
+    ; (sentinel value, byte-field plausibility, pointer ranges) and the
+    ; winner is the candidate that strictly validates.  Ambiguous or
+    ; failing candidates raise an explicit error.
     static _RemoteDiscoverParser(h, gscript, qCmp, dCmp) {
-        buf := AhkMagic._RemoteRead(h, gscript, 0x400)
-        if dCmp <= 0 or dCmp + 4 > buf.Size
-            or NumGet(buf, dCmp, "Int") < 0
-            or NumGet(buf, dCmp, "Int") > 100000
-            throw Error("mClassObjectCount offset invalid", -1)
+        buf := AhkMagic._RemoteRead(h, gscript, 0x800)
+        candidates := []
+        scores := []
 
-        exprIndexOff := 0
-        loop Min(0x40, dCmp) // 4 {
-            off := dCmp - (A_Index - 1) * 4
-            if off + 8 > buf.Size
-                continue
-            if NumGet(buf, off, "Int") = 0x7fffffff
-                and NumGet(buf, off + 4, "Int") = 0 {
-                exprIndexOff := off + 4
-                break
+        ; Candidate A: sentinel-anchored region ending at mClassObjectCount.
+        if dCmp > 0 and dCmp + 4 <= buf.Size
+            and NumGet(buf, dCmp, "Int") >= 0
+            and NumGet(buf, dCmp, "Int") <= 100000 {
+            exprIndexOff := 0
+            loop Min(0x40, dCmp) // 4 {
+                off := dCmp - (A_Index - 1) * 4
+                if off + 8 > buf.Size
+                    continue
+                if NumGet(buf, off, "Int") = 0x7fffffff
+                    and NumGet(buf, off + 4, "Int") = 0 {
+                    exprIndexOff := off + 4
+                    break
+                }
+            }
+            if exprIndexOff and exprIndexOff + 8 <= buf.Size
+                candidates.Push(Map(
+                    "rich", true,
+                    "fields", Map(
+                        "mclass_count", dCmp,
+                        "mline_parent", exprIndexOff - 0x28,
+                        "mpending_related", exprIndexOff - 0x20,
+                        "mlast_param_init", exprIndexOff - 0x18,
+                        "mpending_hotkey", exprIndexOff - 0x10,
+                        "mexpr_func", exprIndexOff - 8,
+                        "mexpr_func_index", exprIndexOff,
+                        "mnext_func_body", exprIndexOff + 4,
+                        "mignore_block", exprIndexOff + 5,
+                        "mbackcompat", exprIndexOff + 6,
+                        "mcurrent_module", exprIndexOff - 0x48,
+                        "mlast_module", exprIndexOff - 0x40)))
+        }
+
+        ; Candidate B: qCmp-anchored region.
+        if qCmp > 0 and qCmp + 0x28 <= buf.Size
+            candidates.Push(Map(
+                "fields", Map(
+                    "mopen", qCmp,
+                    "mpending_parent", qCmp + 8,
+                    "mpending_related", qCmp + 16,
+                    "mlast_param_init", qCmp + 24,
+                    "mnext_func_body", qCmp + 32,
+                    "mclass_count", dCmp)))
+
+        best := 0
+        bestScore := -1
+        for cand in candidates {
+            fields := cand["fields"]
+            valid := true
+            for key, off in fields {
+                ; Value-level checks are deliberately absent: the parser
+                ; fields are saved and restored verbatim, so any plausible
+                ; offset round-trips harmlessly.  The only hard requirement
+                ; is that every offset stays inside the Script object.
+                if !(off is Integer) or off <= 0 or off >= 0x800
+                    or off + 8 > buf.Size {
+                    valid := false
+                    break
+                }
+            }
+            if valid {
+                ; The sentinel-anchored candidate has the richer field set
+                ; and only exists when its anchor was actually found.
+                score := cand.Has("rich") ? 10 : 0
+                if score > bestScore {
+                    bestScore := score
+                    best := cand
+                }
             }
         }
-
-        if exprIndexOff {
-            ; v2.1 layout: parser fields form a compact run ending at
-            ; mClassObjectCount, anchored by the sentinel mExprFuncIndex.
-            if exprIndexOff + 8 > buf.Size
-                throw Error("v2.1 parser region invalid", -1)
-            return Map(
-                "mclass_count", dCmp,
-                "mline_parent", exprIndexOff - 0x28,
-                "mpending_related", exprIndexOff - 0x20,
-                "mlast_param_init", exprIndexOff - 0x18,
-                "mpending_hotkey", exprIndexOff - 0x10,
-                "mexpr_func", exprIndexOff - 8,
-                "mexpr_func_index", exprIndexOff,
-                "mnext_func_body", exprIndexOff + 4,
-                "mignore_block", exprIndexOff + 5,
-                "mbackcompat", exprIndexOff + 6,
-                "mcurrent_module", exprIndexOff - 0x48,
-                "mlast_module", exprIndexOff - 0x40)
-        }
-
-        if qCmp <= 0 or qCmp + 0x28 > buf.Size
-            throw Error("v2.0 parser region invalid", -1)
-        return Map(
-            "mopen", qCmp,
-            "mpending_parent", qCmp + 8,
-            "mpending_related", qCmp + 16,
-            "mlast_param_init", qCmp + 24,
-            "mnext_func_body", qCmp + 32,
-            "mclass_count", dCmp)
+        if !best
+            throw Error("parser state layout candidates all failed validation"
+                , -1)
+        return best["fields"]
     }
 
     static _RemoteLocateEvalScript(secs, base) {
@@ -3367,7 +3904,64 @@ ahkHackLayoutProbe() {
             "deref_len", deref["len"])
     }
 
-    static _RemoteDiscoverLayout(h, secs, base, loc) {
+    ; Discover the mFuncs layout of a target.  The validator needs live
+    ; function entries, so a target whose script defines no functions
+    ; (fresh/empty scripts) fails discovery.  Inject two probe functions
+    ; through the target's own loader and retry once; the probes stay in
+    ; the target's mFuncs as harmless extras.
+    static _RemoteDiscoverLayoutWithProbe(h, secs, base, loc) {
+        try {
+            return AhkMagic._RemoteDiscoverLayout(h, secs, base, loc)
+        } catch as e {
+            if !InStr(e.Message, "dynamic function layout not found")
+                and !InStr(e.Message, "dynamic token layout not found")
+                throw e
+            tag := Format("{:x}", A_TickCount)
+            probe := "ahkHackLayoutProbeA" tag
+                . "(x) {`n    return x + 1`n}`n"
+                . "ahkHackLayoutProbeB" tag
+                . "(y) {`n    return y * 2`n}`n"
+            rc := AhkMagic._RemoteLoadScript(h, base, loc, probe)
+            if rc != 0
+                throw Error("probe injection for layout discovery failed rc="
+                    . rc " (TextStream layout validation failed in target)"
+                    , -1)
+            try {
+                ; First pass discovers mFuncs/mjumpLine without structs.
+                layout := AhkMagic._RemoteDiscoverLayout(
+                    h, secs, base, loc, false)
+                ; The injected functions were loaded without preparse, so
+                ; their lines have no postfix buffers yet.  Preparse them
+                ; through the target's own pipeline, then finish struct
+                ; discovery on the now-complete probe rows.
+                savedCur := AhkMagic._RPtr(h, layout["g"] + layout["curr_off"])
+                for q in layout["funcs"] {
+                    jump := AhkMagic._RPtr(h
+                        , q + layout["mjump_line_off"])
+                    if !jump
+                        continue
+                    AhkMagic._WPtr(h, layout["g"] + layout["curr_off"], q)
+                    prc := AhkMagic._RemoteCall(h
+                        , base + loc["preparse_rva"]
+                        , [layout["gscript"], jump])
+                    AhkMagic._WPtr(h, layout["g"] + layout["curr_off"], savedCur)
+                    if prc != 1
+                        throw Error("probe PreparseExpressions rc=" prc, -1)
+                }
+                layout["struct"] := AhkMagic._RemoteDiscoverStructs(
+                    h, loc["loc_out"], layout["funcs"], layout["func_data"]
+                    , layout["mjump_line_off"], layout["jump_back_off"])
+                layout["shape"] := AhkMagic._RemoteArgShape(h, layout
+                    , layout["struct"])
+                return layout
+            } catch as e2 {
+                throw Error("layout discovery failed even after probe "
+                    . "injection: " e2.Message, -1)
+            }
+        }
+    }
+
+    static _RemoteDiscoverLayout(h, secs, base, loc, doStructs := true) {
         locOut := AhkMagic._RemoteInternalLocator(h, secs, base
             , loc["postfix_rva"], loc["expand_rva"])
         loc["loc_out"] := locOut
@@ -3470,6 +4064,13 @@ ahkHackLayoutProbe() {
             minJump := limit < 2 ? 1 : 2
             if jumpBestSlot < minJump
                 continue
+            ; A real mFuncs array must have back-reference rows for a
+            ; majority of its entries.  Decoy arrays (other object lists in
+            ; the Script object) can contain a few function-like pointers
+            ; and win the name-based score; rejecting sub-majority
+            ; back-reference counts keeps the scan on the real array.
+            if jumpBestSlot * 2 < limit
+                continue
 
             nameOff := 0
             nameMatches := 0
@@ -3539,9 +4140,13 @@ ahkHackLayoutProbe() {
             "funcs", best["funcs"],
             "func_data", best["func_data"],
             "parser", loc["parser"])
-        layout["struct"] := AhkMagic._RemoteDiscoverStructs(h, locOut
-            , best["funcs"], best["func_data"], best["jump_off"]
-            , best["back_off"])
+        if doStructs {
+            layout["struct"] := AhkMagic._RemoteDiscoverStructs(h, locOut
+                , best["funcs"], best["func_data"], best["jump_off"]
+                , best["back_off"])
+            layout["shape"] := AhkMagic._RemoteArgShape(h, layout
+                , layout["struct"])
+        }
         return layout
     }
 
@@ -3618,6 +4223,11 @@ ahkHackLayoutProbe() {
             throw TypeError("hook must be an AttachRemote result", -1)
         if !(text is String) or Trim(text) = ""
             throw TypeError("text must be a non-empty string", -1)
+        ; Same protection as the in-process path, but validated with the
+        ; TARGET's own interpreter when its path is known.
+        vpath := hook.Has("module") and hook["module"] != ""
+            ? hook["module"] : A_AhkPath
+        AhkMagic._ValidateScript(text, vpath)
 
         h := AhkMagic._RemoteOpen(hook["pid"], true)
         try {
@@ -3628,7 +4238,8 @@ ahkHackLayoutProbe() {
                 layout := hook["script_layout"]
             } else {
                 loc := AhkMagic._RemoteLocateEvalScript(secs, mod["base"])
-                layout := AhkMagic._RemoteDiscoverLayout(h, secs, mod["base"], loc)
+                layout := AhkMagic._RemoteDiscoverLayoutWithProbe(
+                    h, secs, mod["base"], loc)
                 hook["script_loc"] := loc
                 hook["script_layout"] := layout
             }
@@ -3637,11 +4248,13 @@ ahkHackLayoutProbe() {
                 layout["struct"] := AhkMagic._RemoteDiscoverStructs(h, locOut
                     , layout["funcs"], layout["func_data"]
                     , layout["mjump_line_off"], layout["jump_back_off"])
+            if !layout.Has("shape")
+                layout["shape"] := AhkMagic._RemoteArgShape(h, layout
+                    , layout["struct"])
             s := layout["struct"]
             gscript := layout["gscript"]
             g := layout["g"]
             currOff := layout["curr_off"]
-            parser := layout["parser"]
             for name in AhkMagic._DeclaredFunctionNames(text) {
                 if AhkMagic._RemoteFindUserFuncs(h, layout, name).Length
                     throw Error("function name already exists in target: "
@@ -3651,6 +4264,7 @@ ahkHackLayoutProbe() {
             savedCur := AhkMagic._RPtr(h, g + currOff)
             savedCurFunc := AhkMagic._RPtr(h, g + currOff)
 
+            parser := layout["parser"]
             savedState := []
             for key in ["mopen", "mpending_parent", "mline_parent"
                 , "mpending_related", "mlast_param_init", "mpending_hotkey"
@@ -3693,6 +4307,10 @@ ahkHackLayoutProbe() {
 
                 funcsItem := AhkMagic._RPtr(h, gscript + layout["mfuncs_off"])
                 funcCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
+                if funcCount < oldFuncCount
+                    or funcCount > oldFuncCount + 4096
+                    throw Error("mFuncs count changed unexpectedly: "
+                        . oldFuncCount " -> " funcCount, -1)
                 if funcCount > oldFuncCount {
                     loop funcCount - oldFuncCount {
                         idx := oldFuncCount + A_Index - 1
@@ -3709,7 +4327,11 @@ ahkHackLayoutProbe() {
                             throw Error("PreparseExpressions rc=" rc, -1)
                         AhkMagic._WPtr(h, g + currOff, newFunc)
                         line := jump
+                        lineSteps := 0
                         while line {
+                            if lineSteps > 100000
+                                throw Error("remote line chain too long; layout likely wrong", -1)
+                            lineSteps += 1
                             lineSize := Max(0x40, s["line_next"] + 8
                                 , s["line_attribute"] + 8, s["line_arg"] + 8)
                             lineData := AhkMagic._RemoteRead(h, line, lineSize)
@@ -3726,7 +4348,11 @@ ahkHackLayoutProbe() {
                                 postfix := AhkMagic._RPtr(h
                                     , arg + s["arg_postfix"])
                                 if postfix {
+                                    tokenSteps := 0
                                     loop {
+                                        if tokenSteps > 100000
+                                            throw Error("remote postfix token chain too long; layout likely wrong", -1)
+                                        tokenSteps += 1
                                         tokenSize := Max(s["token_stride"]
                                             , s["token_symbol"] + 4
                                             , s["token_usage"] + 8
@@ -3838,7 +4464,9 @@ ahkHackLayoutProbe() {
                 layout := hook["script_layout"]
             } else {
                 loc := AhkMagic._RemoteLocateEvalScript(secs, mod["base"])
-                layout := AhkMagic._RemoteDiscoverLayout(h, secs, mod["base"], loc)
+                layout := AhkMagic._RemoteDiscoverLayoutWithProbe(
+                    h, secs, mod["base"], loc)
+                hook["script_loc"] := loc
                 hook["script_layout"] := layout
             }
             oldList := AhkMagic._RemoteFindUserFuncs(h, layout, oldName)
@@ -3870,6 +4498,8 @@ ahkHackLayoutProbe() {
         gscript := layout["gscript"]
         arr := AhkMagic._RPtr(h, gscript + layout["mfuncs_off"])
         count := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
+        if count < 0 or count > 100000
+            throw Error("mFuncs count out of range: " count, -1)
         result := []
         shortName := name
         dot := InStr(name, ".")
@@ -3909,12 +4539,95 @@ ahkHackLayoutProbe() {
         return result
     }
 
+    ; Validate text with the interpreter's own /validate switch before it
+    ; reaches the loader, so a syntax error becomes a clean library error
+    ; carrying the real parse message instead of a dialog or an aborted
+    ; host process (in-process EvalScript) or target (RemoteEvalScript).
+    ; The validator is driven by its captured output and a completion
+    ; marker file, never by process exit codes, and its process tree is
+    ; killed the moment the error text lands so no build can leave a
+    ; dialog on screen.  When no signal arrives within six seconds the
+    ; check is treated as inconclusive and the loader's own failure check
+    ; remains the fallback guard.
+    static _ValidateScript(text, ahkPath) {
+        if !ahkPath or !FileExist(ahkPath)
+            return
+        tag := Format("{:x}", A_TickCount) "-" Format("{:x}", Random(1, 0x7fffffff))
+        vFile := A_Temp "\ahk_hack_validate_" tag ".ahk"
+        errFile := A_Temp "\ahk_hack_validate_" tag ".err"
+        batFile := A_Temp "\ahk_hack_validate_" tag ".bat"
+        doneFile := A_Temp "\ahk_hack_validate_" tag ".done"
+        try {
+            ; #Warn off keeps warning text out of the captured stream so
+            ; only real errors drive the throw below.
+            FileAppend "#Warn All, Off`n" text, vFile, "UTF-8"
+            ; The command line is routed through a batch file because AHK's
+            ; Run re-parses nested quotes and can silently drop switches;
+            ; inside the batch, cmd.exe receives the arguments verbatim.
+            ; Format builds the quoted line (no manual quote escaping), and
+            ; the batch is written without a BOM (cmd would otherwise fold
+            ; the BOM into the first token).  /ErrorStdOut routes load
+            ; errors to the captured stream so the validator never needs a
+            ; dialog.
+            batLine := Format('"{1}" /validate /ErrorStdOut "{2}" >"{3}" 2>&1'
+                , ahkPath, vFile, errFile)
+            FileAppend batLine "`n", batFile, "UTF-8-RAW"
+            ; The done marker is only written after the validator exits
+            ; (cmd runs batch lines sequentially), so it is a reliable
+            ; completion signal - process handles/PIDs are not, because
+            ; AHK's Run may surface an intermediate shell whose PID is
+            ; immediately reused.
+            FileAppend Format('echo done >"{1}"`n', doneFile)
+                , batFile, "UTF-8-RAW"
+            Run(Format('"{1}"', batFile), , "Hide", &vpid)
+            ; The capture file is the primary signal: as soon as the error
+            ; text lands, kill the whole validator tree (some builds still
+            ; block on a dialog after writing it) and throw with the real
+            ; parse message.  The done marker means the validator finished
+            ; with no captured error: valid text.
+            deadline := A_TickCount + 6000
+            loop {
+                size := FileExist(errFile) ? FileGetSize(errFile) : 0
+                if size > 0 {
+                    RunWait(Format('taskkill /pid {1} /T /F', vpid)
+                        , , "Hide")
+                    detail := Trim(FileRead(errFile, "UTF-8"))
+                    if StrLen(detail) > 300
+                        detail := SubStr(detail, 1, 300) "..."
+                    throw Error("script validation failed: " detail, -1)
+                }
+                if FileExist(doneFile)
+                    break
+                if A_TickCount >= deadline {
+                    ; No error text and no completion marker: kill the tree
+                    ; and treat validation as inconclusive - the loader's
+                    ; own rc check still guards the real load.
+                    RunWait(Format('taskkill /pid {1} /T /F', vpid)
+                        , , "Hide")
+                    return
+                }
+                Sleep 20
+            }
+        } finally {
+            if FileExist(vFile)
+                FileDelete(vFile)
+            if FileExist(errFile)
+                FileDelete(errFile)
+            if FileExist(batFile)
+                FileDelete(batFile)
+            if FileExist(doneFile)
+                FileDelete(doneFile)
+        }
+    }
+
     static EvalSubprocess(expr) {
         AhkMagic.Init()
         if !(expr is String)
             throw TypeError("expr must be a string", -1)
         if expr = ""
             throw ValueError("expr must not be empty", -1)
+        if StrLen(expr) > 4096
+            throw ValueError("expr too long", -1)
 
         tag := Format("{:x}", A_TickCount) "-" Format("{:x}", Random(1, 0x7fffffff))
         scriptFile := A_Temp "\ahk_mcode_eval_" tag ".ahk"
@@ -3953,6 +4666,6 @@ ahkHackLayoutProbe() {
 
 MC_INTERNAL_LOCATOR_X64 := "4157415641554154565755534881ec38030000488bb424a8030000c744242c000000004885c90f94c04885d2410f94c24108c24d85c0410f94c34508d34885f6410f94c2b8010000004508da0f854a0200004c8b9c24a00300004929d10f92c04929d3410f92c24108c2b8020000000f85270200004d8d9100000200b8030000004d39c20f8712020000498d41074c39d00f87000200004801ca4881c10000010031ff4c89c8eb180f1f840000000000488d58014883c0084c39d04889d8777c803c024875ea488d1c02807b018d75e0807b020d75da4c6373034c01f34883c3074839cb72ca4189ff4531f685ff74154a399cf430010000740b49ffc64d39f775ee4589fe4139fe400f95c583ff40410f93c44108ec75134a899cfc3001000042c744bc3000000000ffc74139fe73804489f3ff449c30e974ffffff85ff0f845301000089fb89d883e00383ff040f832202000031ff4531f631c94885c074384a8d1cf44881c3300100004e8d34b44983c6304531ffeb100f1f84000000000049ffc74c39f87410438b2cbe39cd76f04a8b3cfb89e9ebe84885ff0f84f6000000b8050000004981f8000100000f82e900000031c94889d3eb20660f1f4400004c8d71014881c10101000048ffc34c39c14c89f10f87c2000000803c0a4475e0807c0a018975d9807c0a024c75d2807c0a032475cb807c0a042075c441be04000000eb106666662e0f1f8400000000004983c60242807c33fc66752442807c33fd83751c42807c33fe3a751442807c33ff0074386666662e0f1f8400000000004981fe000100000f8473ffffff42807c33fd6675bb42807c33fe8375b342807c33ff3a75ab42803c330075a44c8d72ff4885c97418410fb6040e3dc3000000740e3dcc000000740748ffc975e831c94801d14531ffeb2eb8040000004881c4380300005b5d5f5e415c415d415e415fc3498d5f014983c706b8080000004d39c74989df77d742803c3ae875e44a8d043a486358014801d84883c0054839c875d04d85ff740f4c89fb41803c1ecc740748ffcb75f431db488d83000100004c39c077ae4801d3b804000000eb044883c002807c03fc667515807c03fd83750e807c03fe3a7507807c03ff007427483d000100000f8478ffffff807c03fd6675cd807c03fe8375c6807c03ff3a75bf803c030075b94d39d34d0f42d3498d41104c39d00f866d0100004531f6488d4a064531ffe99100000083e3fc31ff4531f631c9eb1b66666666662e0f1f8400000000004983c6044c39f30f84befdffff428b6cb43039cd760a4a8bbcf43001000089e9428b6cb43439cd760a4a8bbcf43801000089e9428b6cb43839cd760a4a8bbcf44001000089e9428b6cb43c39cd76b14a8bbcf44801000089e9eba54d8d5f014983c70648ffc1b8060000004d39c74d89df0f8795feffff42803c3ae875dd4a8d043a4c6360014c01e04829d04883c0054c39c875c64d8d5f05498d470a4c39c0400f97c5498d47654939c3410f93c34108eb75a741bb050000004d29e34531e442807c21ffe8750d4e632c214b8d2c234c01ed75264f8d2c274983c5064939c50f8375ffffff4f8d2c274983c50b49ffc44d39c576cae960ffffff4c8d4c242c4889d54889d14c89c24d89d0e80f01000085c00f84f90000004c01ed4c01fd498d042c4883c00a48893e4c89760848895e10488946188b44242c89462031c0e9c8fdffff4d89ceeb14498d46014983c6114d39d64989c60f877afeffff42803c324875e542807c32018975dd42807c32025475d542807c32032475cd42807c32041075c542807c32055575bd42807c32065675b542807c32075775ad42807c32084175a542807c320954759d42807c320a41759542807c320b55758d42807c320c41758542807c320d560f8579ffffff42807c320e410f856dffffff4983fe020f8263ffffff42807c320f570f8557ffffff42807c32ffcc0f854bffffff42807c32fecc0f853fffffff4901d6e9c8fdffffb807000000e9f0fcffff0f1f4000498d80000800004839d0480f42d04983c00431c0eb0d662e0f1f84000000000049ffc04939d0772842807c01fc8375f042807c01fe1075e8460fb65401ff458d5ace4180fb3277d8458911b801000000c3"
 MC_MEM_SCRIPT_X64 := "5657534883ec204c89c64989ca488b4c24684d85d20f94c04885d2410f94c04108c04d85c9410f94c34508c34885c9410f94c0b8010000004508d80f85c80100008b4424600f57c00f11010f1141100f1141200f1141300f1141400f1141500f1141600f1141700f1181800000000f1181900000000f1181a00000000f1181b00000000f1181c00000000f1181d00000000f1181e00000000f1181f00000004c8d81000100000f1181000100000f1181100100000f1181200100000f1181400100000f1181500100000f1181600100000f1181700100000f1181800100000f1181900100000f1181a00100000f1181b00100000f1181c00100000f1181d00100000f1181e00100000f1181f00100004c8d1d0a0100004c89194c8d1d300100004c8959084c8d1d350100004c8959104c8d1d5a0100004c8959184c8d1d9f0200004c8959204c8d1da40200004c8959284c8d1da90200004c8959304c8d1dae0200004c8959384889890001000048c781080100000c00000049bb00000000b00400004c899910010000c781180100000200000066c7812c01000000000f1181300100004c898940010000898148010000c6814c010000004c898950010000898158010000c6815c010000004c8989600100004885f674048b3eeb0231ff4885f60f94c34889d14c89c24189f841ffd289c131c083f9010f95c108cb740688c801c0eb06ffc7893e31c04883c4205b5f5ec36666666666662e0f1f84000000000048c7414000000000c7414800000000c6414c0048c7415000000000c7415800000000c6415c0048c7416000000000c390b001c3666666662e0f1f84000000000048c7414000000000c7414800000000c6414c0048c7415000000000c7415800000000c6415c0048c7416000000000c390565753488b41404c8b51504c8b4960448b59484c29d04c01d84589c34c39d8410f43c085c074214189c083f808410f92c34889d64c29d64883fe200f92c34408db740d4531dbeb7e4531c0e9e300000083f82073054531dbeb424589c34183e3e031f6666666662e0f1f840000000000410f100432410f104c32100f1104320f114c32104883c6204939f375e34539c30f849d00000041f6c018742a4c89de4589c34183e3f8662e0f1f840000000000498b3c3248893c324883c6084939f375ef4539c3746d4c89c74c89de4883e703741e4c89de66662e0f1f840000000000410fb61c32881c3248ffc648ffcf75f04d29c34983fbfc773a0f1f8000000000450fb61c3244881c32450fb65c320144885c3201450fb65c320244885c3202450fb65c320344885c32034883c6044939f075cd4d01c24c8951504d01c14c8949605b5f5ec366662e0f1f84000000000031c0c3666666662e0f1f84000000000031c0c3666666662e0f1f840000000000488b4150482b4140c30f1f80000000008b4148c3"
-MC_INPROC_EVAL_X64 := "4157415641554154565755534881ec980000004c89cf4c89c34989cf4c8ba42408010000488b8c240001000048c78424800000000000400048c7442460000000004d85ff0f94c04885d2410f94c04108c04885db0f94c04d85c9410f94c14108c14508c14885c90f94c04408c84d85e4410f94c04883bc242801000000410f94c14508c14108c14883bc243801000000410f94c04883bc244001000000410f94c2b8010000004508c24508ca41f6c2010f859b060000488b8424200100004c8bac24180100004c8d87000100004885c04889c6490f44f04c8db7800100004c8d8f000300004c894c24704c898c24900000004d85ed4c0f44ef756e0f57c00f11070f1147100f1147200f1147300f1147400f1147500f1147600f1147700f1187800000000f1187900000000f1187a00000000f1187b00000000f1187c00000000f1187d00000000f1187e00000000f1187f0000000c6070341c645010141c7450401000000498975080f57c0410f1106410f114610410f114620410f114630410f114640410f114650410f114660410f1146706683390074164531c90f1f40006642837c4902004d8d490175f3eb034531c94885c048895424780f85830200004c897c245048895c2468488d870008100048894424480f57c0410f1100410f114010410f114020410f114030410f114040410f114050410f114060410f11407041c60000c646010144894e0448894e0848b80001000000010000488946204531c04989cb4d89d94531d2660f1f440000470fb73c114585ff0f84dd0100004183ff27744c4183ff227446418d479f6683f81a0f82f8000000664183ff5f0f84ed000000418d47a56683f8e50f87df000000410fb7c73d800000000f83d00000004983c202ebaa662e0f1f8400000000004f8d1c114983c302430fb74411026685c0400f94c5664439f80f94c34008eb75396666666666662e0f1f8400000000006683f860750c6641837b020074044983c302410fb743024983c3026685c0400f94c57406664439f875d64084ed0f85280100004181f8fe00000077444489c0488d04404b8d1c114883c3024c89c24c8b44244849891cc041c644c008016641c744c01003014c89db4c29cb4c29d34883c3fe48d1eb41895cc0144989d041ffc04983c302e9dbfeffff0f1f80000000004c89c24b8d041131ed4989c3eb0d6690450fb77b024983c302ffc5418d5f9f6683fb1a72eb418d5fbf6683fb1a0f92c3664183ff5f410f94c04108d875d2450fb7c74181f880000000410f92c0418d5fc66683fbf60f92c34184d874b34839c874254889d381fbff0000000f92c06643837c11fe2e410f95c04184c04989d00f844ffeffffeb104989d04181f8fe0000000f873dfeffff4489c0488d04404d01d14c8b4424484d890cc049c744c008000000006641c744c010000041896cc0144989d041ffc0e909feffff4585c0488b5c24684c8b7c2450741941c1e003438d0440488b4c244848c704010000000048894e1049c70424010000000f57c0410f11442408488b0348894424484c892b4c8d4424604c89e94889f241ffd789c5488b4c24604885c97407ff94244001000083fd0175264883bc2410010000000f84e80100004c897c2450488bac24480100004c8b7e18418b4710eb2d488b44244848890341c7042402000000e98f020000488b4008498907660f1f840000000000418b47284983c71839e8745083f80475ef41837f080277e8498b074885c074e08078100774ca448b4014488b10488b8c242801000041b903010000ff9424380100004885c075ad488b44244848890341c7042405000000e923020000488b8424300100004885c00f94c1483b4424500f94c208ca75114c89e94889f2ffd083f8010f854d010000488b4424704889842488000000c78790010000ffffffff48c78788010000ffffffff4889879801000048c787a001000000000000488d8700033f004889442438488d8424800000004889442430488d8424900000004889442428488d842488000000488944242048c744244000003f004c8d44245c4c89e931d24d89f1ff542478488b4c244848890b4885c00f84ae00000041c70424000000008b8f9001000041894c2404488b8f8001000049894c240849894c2410498d4c24204889ca4c29f24883fa0f0f8797000000ba05000000660f1f840000000000450fb64416fb44884411fb450fb64416fc44884411fc450fb64416fd44884411fd450fb64416fe44884411fe450fb64416ff44884411ff450fb60416448804114883c2064883fa3575b6eb56488b44244848890348b8000000006300000049890424e9b800000041c7042403000000e9ab000000488b44244848890341c7042406000000e996000000410f10060f1101410f1046100f114110410f1046200f114120418b4c240483f9050f8785000000ba270000000fa3ca737b488b461849894424504885c0744b31c0660f1f440000488b4e180fb60c0141884c0458488b4e180fb64c010141884c0459488b4e180fb64c010241884c045a488b4e180fb64c010341884c045b4883c004483d2001000075bd8b44245c41898424c800000031c04881c4980000005b5d5f5e415c415d415e415fc341c7442404000000004989442410e972ffffff"
+MC_INPROC_EVAL_X64 := "4157415641554154565755534881ecf80000004c8ba424b00100004c8bbc24680100004c8b94246001000048c78424e00000000000400048c78424c8000000000000004885c90f94c04885d2410f94c34108c34d85c00f94c04d85c90f94c308c34408db4d85d20f94c008d84d85ff410f94c34883bc2488010000000f94c34408db08c34883bc2498010000000f94c04883bc24a001000000410f94c34108c34d85e4400f94c7b8010000004408df4008df40f6c7010f85b10900004d8b6c2470498b7424604d8b7424684983fd100f92c04d8d5e044d39eb410f97c3488d7e084c39ef0f97c34408db08c3b80a0000000f85760900004c89b424980000004889b424b8000000498b7424784d8bb424900000004889b424c00000004c8d5e084d39eb0f97c3498bb424a0000000488d7ebf4883ffcf400f92c74c89b424a000000049ffc64939f6400f97c54d8b9c24980000004008dd498d5b0448897424504839f30f97c34008fb4008eb0f85fb0800004c895c2470488bbc2480010000488bb42478010000498b8424800000004889842480000000498b8424880000004889442478498d81000100004885ff4989fb4c0f44d8498d99800100004d8db1000300004c89b424d80000004c89b424f00000004885f6490f44f10f85980000000f57c0410f1101410f114110410f114120410f114130410f114140410f114150410f114160410f114170410f118180000000410f118190000000410f1181a0000000410f1181b0000000410f1181c0000000410f1181d0000000410f1181e0000000410f1181f00000004d8b342441c60436034d8b74240841c60436014d8b7424104d85f6740841c70436010000004d8b7424184d891c360f57c00f11030f1143100f1143200f1143300f1143400f1143500f1143600f1143706641833a00741e4531f66666662e0f1f8400000000006643837c7202004d8d760175f3eb034531f648898c24900000004885ff4c899c24880000004889b424b00000000f85e0020000498d890008100048894c24680f57c00f11000f1140100f1140200f1140300f1140400f1140500f1140600f114070498b44242042c6041800498b44242842c6041801498b44243046893418498b4424384e891418498b44245042c7041800010000498b44245842c70418000100004531db4c89d54889e931c00f1f40000fb73c0185ff0f841e02000083ff27743e83ff2274398d779f6683fe1a0f82070100006683ff5f0f84fd0000008d77a56683fee50f87f00000000fb7f781fe800000000f83e10000004883c002ebb1488d2c014883c502440fb7740102664585f6410f94c7664139fe400f94c64408fe753966666666662e0f1f840000000000664183fe60750b66837d020074044883c502440fb775024883c502664585f6410f94c77406664139fe75d54584ff4c8bbc24680100000f856e0100004181fbfe000000775c4489de480faf7424504803742468488d3c014883c7024d89de4c8b9c248000000049893c334c8b5c247841c60433014c8b9c24a00000006641c7043303014d89f34889ef4829cf4829c74883c7fe48d1ef488b442470893c3041ffc34883c502e9cdfeffff4c895c24584c8d3c014531f64c89fdeb100f1f4400000fb77d024883c50241ffc68d779f6683fe1a72ec8d77bf6683fe1a400f92c66683ff5f410f94c34108f375d4440fb7df4181fb80000000410f92c38d77c66683fef6400f92c64184f374b54d39d7742f488b7c245881ffff000000410f92c366837c01fe2e400f95c64484de4989fb4c8bbc24680100000f843afeffffeb1a4c8b5c24584181fbfe0000004c8bbc24680100000f871efeffff448b5c24584c0faf5c24504c035c24684801c1488b8424800000004a890c18488b4424784ac7041800000000488b8424a00000006642c704180000488b442470468934184c8b5c245841ffc3e9cdfdffff4585db4c89d84c8b9c2488000000488bb424b0000000742189c0488b4c2450480fafc84c8b5424684ac7041100000000498b4424404e8914184c894c2458488954246849c707010000000f57c0410f1147084d8b304c894424504989304c8d8424c80000004889f14c89daff94249000000089c5488b8c24c80000004885c97407ff9424a001000083fd010f85e30100004883bc247001000000488b5424500f84e3010000498b442448488b8c2488000000488b3c084885ff0f84de0100004c897424604c8b9c24a8010000488b8424980000008b0407be010000004439d8488b4c24584c8b8424900000004c8b5424700f85b5010000488b8424900100004885c00f94c24c39c0410f94c04108d0488bbc2488000000488bac24b000000075164889e94889faffd0488b4c245883f8010f85a8020000488b9424d800000048899424e80000004c8bb4249800000041c7840e80010000ffffffff488b8424c000000048c7840880010000ffffffff4989940d8001000049c7840d88010000000000004881c100033f0048894c2438488d8424e00000004889442430488d8424f00000004889442428488d8424e8000000488944242048c744244000003f004c8d8424ac0000004889e931d24989d9ff542468488b4c2450488b5424604889114885c00f84d601000041c70700000000418b0c1e41894f04488b8c24b8000000488b0c1949894f0849894f10498d4f204889ca4829da4883fa0f0f87ec010000ba05000000440fb64413fb44884411fb440fb64413fc44884411fc440fb64413fd44884411fd440fb64413fe44884411fe440fb64413ff44884411ff440fb60413448804114883c2064883fa3575b6e9ae010000488b4424504c893041c70702000000e9590200004c893248b80000000063000000498907e9440200004c893241c70708000000e9350200004c8b8c24c00000004a8d2c0f4c8b8c24b80000004e8d340f4c01ef4803bc249800000049b9010000000080ffff4981c1010001004c898c24d0000000eb234c8b4c24784a8b04084989068b074c01ed4d01ee4c01ef48ffc64439d80f84eafdffff4881fe010001000f84de0000003d011000000f83a600000083f80475cc837d000277c6498b064885c074be49b9010000000080ffff4901c14c3b8c24d0000000727c4c8b8c24a000000042803c0807748c468b0410488b8c2480000000488b1408488b8c248801000041b903010000ff9424980100004c8b9c24a80100004c8b5424704c8b842490000000488b4c2458488b5424504885c00f8548ffffff488b44246048890241c70705000000e92201000041c70703000000e916010000488b44246048890241c70709000000e902010000488b442450488b4c246048890841c70706000000e9e9000000488b44246048890241c70707000000e9d50000000f10030f11010f1043100f1141100f1043200f114120418b4f0483f905774aba270000000fa3ca7340498b442448488b043849894750498b44244848833c38000f8481000000490faff54885f674784881fe20010000b820010000480f42c64883fe01751231c9eb4841c747040000000049894710ebb289c281e2fe01000031c94d8b4424484d8b0438450fb604084588440f584d8b4424484d8b0438450fb64408014588440f594883c1024839ca75d0a8017412498b442448488b04380fb604084188440f588b8424ac000000418987c800000031c04881c4f80000005b5d5f5e415c415d415e415fc3"
 
 [/codebox]

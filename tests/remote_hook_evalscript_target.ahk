@@ -4,8 +4,18 @@ Persistent
 pidFile := A_Temp "\ahk_remote_attach_target.pid"
 outFile := A_Temp "\ahk_remote_evalscript.out"
 errFile := A_Temp "\ahk_remote_evalscript.err"
-try FileDelete(outFile)
-try FileDelete(errFile)
+if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
+if FileExist(errFile) {
+    try {
+        FileDelete(errFile)
+    } catch {
+    }
+}
 FileAppend(DllCall("GetCurrentProcessId") "`n", pidFile)
 
 A(x) {

@@ -27,6 +27,10 @@ function Read-Output {
         "tests\ahk_live_six_test.ahk"      = (Join-Path $env:TEMP "ahk_live_six_test.out")
         "tests\ahk_live_benchmark.ahk"     = (Join-Path $env:TEMP "ahk_live_benchmark.out")
         "tests\remote_hook_test.ahk"       = (Join-Path $Repo "tests\remote_hook_test.out")
+        "tests\eval_object_syntax_test.ahk"    = (Join-Path $Repo "tests\eval_object_syntax_test.out")
+        "tests\remote_empty_object_test.ahk"   = (Join-Path $Repo "tests\remote_empty_object_test.out")
+        "tests\remote_empty_target_test.ahk"   = (Join-Path $Repo "tests\remote_empty_target_test.out")
+        "tests\remote_deep_redirect_test.ahk"  = (Join-Path $Repo "tests\remote_deep_redirect_test.out")
     }
     $path = $map[$Test]
     if ($path) {
@@ -58,6 +62,10 @@ function Test-Satisfies {
     if ($Test -match "evalscript_inproc") { return $Text -match "r1=3" }
     if ($Test -match "evalscript_repeat") { return $Text -match "OK" }
     if ($Test -match "evalscript_class") { return $Text -match "r=3" }
+    if ($Test -match "eval_object_syntax_test") { return $Text -match "OK" -and $Text -notmatch "FAIL:" }
+    if ($Test -match "remote_empty_object_test") { return $Text -match "OK" -and $Text -notmatch "FAIL:" }
+    if ($Test -match "remote_empty_target_test") { return $Text -match "OK" -and $Text -notmatch "FAIL:" }
+    if ($Test -match "remote_deep_redirect_test") { return $Text -match "OK" -and $Text -notmatch "FAIL:" }
     return $Text -match "PASS" -and $Text -notmatch "FAIL"
 }
 
@@ -92,8 +100,27 @@ $tests = @(
     "tests\remote_hook_test.ahk",
     "tests\evalscript_inproc.ahk",
     "tests\evalscript_repeat.ahk",
-    "tests\evalscript_class.ahk"
+    "tests\evalscript_class.ahk",
+    "tests\eval_object_syntax_test.ahk",
+    "tests\remote_empty_object_test.ahk",
+    "tests\remote_empty_target_test.ahk",
+    "tests\remote_deep_redirect_test.ahk"
 )
+
+# Per-test target configuration.  Each test that needs a target gets a FRESH
+# target process; the target script and its pid file are configurable because
+# the empty-target and deep-redirect tests require specific targets.
+$targetMap = @{
+    "tests\ahk_live_cross_smoke.ahk"     = @{ Script = "tests\ahk_live_probe_target.ahk";      PidFile = "ahk_live_probe_target.pid" }
+    "tests\ahk_live_test.ahk"            = @{ Script = "tests\ahk_live_probe_target.ahk";      PidFile = "ahk_live_probe_target.pid" }
+    "tests\ahk_live_product_test.ahk"    = @{ Script = "tests\ahk_live_probe_target.ahk";      PidFile = "ahk_live_probe_target.pid" }
+    "tests\ahk_live_six_test.ahk"        = @{ Script = "tests\ahk_live_probe_target.ahk";      PidFile = "ahk_live_probe_target.pid" }
+    "tests\ahk_live_benchmark.ahk"       = @{ Script = "tests\ahk_live_probe_target.ahk";      PidFile = "ahk_live_probe_target.pid" }
+    "tests\remote_hook_test.ahk"         = @{ Script = "tests\ahk_live_probe_target.ahk";      PidFile = "ahk_live_probe_target.pid" }
+    "tests\remote_empty_object_test.ahk" = @{ Script = "tests\ahk_live_probe_target.ahk";      PidFile = "ahk_live_probe_target.pid" }
+    "tests\remote_empty_target_test.ahk" = @{ Script = "tests\remote_attach_target.ahk";       PidFile = "ahk_remote_attach_target.pid" }
+    "tests\remote_deep_redirect_test.ahk" = @{ Script = "tests\remote_hook_function_target.ahk"; PidFile = "ahk_remote_attach_target.pid" }
+}
 
 $reportDir = Split-Path -Parent $OutFile
 New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
@@ -107,12 +134,18 @@ $summary = @{}
 foreach ($rt in $runtimes) {
     $lines += "===== $($rt.Label) ($($rt.Path)) ====="
     foreach ($test in $tests) {
-        $pidFile = Join-Path $env:TEMP "ahk_live_probe_target.pid"
-        Remove-Item -LiteralPath $pidFile -ErrorAction SilentlyContinue
-        $target = $null
-        $needsTarget = $test -notmatch "evalscript_"
+        $cfg = $targetMap[$test]
+        $needsTarget = $null -ne $cfg
         if ($needsTarget) {
-            $target = Start-Process -FilePath $rt.Path -ArgumentList @("tests\ahk_live_probe_target.ahk") -WorkingDirectory $Repo -WindowStyle Hidden -PassThru
+            $pidFile = Join-Path $env:TEMP $cfg.PidFile
+            Remove-Item -LiteralPath $pidFile -ErrorAction SilentlyContinue
+        } else {
+            $pidFile = Join-Path $env:TEMP "ahk_live_probe_target.pid"
+            Remove-Item -LiteralPath $pidFile -ErrorAction SilentlyContinue
+        }
+        $target = $null
+        if ($needsTarget) {
+            $target = Start-Process -FilePath $rt.Path -ArgumentList @($cfg.Script) -WorkingDirectory $Repo -WindowStyle Hidden -PassThru
             $deadline = (Get-Date).AddSeconds(15)
             while (-not (Test-Path -LiteralPath $pidFile) -and (Get-Date) -lt $deadline) {
                 Start-Sleep -Milliseconds 200

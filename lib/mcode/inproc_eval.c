@@ -8,10 +8,19 @@
  *   Script::FindOrAddVar()           -> resolves read variables/functions
  *   Line::ExpandExpression()         -> evaluates it
  *
- * Layouts are derived from the AutoHotkey v2 source:
- *   Line  : type(1) argc(1) file(2) lineNum(4) mArg(8) ...
- *   ArgStruct: type(1) isExpression(1) length(4) text(8) ...
- *   ResultToken: ExprTokenType(24) + result(4) + buf(8) + memToFree(8)
+ * No interpreter layout offset is hardcoded here.  The caller passes a
+ * 21-slot u64 array (`layout`) with every Line/ArgStruct/ExprTokenType/
+ * DerefType field offset and the token stride, discovered at runtime by the
+ * AHK layer.  Before anything is written the token walk validates the
+ * assumed layout (symbol sanity, bounded sentinel search, deref pointer
+ * range); a mismatch returns an explicit error code instead of corrupting
+ * memory.  Layout slot meaning:
+ *
+ *   0 LINE_TYPE   1 LINE_ARGC   2 LINE_NUM   3 LINE_ARG
+ *   4 ARG_TYPE    5 ARG_ISEXPR  6 ARG_LEN    7 ARG_TEXT
+ *   8 ARG_DEREF   9 ARG_POSTFIX 10 ARG_MAX_STACK 11 ARG_MAX_ALLOC
+ *   12 TOKEN_VALUE 13 TOKEN_SYMBOL 14 TOKEN_STRIDE 15 TOKEN_USAGE
+ *   16 DEREF_MARKER 17 DEREF_VALUE 18 DEREF_TYPE 19 DEREF_LEN 20 DEREF_SIZE
  */
 
 typedef unsigned long long u64;
@@ -21,30 +30,28 @@ typedef unsigned short u16;
 typedef unsigned char u8;
 typedef int i32;
 
-#define LINE_TYPE_OFF 0
-#define LINE_ARGC_OFF 1
-#define LINE_NUM_OFF 4
-#define LINE_ARG_OFF 8
+#define LO_LINE_TYPE 0
+#define LO_LINE_ARGC 1
+#define LO_LINE_NUM 2
+#define LO_LINE_ARG 3
+#define LO_ARG_TYPE 4
+#define LO_ARG_ISEXPR 5
+#define LO_ARG_LEN 6
+#define LO_ARG_TEXT 7
+#define LO_ARG_DEREF 8
+#define LO_ARG_POSTFIX 9
+#define LO_ARG_MAX_STACK 10
+#define LO_ARG_MAX_ALLOC 11
+#define LO_TOKEN_VALUE 12
+#define LO_TOKEN_SYMBOL 13
+#define LO_TOKEN_STRIDE 14
+#define LO_TOKEN_USAGE 15
+#define LO_DEREF_MARKER 16
+#define LO_DEREF_VALUE 17
+#define LO_DEREF_TYPE 18
+#define LO_DEREF_LEN 19
+#define LO_DEREF_SIZE 20
 
-#define ARG_TYPE_OFF 0
-#define ARG_ISEXPR_OFF 1
-#define ARG_LEN_OFF 4
-#define ARG_TEXT_OFF 8
-#define ARG_DEREF_OFF 16
-#define ARG_POSTFIX_OFF 24
-#define ARG_MAX_STACK_OFF 32
-#define ARG_MAX_ALLOC_OFF 36
-
-#define TOKEN_VALUE_OFF 0
-#define TOKEN_SYMBOL_OFF 16
-#define TOKEN_VAR_OFF 0
-#define TOKEN_VAR_DEREF_OFF 0
-
-#define DEREF_MARKER_OFF 0
-#define DEREF_VALUE_OFF 8
-#define DEREF_TYPE_OFF 16
-#define DEREF_LEN_OFF 20
-#define DEREF_SIZE 24
 #define DT_VAR 0
 #define DT_QSTRING 3
 #define DT_FUNCREF 7
@@ -82,7 +89,8 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
                      u64 scratch, u64 expr_ptr, u64 out, u64 stage,
                      u64 line_override, u64 arg_override,
                      u64 g_script, u64 finalize_fn,
-                     u64 find_var_fn, u64 free_fn, u64 sym_invalid)
+                     u64 find_var_fn, u64 free_fn, u64 sym_invalid,
+                     u64 *layout)
 {
     u64 line;
     u64 arg;
@@ -104,11 +112,39 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
     i32 expand_status;
     u64 string_result;
     i32 i;
+    u64 token_count;
+    u64 stride;
+    u64 sym_off;
+    u64 val_off;
+    u64 usage_off;
+    u64 dmarker;
+    u64 dvalue;
+    u64 dtype;
+    u64 dlen;
+    u64 dsize;
+    u64 copy_len;
 
     if (!postfix_fn || !expand_fn || !curr_line_slot
         || !scratch || !expr_ptr || !out
-        || !g_script || !find_var_fn || !free_fn)
+        || !g_script || !find_var_fn || !free_fn || !layout)
         return 1;
+
+    stride = layout[LO_TOKEN_STRIDE];
+    sym_off = layout[LO_TOKEN_SYMBOL];
+    val_off = layout[LO_TOKEN_VALUE];
+    usage_off = layout[LO_TOKEN_USAGE];
+    dmarker = layout[LO_DEREF_MARKER];
+    dvalue = layout[LO_DEREF_VALUE];
+    dtype = layout[LO_DEREF_TYPE];
+    dlen = layout[LO_DEREF_LEN];
+    dsize = layout[LO_DEREF_SIZE];
+
+    /* Layout sanity before any use: the write path is guarded, so a bad
+     * layout fails loudly here instead of corrupting memory. */
+    if (stride < 16 || sym_off + 4 > stride || val_off + 8 > stride
+        || usage_off + 8 > stride || dsize < 16 || dsize > 64
+        || dtype + 1 > dsize || dlen + 4 > dsize)
+        return 10;
 
     line = line_override ? line_override : scratch;
     arg = arg_override ? arg_override : scratch + 0x100;
@@ -123,10 +159,11 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
         /* Any non-expression action works: ExpandExpression only discards
          * the result for ACT_EXPRESSION and has special boolean handling
          * for ACT_IF/ACT_WHILE/ACT_UNTIL. */
-        *(u8 *)(line + LINE_TYPE_OFF) = ACT_BLOCK_BEGIN;
-        *(u8 *)(line + LINE_ARGC_OFF) = 1;
-        *(u32 *)(line + LINE_NUM_OFF) = 1;
-        *(u64 *)(line + LINE_ARG_OFF) = arg;
+        *(u8 *)(line + layout[LO_LINE_TYPE]) = ACT_BLOCK_BEGIN;
+        *(u8 *)(line + layout[LO_LINE_ARGC]) = 1;
+        if (layout[LO_LINE_NUM])
+            *(u32 *)(line + layout[LO_LINE_NUM]) = 1;
+        *(u64 *)(line + layout[LO_LINE_ARG]) = arg;
     }
     for (i = 0; i < 0x80; ++i)
         ((u8 *)result_token)[i] = 0;
@@ -142,12 +179,12 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
     {
         for (i = 0; i < 0x80; ++i)
             ((u8 *)arg)[i] = 0;
-        *(u8 *)(arg + ARG_TYPE_OFF) = ARG_TYPE_NORMAL;
-        *(u8 *)(arg + ARG_ISEXPR_OFF) = 1;
-        *(u32 *)(arg + ARG_LEN_OFF) = (u32)len;
-        *(u64 *)(arg + ARG_TEXT_OFF) = expr_ptr;
-        *(u32 *)(arg + ARG_MAX_STACK_OFF) = 256;
-        *(u32 *)(arg + ARG_MAX_ALLOC_OFF) = 256;
+        *(u8 *)(arg + layout[LO_ARG_TYPE]) = ARG_TYPE_NORMAL;
+        *(u8 *)(arg + layout[LO_ARG_ISEXPR]) = 1;
+        *(u32 *)(arg + layout[LO_ARG_LEN]) = (u32)len;
+        *(u64 *)(arg + layout[LO_ARG_TEXT]) = expr_ptr;
+        *(u32 *)(arg + layout[LO_ARG_MAX_STACK]) = 256;
+        *(u32 *)(arg + layout[LO_ARG_MAX_ALLOC]) = 256;
     }
 
     if (!arg_override)
@@ -174,12 +211,12 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
                     break; /* unterminated string; let ExpressionToPostfix report it */
                 if (deref_count < 255)
                 {
-                    u64 e = final_deref + deref_count * DEREF_SIZE;
-                    *(u64 *)(e + DEREF_MARKER_OFF) = (u64)start;
-                    *(u8 *)(e + DEREF_VALUE_OFF) = 1; /* terminal */
-                    *(u8 *)(e + DEREF_TYPE_OFF) = DT_QSTRING;
-                    *(u8 *)(e + 17) = 1; /* substring_count */
-                    *(u32 *)(e + DEREF_LEN_OFF) = (u32)(cp16 - start);
+                    u64 e = final_deref + deref_count * dsize;
+                    *(u64 *)(e + dmarker) = (u64)start;
+                    *(u8 *)(e + dvalue) = 1; /* terminal */
+                    *(u8 *)(e + dtype) = DT_QSTRING;
+                    *(u8 *)(e + dtype + 1) = 1; /* substring_count */
+                    *(u32 *)(e + dlen) = (u32)(cp16 - start);
                     ++deref_count;
                 }
                 ++cp16; /* skip closing quote */
@@ -196,12 +233,12 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
                 if ((start == (u16 *)expr_ptr || start[-1] != '.')
                     && deref_count < 255)
                 {
-                    u64 e = final_deref + deref_count * DEREF_SIZE;
-                    *(u64 *)(e + DEREF_MARKER_OFF) = (u64)start;
-                    *(u64 *)(e + DEREF_VALUE_OFF) = 0;
-                    *(u8 *)(e + DEREF_TYPE_OFF) = DT_VAR;
-                    *(u8 *)(e + 17) = 0;
-                    *(u32 *)(e + DEREF_LEN_OFF) = (u32)(cp16 - start);
+                    u64 e = final_deref + deref_count * dsize;
+                    *(u64 *)(e + dmarker) = (u64)start;
+                    *(u64 *)(e + dvalue) = 0;
+                    *(u8 *)(e + dtype) = DT_VAR;
+                    *(u8 *)(e + dtype + 1) = 0;
+                    *(u32 *)(e + dlen) = (u32)(cp16 - start);
                     ++deref_count;
                 }
                 continue;
@@ -210,8 +247,8 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
         }
         if (deref_count)
         {
-            *(u64 *)(final_deref + deref_count * DEREF_SIZE) = 0;
-            *(u64 *)(arg + ARG_DEREF_OFF) = final_deref;
+            *(u64 *)(final_deref + deref_count * dsize) = 0;
+            *(u64 *)(arg + layout[LO_ARG_DEREF]) = final_deref;
         }
     }
 
@@ -241,34 +278,71 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
     }
 
     /* Resolve read variable/function references before FinalizeExpression,
-     * which needs Var* pointers when validating function calls. */
-    for (token = *(u64 *)(arg + ARG_POSTFIX_OFF);
-         *(u32 *)(token + TOKEN_SYMBOL_OFF) != (u32)sym_invalid; token += 24)
+     * which needs Var* pointers when validating function calls.  The loop
+     * is bounded and layout-validated: a missing sentinel, a wrong token
+     * stride, or a symbol that cannot be a real token stop with an error
+     * code before anything is written. */
+    token = *(u64 *)(arg + layout[LO_ARG_POSTFIX]);
+    if (!token)
     {
-        if (*(u32 *)(token + TOKEN_SYMBOL_OFF) != SYM_VAR)
-            continue;
-        if (*(u32 *)(token + 8) >= VARREF_REF)
-            continue; /* already resolved by ExpressionToPostfix */
-        deref_ptr = *(u64 *)(token + TOKEN_VAR_DEREF_OFF);
-        if (!deref_ptr)
-            continue;
-        if (*(u8 *)(deref_ptr + DEREF_TYPE_OFF) == DT_FUNCREF)
-        {
-            *(u64 *)(token + TOKEN_VAR_OFF) = *(u64 *)(deref_ptr + DEREF_VALUE_OFF);
-            continue;
-        }
-        var = ((FindVarFn)find_var_fn)(
-            g_script,
-            *(u64 *)(deref_ptr + DEREF_MARKER_OFF),
-            *(u32 *)(deref_ptr + DEREF_LEN_OFF),
-            FINDVAR_FOR_READ);
-        if (!var)
+        *(u64 *)curr_line_slot = saved_line;
+        *(u32 *)(out + 0) = 8; /* no postfix buffer */
+        return 0;
+    }
+    token_count = 0;
+    while (*(u32 *)(token + sym_off) != (u32)sym_invalid)
+    {
+        u32 sym = *(u32 *)(token + sym_off);
+        if (++token_count > 65536)
         {
             *(u64 *)curr_line_slot = saved_line;
-            *(u32 *)(out + 0) = 5; /* variable resolution failed */
+            *(u32 *)(out + 0) = 7; /* token chain too long */
             return 0;
         }
-        *(u64 *)(token + TOKEN_VAR_OFF) = var;
+        if (sym > 0x1000)
+        {
+            /* Not a plausible interpreter symbol: the assumed token layout
+             * does not match this runtime. */
+            *(u64 *)curr_line_slot = saved_line;
+            *(u32 *)(out + 0) = 9; /* token layout mismatch */
+            return 0;
+        }
+        if (sym == SYM_VAR)
+        {
+            if (*(u32 *)(token + usage_off) < VARREF_REF)
+            {
+                deref_ptr = *(u64 *)(token + val_off);
+                if (deref_ptr)
+                {
+                    if (deref_ptr <= 0x10000 || deref_ptr >= 0x7fffffffffff)
+                    {
+                        *(u64 *)curr_line_slot = saved_line;
+                        *(u32 *)(out + 0) = 9; /* deref pointer invalid */
+                        return 0;
+                    }
+                    if (*(u8 *)(deref_ptr + dtype) == DT_FUNCREF)
+                    {
+                        *(u64 *)(token + val_off)
+                            = *(u64 *)(deref_ptr + dvalue);
+                        token += stride;
+                        continue;
+                    }
+                    var = ((FindVarFn)find_var_fn)(
+                        g_script,
+                        *(u64 *)(deref_ptr + dmarker),
+                        *(u32 *)(deref_ptr + dlen),
+                        FINDVAR_FOR_READ);
+                    if (!var)
+                    {
+                        *(u64 *)curr_line_slot = saved_line;
+                        *(u32 *)(out + 0) = 5; /* variable resolution failed */
+                        return 0;
+                    }
+                    *(u64 *)(token + val_off) = var;
+                }
+            }
+        }
+        token += stride;
     }
 
     if (finalize_fn && finalize_fn != postfix_fn)
@@ -284,11 +358,14 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
 
     target = deref;
 
-    /* Initialize ResultToken the way ExpandSingleArg does before the call. */
-    *(u32 *)(result_token + TOKEN_SYMBOL_OFF) = 0xFFFFFFFF;
-    *(u64 *)(result_token + 8) = ~0ull;   /* marker_length = -1 */
-    *(u64 *)(result_token + 24) = deref;  /* buf */
-    *(u64 *)(result_token + 32) = 0;      /* mem_to_free */
+    /* Initialize ResultToken the way ExpandSingleArg does before the call.
+     * ResultToken = ExprTokenType + result + buf + memToFree: the token
+     * fields use the discovered token offsets, and buf/memToFree sit
+     * immediately after the token (token_stride and token_stride + 8). */
+    *(u32 *)(result_token + sym_off) = 0xFFFFFFFF;
+    *(u64 *)(result_token + usage_off) = ~0ull; /* marker_length = -1 */
+    *(u64 *)(result_token + stride) = deref;    /* buf */
+    *(u64 *)(result_token + stride + 8) = 0;    /* mem_to_free */
 
     string_result = ((ExpandFn)expand_fn)(
         line, 0, &expand_status, result_token, &target, &deref, &deref_size,
@@ -301,9 +378,9 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
     }
 
     *(u32 *)(out + 0) = 0; /* success */
-    *(u32 *)(out + 4) = *(u32 *)(result_token + TOKEN_SYMBOL_OFF);
-    *(i64 *)(out + 8) = *(i64 *)(result_token + TOKEN_VALUE_OFF);
-    *(u64 *)(out + 16) = *(u64 *)(result_token + TOKEN_VALUE_OFF);
+    *(u32 *)(out + 4) = *(u32 *)(result_token + sym_off);
+    *(i64 *)(out + 8) = *(i64 *)(result_token + val_off);
+    *(u64 *)(out + 16) = *(u64 *)(result_token + val_off);
     for (i = 0; i < 48; ++i)
         ((u8 *)(out + 32))[i] = ((u8 *)result_token)[i];
     if (*(u32 *)(out + 4) != 0 && *(u32 *)(out + 4) != 1
@@ -314,10 +391,18 @@ int AhkEvalInProcess(u64 postfix_fn, u64 expand_fn, u64 curr_line_slot,
         *(u32 *)(out + 4) = 0;
         *(u64 *)(out + 16) = string_result;
     }
-    *(u64 *)(out + 80) = *(u64 *)(arg + 24);
-    if (*(u64 *)(arg + 24))
-        for (i = 0; i < 288; ++i)
-            ((u8 *)(out + 88))[i] = ((u8 *)(*(u64 *)(arg + 24)))[i];
+    *(u64 *)(out + 80) = *(u64 *)(arg + layout[LO_ARG_POSTFIX]);
+    if (*(u64 *)(arg + layout[LO_ARG_POSTFIX]))
+    {
+        /* Debug copy of the postfix bytes: copy only the tokens that were
+         * actually visited (plus the sentinel), never a fixed size, which
+         * would read past the end of a short expression's buffer. */
+        copy_len = (token_count + 1) * stride;
+        if (copy_len > 288)
+            copy_len = 288;
+        for (i = 0; i < (i32)copy_len; ++i)
+            ((u8 *)(out + 88))[i] = ((u8 *)(*(u64 *)(arg + layout[LO_ARG_POSTFIX])))[i];
+    }
     *(u32 *)(out + 200) = (u32)expand_status;
     return 0;
 }

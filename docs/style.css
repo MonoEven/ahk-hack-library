@@ -372,6 +372,11 @@ pre code {
   background: transparent;
   padding: 0;
   font-size: inherit;
+  /* Long blocks (the appendix single-file copy) scroll inside the code
+     element so the copy button stays pinned to the pre corner. */
+  display: block;
+  max-height: 75vh;
+  overflow: auto;
 }
 
 pre .copy {

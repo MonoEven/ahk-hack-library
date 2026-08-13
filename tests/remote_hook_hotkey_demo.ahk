@@ -4,7 +4,12 @@
 
 hook := 0
 logFile := A_Temp "\ahk_hook_hotkey_demo.log"
-try FileDelete(logFile)
+if FileExist(logFile) {
+    try {
+        FileDelete(logFile)
+    } catch {
+    }
+}
 FileAppend("start`n", logFile)
 
 F1:: {

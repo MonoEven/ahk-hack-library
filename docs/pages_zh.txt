@@ -351,7 +351,20 @@ for name in AhkMagic._DeclaredFunctionNames(text) {
 
 加壳或恶意构建可能改节名或删字符串。内容分类扫描可以处理常见加壳器，但恶意构建仍可能绕过发现。
 
-[b]13. 继续阅读[/b]
+[b]13. 失败行为[/b]
+
+每一条读取解释器内存或打补丁的路径都设计为显式失败：
+
+| 领域 | 行为 |
+| --- | --- |
+| 表与导出扫描 | 记录数按扫描器契约封顶，每个名字指针使用前做内存映射检查；不支持的布局抛错而不是越界读取 |
+| 语法错误 | [c]EvalScript[/c]/[c]RemoteEvalScript[/c] 用解释器自己的 [c]/validate[/c] 预检文本（远程用目标自己的可执行文件）；验证器静默运行并自行捕获输出（不弹窗），超时即杀进程树 |
+| 远程超时 | 挂起的求值 10 秒后抛错并泄漏注入块，因为释放目标仍在执行的内存会损坏目标 |
+| 对象结果 | [c]EvalNative[/c] 返回活的 [c]Func[/c]/[c]Class[/c] 对象；[c]RemoteEval[/c] 返回目标侧对象地址 |
+| 空目标 | 目标没有用户函数时，[c]RemoteEvalScript[/c] 注入随机命名探针函数并重试布局发现 |
+| 补丁 | [c]PatchBifObject[/c] 与 [c]RemoteDeepRedirect[/c] 原子提交并支持回滚；发现探针在 [c]finally[/c] 中恢复解释器快照 |
+
+[b]14. 继续阅读[/b]
 
 - 仓库：[url=https://github.com/MonoEven/ahk-hack-library]MonoEven/ahk-hack-library[/url]
 - 单文件核心：[url=https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk]ahk_hack_single.ahk[/url]

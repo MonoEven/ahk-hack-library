@@ -175,7 +175,7 @@ Parser-state anchors are read from the [c]LoadIncludedFile[/c] prologue:
 - [c]q[/c]: the offset of [c]mOpenBlock[/c]/[c]mLineParent[/c];
 - [c]d[/c]: the offset of [c]mClassObjectCount[/c].
 
-The [c]TextStream[/c] object is built with both possible [c]mData[/c] regions populated, so the same object works for 2.0 and 2.1 layouts.
+The [c]TextStream[/c] object is built with both possible [c]mData[/c] regions populated, so the same object works for 2.0 and 2.1 layouts; every load is validated by its result ([c]rc == 1[/c] plus a function-count delta for the probe).
 
 [b]8. Remote introspection[/b]
 
@@ -351,7 +351,20 @@ Rules:
 
 Packed or hostile builds can rename sections or remove strings. The content-based scanner handles common packers, but a hostile build can still defeat discovery.
 
-[b]13. Further reading[/b]
+[b]13. Failure behavior[/b]
+
+Every path that reads interpreter memory or applies a patch is designed to fail explicitly:
+
+| Area | Behavior |
+| --- | --- |
+| Table and export scans | counts are capped against the scanner contract and every name pointer is memory-map checked before use; unsupported layouts throw instead of reading out of bounds |
+| Syntax errors | [c]EvalScript[/c]/[c]RemoteEvalScript[/c] pre-check the text with the interpreter's own [c]/validate[/c] (the target's executable for the remote path); the validator runs hidden, captures its output (no dialogs), and kills its process tree on timeout |
+| Remote timeouts | a hung evaluation throws after 10 s and leaks its injected block, because freeing memory the target is still executing would corrupt it |
+| Object results | [c]EvalNative[/c] returns live [c]Func[/c]/[c]Class[/c] objects; [c]RemoteEval[/c] returns the target-side object address |
+| Empty targets | [c]RemoteEvalScript[/c] injects randomized probe functions and retries layout discovery when the target has no user functions |
+| Patches | [c]PatchBifObject[/c] and [c]RemoteDeepRedirect[/c] commit atomically with rollback; the discovery probe restores its interpreter snapshot in [c]finally[/c] |
+
+[b]14. Further reading[/b]
 
 - Repository: [url=https://github.com/MonoEven/ahk-hack-library]MonoEven/ahk-hack-library[/url]
 - Single-file core: [url=https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk]ahk_hack_single.ahk[/url]

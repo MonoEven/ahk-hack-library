@@ -3,8 +3,18 @@
 pid := Integer(A_Args[1])
 outFile := A_Temp "\ahk_live_six_test.out"
 csvFile := A_Temp "\ahk_live_six_test.csv"
-try FileDelete(outFile)
-try FileDelete(csvFile)
+if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
+if FileExist(csvFile) {
+    try {
+        FileDelete(csvFile)
+    } catch {
+    }
+}
 
 try {
     session := AhkLiveSession()

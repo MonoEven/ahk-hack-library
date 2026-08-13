@@ -115,6 +115,7 @@ class AhkLive {
 
         layout := AhkLive._EnsureLayout(hook)
         nameOff := AhkLive._EnsureNameOffset(hook, layout)
+        varLayout := AhkLive._EnsureVarLayout(hook, layout)
         h := AhkMagic._RemoteOpen(hook["pid"], true)
         try {
             funcs := AhkLive._FindExactFuncs(h, layout, nameOff, name)
@@ -129,12 +130,17 @@ class AhkLive {
             p1 := AhkMagic._RPtr(h, mparamPtr + 24)
             origJump := AhkMagic._RPtr(h, nf + layout["mjump_line_off"])
             clonePtr := AhkLive._CloneUserFunc(h, layout, nf, oldName)
-            AhkLive._CreateGlobalObjectVar(h, layout, clonePtr, oldName)
+            AhkLive._CreateGlobalObjectVar(h, layout, clonePtr, oldName
+                , varLayout)
         } finally {
             DllCall("CloseHandle", "Ptr", h)
         }
 
-        script := "`n" retName "(v, label) {`n"
+        ; #Warn is positional: it silences the load-time "appears to never
+        ; be assigned" warning for names the trace wrapper references that
+        ; are created through interpreter internals (the clone global) and
+        ; are invisible to the parser's assignment analysis.
+        script := "#Warn All, Off`n`n" retName "(v, label) {`n"
             . "    global " logVar "`n"
             . "    " logVar " .= `"TRACE exit `" label `"=`" v Chr(10)`n"
             . "    return v`n"
@@ -170,11 +176,17 @@ class AhkLive {
                     target := A_Index = 1 ? p0 : p1
                     aliasBuf := Buffer(8)
                     NumPut("Ptr", target, aliasBuf, 0)
-                    AhkMagic._RemoteWrite(h, wv + 16, aliasBuf)
-                    AhkMagic._WByte(h, wv + 35, 0)
-                    attr := NumGet(AhkMagic._RemoteRead(h, wv + 33, 1)
+                    ; The alias pointer goes into the Var's mAliasFor slot
+                    ; (validated constant offset), the symbol bit-clear
+                    ; marks it as a constant alias, and the trailing flag
+                    ; byte (symbol + 2) must be zeroed so the resolver
+                    ; follows the alias instead of reading the value.
+                    AhkMagic._RemoteWrite(h, wv + 0x10, aliasBuf)
+                    symOff := varLayout["symbol"]
+                    attr := NumGet(AhkMagic._RemoteRead(h, wv + symOff, 1)
                         , 0, "UChar")
-                    AhkMagic._WByte(h, wv + 33, attr & 0xFD)
+                    AhkMagic._WByte(h, wv + symOff, attr & 0xFD)
+                    AhkMagic._WByte(h, wv + symOff + 2, 0)
                 }
             }
             AhkLive._ReplaceFuncBodyExact(hook, name, wrapperName)
@@ -224,7 +236,7 @@ class AhkLive {
             throw TypeError("hook must be an AttachRemote result", -1)
         nonce := Format("{:x}", A_TickCount) Format("{:x}", Random(1, 0x7fffffff))
         copyName := "_ahk_live_copy_" . nonce
-        script := "`n" copyName "(a*) {`n    return -1`n}`nStrLen(`"`")"
+        script := "#Warn All, Off`n`n" copyName "(a*) {`n    return -1`n}`nStrLen(`"`")"
         AhkMagic.RemoteEvalScript(hook, script)
         AhkLive._ReplaceFuncBodyExact(hook, copyName, oldName, journal)
         AhkLive._ReplaceFuncBodyExact(hook, oldName, newName, journal)
@@ -454,7 +466,87 @@ class AhkLive {
         return clonePtr
     }
 
-    static _CreateGlobalObjectVar(h, layout, objPtr, name) {
+    ; Discover the Var record layout in the target by diffing one variable
+    ; between an integer state and an object state, both assigned by the
+    ; interpreter itself so no offset or symbol constant is assumed.  The
+    ; changed bytes outside the value field must form one consecutive run
+    ; (symbol followed by flags); anything else fails loudly.
+    static _EnsureVarLayout(hook, layout) {
+        if hook.Has("var_layout")
+            return hook["var_layout"]
+        h := AhkMagic._RemoteOpen(hook["pid"], true)
+        try {
+            name := "_ahk_live_vp" Format("{:x}", A_TickCount)
+            nameBuf := Buffer((StrLen(name) + 1) * 2)
+            StrPut(name, nameBuf, "UTF-16")
+            nameBlock := DllCall("VirtualAllocEx", "Ptr", h, "Ptr", 0
+                , "UPtr", nameBuf.Size, "UInt", 0x3000, "UInt", 0x04, "Ptr")
+            if !nameBlock
+                throw Error("VirtualAllocEx(name) failed", -1)
+            AhkMagic._RemoteWrite(h, nameBlock, nameBuf)
+            varPtr := AhkMagic._RemoteCall(h, layout["find_var"]
+                , [layout["gscript"], nameBlock, StrLen(name), 0x101])
+            if !varPtr
+                throw Error("FindOrAddVar failed for var probe", -1)
+            snapFresh := AhkMagic._RemoteRead(h, varPtr, 0x80)
+            AhkMagic.RemoteEval(hook, name " := 12345")
+            snapInt := AhkMagic._RemoteRead(h, varPtr, 0x80)
+            AhkMagic.RemoteEval(hook, name " := StrSplit(`"a`", `",`")")
+            snapObj := AhkMagic._RemoteRead(h, varPtr, 0x80)
+
+            valueOff := -1
+            loop 0x80 - 7 {
+                off := A_Index - 1
+                if NumGet(snapInt, off, "Int64") = 12345 {
+                    valueOff := off
+                    break
+                }
+            }
+            if valueOff < 0
+                throw Error("var value offset not discovered", -1)
+
+            ; The object-state byte set: everything the interpreter changes
+            ; between the fresh variable and the object assignment (value
+            ; field excluded).  Writing this exact set makes a fresh var
+            ; behave as an object reference.
+            changed := Map()
+            loop 0x80 {
+                off := A_Index - 1
+                if off >= valueOff and off < valueOff + 8
+                    continue
+                bf := NumGet(snapFresh, off, "UChar")
+                bo := NumGet(snapObj, off, "UChar")
+                if bf != bo
+                    changed[off] := bo
+            }
+            if !changed.Count
+                throw Error("var symbol/flags bytes not discovered", -1)
+            symOff := -1
+            loop 0x80 {
+                off := A_Index - 1
+                if off >= valueOff and off < valueOff + 8
+                    continue
+                if NumGet(snapInt, off, "UChar") != NumGet(snapObj, off, "UChar") {
+                    symOff := off
+                    break
+                }
+            }
+            if symOff < 0
+                throw Error("var symbol byte not discovered", -1)
+            varLayout := Map(
+                "name", name,
+                "value", valueOff,
+                "symbol", symOff,
+                "sym_object", changed[symOff],
+                "changed", changed)
+            hook["var_layout"] := varLayout
+            return varLayout
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
+    }
+
+    static _CreateGlobalObjectVar(h, layout, objPtr, name, varLayout) {
         nameBuf := Buffer((StrLen(name) + 1) * 2)
         StrPut(name, nameBuf, "UTF-16")
         nameBlock := DllCall("VirtualAllocEx", "Ptr", h, "Ptr", 0
@@ -468,10 +560,11 @@ class AhkLive {
             throw Error("FindOrAddVar failed for " name, -1)
         objBuf := Buffer(8)
         NumPut("Ptr", objPtr, objBuf, 0)
-        AhkMagic._RemoteWrite(h, varPtr, objBuf)
-        AhkMagic._WByte(h, varPtr + 33, 0x48)
-        AhkMagic._WByte(h, varPtr + 34, 0x41)
-        AhkMagic._WByte(h, varPtr + 35, 2)
+        AhkMagic._RemoteWrite(h, varPtr + varLayout["value"], objBuf)
+        ; Apply the discovered object-state bytes (symbol + flags) so the
+        ; variable behaves as an object reference.
+        for off, byteVal in varLayout["changed"]
+            AhkMagic._WByte(h, varPtr + off, byteVal)
         return varPtr
     }
 

@@ -2,7 +2,12 @@
 
 pid := Integer(A_Args[1])
 outFile := A_Temp "\ahk_live_cross_smoke.out"
-try FileDelete(outFile)
+if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
 
 try {
     hook := AhkLiveInspect.Attach(pid)

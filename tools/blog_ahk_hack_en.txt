@@ -124,7 +124,7 @@ MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0, in-process
 MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5, in-process
 [/codebox]
 
-[c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls the interpreter's own [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c] in this process. It covers literals, operators, global variables, and function calls on the verified builds. Unsupported syntax fails loudly. [c]Eval[/c] tries the in-process pipeline first and falls back to [c]EvalSubprocess[/c] when needed.
+[c]EvalNative[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c] and calls the interpreter's own [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c] in this process. It covers literals, operators, global variables, and function calls on the verified builds. Unsupported syntax fails loudly. [c]Eval[/c] tries the in-process pipeline first and falls back to [c]EvalSubprocess[/c] when needed. Objects evaluate too: a bare function name returns the live [c]Func[/c] object and a class name returns the [c]Class[/c] object, so [c]EvalNative("Abs")[/c] is directly usable.
 
 [color=#BF4000][b]5.2 Function definitions[/b][/color]
 
@@ -162,13 +162,13 @@ MsgBox AhkMagic.EvalScript(classScript)     ; 1, class loaded and used in-proces
 MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2, class loaded and used in-process
 [/codebox]
 
-[c]EvalScript[/c] does not write a temp [c].ahk[/c] file. It encodes the text as UTF-16, builds a [c]TextMem[/c]-compatible [c]TextStream[/c] in a scratch buffer, and passes it directly to [c]LoadIncludedFile(TextStream*)[/c]. Function definitions and class definitions therefore work in-process.
+[c]EvalScript[/c] loads the script text without writing a temp [c].ahk[/c] for the load itself: it encodes the text as UTF-16, builds a [c]TextMem[/c]-compatible [c]TextStream[/c] in a scratch buffer, and passes it directly to [c]LoadIncludedFile(TextStream*)[/c]. Function definitions and class definitions therefore work in-process. The text is pre-checked with the interpreter's own [c]/validate[/c] switch first (section 8.2), so a syntax error throws a clean library error carrying the real parse message instead of aborting the host; the validator captures its output and kills its own process tree on timeout, so it never leaves a dialog on screen. Only that pre-check uses a temporary file, which is deleted afterwards.
 
 [color=#BF4000][b]5.4 Evaluation pipeline[/b][/color]
 
 [c]How the pipeline evaluates expressions:[/c] AutoHotkey compiles expression strings into postfix [c]ExprTokenType[/c] arrays during script load. [c]Line::ExpressionToPostfix[/c] performs the compilation, [c]PreparseExpressions[/c] pre-compiles expression lines, [c]PreprocessLocalVars[/c] binds local variables, and [c]Line::ExpandExpression[/c] evaluates the postfix. [c]EvalNative()[/c] builds the same temporary [c]Line[/c]/[c]ArgStruct[/c] and calls those functions, so it reuses the interpreter's own grammar and evaluation semantics. [c]EvalScript()[/c] feeds the same [c]LoadIncludedFile(TextStream*, int)[/c] pipeline through an in-memory [c]TextStream[/c]; the parser receives the text from a synthetic stream, and function and class definitions work in-process.
 
-[c]Why dynamic discovery works:[/c] stable error strings are referenced with RIP-relative [c]lea[/c] instructions in every build, so scanning those cross-references and walking back to the prologue yields function addresses. Globals are materialized the same way. Layout offsets are revealed by the running interpreter itself: a one-time probe loads a throwaway function, diffs the live [c]Script[/c] object for [c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c], walks the new function's line chain for [c]mJumpLine[/c], and reads parser-state anchors from [c]LoadIncludedFile[/c]'s [c]cmp[/c] prologue. The [c]TextStream[/c] object is built with both [c]mData[/c] regions populated, so no layout choice is needed.
+[c]Why dynamic discovery works:[/c] stable error strings are referenced with RIP-relative [c]lea[/c] instructions in every build, so scanning those cross-references and walking back to the prologue yields function addresses. Globals are materialized the same way. Layout offsets are revealed by the running interpreter itself: a one-time probe loads a throwaway function, diffs the live [c]Script[/c] object for [c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c], walks the new function's line chain for [c]mJumpLine[/c], and reads parser-state anchors from [c]LoadIncludedFile[/c]'s [c]cmp[/c] prologue. The [c]TextStream[/c] object is built with both [c]mData[/c] regions populated, so no layout choice is needed; every load is then validated by its result ([c]rc == 1[/c] plus, for the discovery probe, a function-count increase), so a build with a different TextStream layout fails loudly at probe time instead of misparsing text.
 
 [c]Multi-version compatibility:[/c] the four-version matrix runs the same blob on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30. Stable [c]Line[/c]/[c]ArgStruct[/c]/token offsets have not changed in those builds; everything that changed is discovered at runtime. An unrecognized layout makes the probe throw without guessing, which keeps failures explicit and isolated.
 
@@ -279,7 +279,7 @@ Start the target, press [c]F1[/c] to attach, then [c]F2[/c] to redirect [c]Abs[/
 
 [color=#BF4000][b]6.4 RemoteEval[/b][/color]
 
-[c]RemoteEval(hook, expr)[/c] copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely; string literals and string-returning builtins such as [c]SubStr[/c] and [c]Format[/c] are read back correctly too.
+[c]RemoteEval(hook, expr)[/c] copies the internal locator and expression-evaluator blobs plus a tiny thread stub into the target, runs them with [c]CreateRemoteThread[/c], and reads the result back. Basic expressions such as [c]1 + 2 * 3[/c] and [c]2 * 3.5[/c] were verified remotely; string literals and string-returning builtins such as [c]SubStr[/c] and [c]Format[/c] are read back correctly too. Objects cannot cross process boundaries: [c]RemoteEval(hook, "Add")[/c] returns the target-side object address as an integer. If the injected evaluation hangs, the call times out after 10 seconds with a clear error and leaks the injected block on purpose, because freeing memory the target is still executing would crash it (section 8.3).
 
 The target needs no special code: no [c]#Include[/c], no exported pointers, no callback, and no embedded metadata. The PID file in the test harness is only test orchestration; [c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c] resolves the PID from the image name.
 
@@ -287,7 +287,7 @@ Function-to-function verification: [c]tests\remote_hook_function_target.ahk[/c] 
 
 [color=#BF4000][b]6.5 RemoteEvalScript[/b][/color]
 
-[c]RemoteEvalScript(hook, text)[/c] loads a multi-line script inside the target through its own script-loading pipeline. The injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c], so both function and class definitions work.
+[c]RemoteEvalScript(hook, text)[/c] loads a multi-line script inside the target through its own script-loading pipeline. The injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c], so both function and class definitions work. Layout discovery needs live function entries, so a target whose script defines no functions first receives two randomized probe functions through its own loader and discovery retries on them (section 8.5); attaching to a fresh, empty script works out of the box.
 
 [codebox=autohotkey file=remote-eval-script]
 #Include ahk_hack_single.ahk
@@ -494,7 +494,36 @@ demo ready
 [/codebox]
 
 
-[b]8. Security[/b]
+[b]8. Robustness and failure behavior[/b]
+
+The library treats its own inputs and the target's memory as untrusted, and every failure mode is designed to be explicit rather than silent.
+
+[color=#BF4000][b]8.1 Validated reads[/b][/color]
+
+[c]Init()[/c] and [c]ScanExports()[/c] cap the record counts against the scanner output contract (512/512/256 and 4096 entries), validate the table strides, and check every name pointer against the memory map before dereferencing it. A runtime that exceeds the contract fails with an explicit [c]unsupported interpreter layout[/c] error instead of reading past the buffer, and a failed init resets its state so the next call retries cleanly. The machine-code scanners got the same treatment: export sub-table pointers and ordinals are bounds-checked against the image, section ends are capped by [c]SizeOfImage[/c], and string scans stop at the section edge.
+
+[color=#BF4000][b]8.2 Syntax pre-check[/b][/color]
+
+A syntax error inside the interpreter's own loader aborts the whole process and cannot be caught by the library. [c]EvalScript()[/c] and [c]RemoteEvalScript()[/c] therefore run the text through the interpreter's own [c]/validate[/c] switch first — using the target's own executable for the remote path. A syntax error now surfaces as a clean library error carrying the real parse message, before any interpreter state is touched, and the host or target stays alive. The validator runs hidden with [c]/ErrorStdOut[/c] and captures all output to a file; if any build still hangs on a dialog, the library kills the validator's whole process tree within six seconds and falls back to the loader's own failure check. Only semantic load warnings that are version-specific are tolerated, so valid scripts that reference names which exist only in the host or target keep loading.
+
+[color=#BF4000][b]8.3 Remote timeouts[/b][/color]
+
+A hung expression cannot be killed safely: terminating an injected thread while it is inside the interpreter would corrupt the target. [c]RemoteEval()[/c] and the remote-call helper wait 10 seconds, then throw a clear timeout error and deliberately leak the injected block instead of freeing memory the target may still be executing. The target keeps running; the cost is one bounded 8 MiB allocation per timed-out call.
+
+[color=#BF4000][b]8.4 Object results[/b][/color]
+
+Evaluating a bare name now returns the object instead of an "unknown type" error: [c]EvalNative("Abs")[/c] returns the live [c]Func[/c] object, and evaluating a class name returns the [c]Class[/c] object. Remote evaluation cannot move objects across process boundaries, so [c]RemoteEval(hook, "Add")[/c] returns the object's address in the target as an integer for use with the remote primitives.
+
+[color=#BF4000][b]8.5 Empty targets and layout probes[/b][/color]
+
+Remote layout discovery needs live function entries to validate against, so a target whose script defines no functions used to fail with [c]dynamic function layout not found[/c]. [c]RemoteEvalScript()[/c] now injects two randomized probe functions through the target's own loader, preparses them, and retries discovery, so attaching to a fresh, empty script works. Probe names are randomized to avoid colliding with user code.
+
+[color=#BF4000][b]8.6 Patch atomicity[/b][/color]
+
+Patches are committed so a failure cannot leave a half-applied state: [c]PatchBifObject()[/c] rewrites the table first and rolls it back if the object write fails; [c]RemoteDeepRedirect()[/c] snapshots every slot before writing and restores the already-written slots if a later write fails, and narrows its heap scan with a vtable/layout check so unrelated structures are not patched. The in-process layout probe restores its interpreter snapshot in a [c]finally[/c] block, so a failed discovery no longer leaves a stray function behind.
+
+
+[b]9. Security[/b]
 
 [color=#BF4000]This library allocates executable memory, executes machine code, and reads or writes interpreter internals directly. Use it with reverse-engineering research discipline.[/color]
 
@@ -517,7 +546,7 @@ Risks to keep in mind:
 Recommended workflow: test in a VM or isolated environment, back up the exe, record its SHA256, and only analyze software you are authorized to research. This library is not intended to bypass licensing, DRM, or access controls.
 
 
-[b]9. Update log[/b]
+[b]10. Update log[/b]
 
 2026-08-11:
 
@@ -559,10 +588,18 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - Fixed process-list Map access and top-level comma parsing in snapshot specs;
 - Backfilled [c]find_var[/c] in cached [c]script_layout[/c] so [c]TraceFunction[/c] works after [c]EvalScript[/c];
 - Added duplicate-function preflight to [c]RemoteEvalScript[/c] so redefining an existing name fails before the target becomes unstable;
-- Added [c]tests\ahk_live_regression.ahk[/c] covering EvalScript-to-Trace ordering, comma expressions in snapshots, and duplicate-function rejection.
+- Added [c]tests\ahk_live_regression.ahk[/c] covering EvalScript-to-Trace ordering, comma expressions in snapshots, and duplicate-function rejection;
+- Hardened [c]Init[/c]/[c]ScanExports[/c] with record-count caps, stride validation, and memory-map checks on every name pointer;
+- Added [c]/validate[/c] pre-checks to [c]EvalScript[/c] and [c]RemoteEvalScript[/c] so syntax errors throw cleanly instead of aborting the host or target; the validator captures its output (no dialogs) and its process tree is killed on timeout;
+- Added remote timeout handling: a hung evaluation throws after 10 s and leaks its injected block to protect the target from use-after-free;
+- Added object return values: [c]EvalNative[/c] returns live [c]Func[/c]/[c]Class[/c] objects, [c]RemoteEval[/c] returns the target-side object address;
+- Added probe-injection retry so [c]RemoteEvalScript[/c] works against targets with no user functions;
+- Made [c]PatchBifObject[/c] and [c]RemoteDeepRedirect[/c] atomic with rollback, and narrowed the deep-redirect heap scan with a layout check;
+- Hardened the machine-code scanners: export-table bounds checks, capped token walks, section-end string reads;
+- Added regression tests for object returns, syntax-error survival, empty targets, and deep redirect.
 
 
-[b]10. Known limitations[/b]
+[b]11. Known limitations[/b]
 
 - The machine-code blocks are x64 only; 32-bit AutoHotkey raises an explicit error;
 - [c]EvalNative()[/c] runs the interpreter's in-process expression pipeline for literals, operators, global variables, and function calls on all verified builds. [c]Eval()[/c] falls back to [c]EvalSubprocess()[/c] in both script mode and compiled exes built from the regular runtime; an [c]AUTOHOTKEYSC[/c] standalone base would not support [c]/script[/c], so that build should be tested separately;
@@ -572,13 +609,13 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - [c]TraceFunction[/c] currently requires at least two required parameters and rejects optional/ByRef parameters;
 
 
-[b]11. Closing[/b]
+[b]12. Closing[/b]
 
 The project ended up settling on scanning: treat the exe as a structured document the program itself can read, scan out the internal map, and experiment on top of that map. In-process eval, remote hooking, script loading, and function tracing now work across 19 verified builds. Future directions include automatic DLL binding generation, deeper object model discovery, and more robust handling of hostile packers.
 
 
 
-[b]12. Appendix: single-file source[/b]
+[b]13. Appendix: single-file source[/b]
 
 The complete core is embedded below. The repository keeps the same file at
 [c]ahk_hack_single.ahk[/c] and regenerates this section with

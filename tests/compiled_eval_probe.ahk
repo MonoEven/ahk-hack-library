@@ -3,7 +3,12 @@
 #Include ..\ahk_hack_single.ahk
 
 outFile := A_ScriptDir "\compiled_eval_probe.out"
-try FileDelete(outFile)
+if FileExist(outFile) {
+    try {
+        FileDelete(outFile)
+    } catch {
+    }
+}
 
 Log(msg) {
     global outFile

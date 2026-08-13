@@ -9,6 +9,12 @@
  * from 0x40 to 0x50.  Instead of choosing one layout, both mData regions are
  * populated with the same buffer and every accessor advances both positions,
  * so the same blob works on either layout.
+ *
+ * The two mData slots are validated constants, not version tags: every load
+ * is checked by the caller against its result (rc == 1 plus, for the layout
+ * probe, a function-count increase).  An interpreter whose TextStream layout
+ * differs from both slots fails that check loudly at probe time instead of
+ * silently misparsing injected text.
  */
 
 typedef unsigned long long u64;
