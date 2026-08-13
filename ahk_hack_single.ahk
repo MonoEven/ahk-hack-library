@@ -709,17 +709,9 @@ class AhkMagic {
         text := AhkMagic._TextSection(secs)
         postfixRva := AhkMagic.exprToPostfix - AhkMagic.moduleBase
         callers := AhkMagic._FindCallers(text, postfixRva)
-        preparse := 0
-        for caller in callers {
-            start := AhkMagic._FnStart(text, caller)
-            if AhkMagic._FindBytePatternInFunc(text, start, "803B03")
-                and AhkMagic._FindBytePatternInFunc(text, start, "803B04") {
-                preparse := start
-                break
-            }
-        }
-        if !preparse
+        if !callers.Length
             throw Error("PreparseExpressions not found")
+        preparse := AhkMagic._FnStart(text, callers[1])
 
         preprocess := AhkMagic._LocatePreprocessFunc(text)
         if !preprocess
@@ -2054,17 +2046,10 @@ ahkHackLayoutProbe() {
         expandRva := AhkMagic._BestStart(text, expandRefs)
         if !postfixRva or !expandRva
             throw Error("remote expression functions not found", -1)
-        preparse := 0
-        for caller in AhkMagic._FindCallers(text, postfixRva) {
-            start := AhkMagic._FnStart(text, caller)
-            if AhkMagic._FindBytePatternInFunc(text, start, "803B03")
-                and AhkMagic._FindBytePatternInFunc(text, start, "803B04") {
-                preparse := start
-                break
-            }
-        }
-        if !preparse
+        callers := AhkMagic._FindCallers(text, postfixRva)
+        if !callers.Length
             throw Error("PreparseExpressions not found", -1)
+        preparse := AhkMagic._FnStart(text, callers[1])
         preprocess := AhkMagic._LocatePreprocessFunc(text)
         if !preprocess
             throw Error("PreprocessLocalVars not found", -1)
@@ -2137,9 +2122,9 @@ ahkHackLayoutProbe() {
         rc := AhkMagic._RemoteLoadScript(h, base, loc, probe)
         if rc != 0
             throw Error("layout probe load rc=" rc, -1)
-        after := AhkMagic._RemoteRead(h, gscript, 0x200)
+        after := AhkMagic._RemoteRead(h, gscript, 0x400)
         countOff := 0
-        loop 0x200 // 4 {
+        loop 0x400 // 4 {
             off := (A_Index - 1) * 4
             before := NumGet(snap, off, "Int")
             afterVal := NumGet(after, off, "Int")
@@ -2152,7 +2137,7 @@ ahkHackLayoutProbe() {
             throw Error("mFuncsCount offset not found", -1)
         oldCount := NumGet(snap, countOff, "Int")
         lastOff := -1
-        loop 0x200 // 8 {
+        loop 0x400 // 8 {
             off := (A_Index - 1) * 8
             before := NumGet(snap, off, "Ptr")
             afterVal := NumGet(after, off, "Ptr")
@@ -2178,7 +2163,7 @@ ahkHackLayoutProbe() {
         }
         funcsOff := 0
         jumpOff := 0
-        loop 0x200 // 8 {
+        loop 0x400 // 8 {
             off := (A_Index - 1) * 8
             p := NumGet(after, off, "Ptr")
             if p <= 0x10000 or p >= 0x7fffffffffff
@@ -2190,7 +2175,7 @@ ahkHackLayoutProbe() {
                 continue
             if newFunc <= 0x10000 or newFunc >= 0x7fffffffffff
                 continue
-            loop 0x100 // 8 {
+            loop 0x200 // 8 {
                 joff := (A_Index - 1) * 8
                 try {
                     q := NumGet(AhkMagic._RemoteRead(h, newFunc + joff, 8)

@@ -278,6 +278,11 @@ class AhkLive {
                     onChange(value)
             }
         } catch as e {
+            try {
+                f := FileOpen(A_Temp "\ahk_live_watch_err.txt", "a", "UTF-8")
+                f.Write(e.What " | " e.Message " | line " e.Line "`n")
+                f.Close()
+            }
             if onChange
                 onChange(e)
         }
