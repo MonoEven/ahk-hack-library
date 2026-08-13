@@ -208,7 +208,9 @@ Gui_RefreshTimer() {
 
 Log(msg) {
     global gLog
-    gLog.Value .= FormatTime(, "HH:mm:ss") " " msg "`n"
+    line := FormatTime(, "HH:mm:ss") " " msg "`n"
+    gLog.Value .= line
+    FileAppend(line, A_Temp "\ahk_live_gui.log")
 }
 
 
