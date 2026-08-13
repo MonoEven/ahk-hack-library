@@ -514,6 +514,15 @@ class AhkMagic {
         return 0
     }
 
+    static _FindAnyBytePattern(sec, patterns) {
+        for pattern in patterns {
+            found := AhkMagic._FindBytePattern(sec, pattern)
+            if found
+                return found
+        }
+        return 0
+    }
+
     static _FindBytePatternInFunc(sec, startRva, hexPattern) {
         p := sec["ptr"]
         off := startRva - sec["rva"]
@@ -716,11 +725,12 @@ class AhkMagic {
         if !preprocess
             throw Error("PreprocessLocalVars not found")
 
-        openNeedle := "48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200"
-        openNeedle21 := "40535556574154415541564157B8D8000100"
-        open := AhkMagic._FindBytePattern(text, openNeedle)
-        if !open
-            open := AhkMagic._FindBytePattern(text, openNeedle21)
+        openPatterns := [
+            "48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200",
+            "40535556574154415541564157B8D8000100",
+            "48895C240848895424105556574154415541564157488DAC24"
+        ]
+        open := AhkMagic._FindAnyBytePattern(text, openPatterns)
         if !open
             throw Error("OpenIncludedFile not found")
 
@@ -2058,14 +2068,12 @@ ahkHackLayoutProbe() {
         preprocess := AhkMagic._LocatePreprocessFunc(text)
         if !preprocess
             throw Error("PreprocessLocalVars not found", -1)
-        open := AhkMagic._FindBytePattern(text
-            , "48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200")
-        if !open
-            open := AhkMagic._FindBytePattern(text
-                , "40535556574154415541564157B8D8000100")
-        if !open
-            open := AhkMagic._FindBytePattern(text
-                , "48895C240848895424105556574154415541564157488DAC24")
+        openPatterns := [
+            "48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200",
+            "40535556574154415541564157B8D8000100",
+            "48895C240848895424105556574154415541564157488DAC24"
+        ]
+        open := AhkMagic._FindAnyBytePattern(text, openPatterns)
         if !open
             throw Error("OpenIncludedFile not found", -1)
         loadTs := AhkMagic._LocateLoadTs(text, open)
