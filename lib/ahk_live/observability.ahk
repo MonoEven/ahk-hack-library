@@ -74,6 +74,15 @@ class AhkLiveObservability {
                         state["onChange"](event)
                 }
             }
+        } catch as e {
+            try {
+                f := FileOpen(A_Temp "\ahk_live_observability_err.txt"
+                    , "a", "UTF-8")
+                f.Write(e.What " | " e.Message " | line " e.Line "`n")
+                f.Close()
+            }
+            if state["onChange"]
+                state["onChange"](e)
         }
     }
 }

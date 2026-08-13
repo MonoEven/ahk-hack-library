@@ -2984,6 +2984,48 @@ ahkHackLayoutProbe() {
         AhkMagic._RemoteWrite(h, addr, buf)
     }
 
+    static _DeclaredFunctionNames(text) {
+        names := []
+        depth := 0
+        candidate := ""
+        for raw in StrSplit(text, "`n", "`r") {
+            line := Trim(raw)
+            if candidate = "" and line != "" and SubStr(line, 1, 1) != ";" {
+                if RegExMatch(line
+                    , "^([A-Za-z_][A-Za-z0-9_]*)\s*\(", &m)
+                    and !RegExMatch(line
+                        , "^(if|else|for|while|switch|try|catch|finally"
+                        . "|return|break|continue|global|local|static|class"
+                        . "|new|throw|until)\b") {
+                    candidate := m[1]
+                }
+            }
+            if candidate != "" and InStr(line, "{") {
+                found := false
+                for n in names {
+                    if n = candidate {
+                        found := true
+                        break
+                    }
+                }
+                if !found and depth = 0
+                    names.Push(candidate)
+                candidate := ""
+            }
+            opens := 0
+            closes := 0
+            loop StrLen(line) {
+                c := SubStr(line, A_Index, 1)
+                if c = "{"
+                    opens += 1
+                else if c = "}"
+                    closes += 1
+            }
+            depth += opens - closes
+        }
+        return names
+    }
+
     static RemoteEvalScript(hook, text) {
         if !(hook is Map) or !hook.Has("pid")
             throw TypeError("hook must be an AttachRemote result", -1)
@@ -3013,6 +3055,11 @@ ahkHackLayoutProbe() {
             g := layout["g"]
             currOff := layout["curr_off"]
             parser := layout["parser"]
+            for name in AhkMagic._DeclaredFunctionNames(text) {
+                if AhkMagic._RemoteFindUserFuncs(h, layout, name).Length
+                    throw Error("function name already exists in target: "
+                        . name, -1)
+            }
             oldFuncCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
             savedCur := AhkMagic._RPtr(h, g + currOff)
             savedCurFunc := AhkMagic._RPtr(h, g + currOff)

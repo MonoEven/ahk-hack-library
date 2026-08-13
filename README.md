@@ -298,6 +298,9 @@ The repository separates the blog from the technical Pages site.
   - `blog_ahk_hack_en.txt`
   - `blog_ahk_hack.txt`
   - Built by `tools/build_blog.py`.
+- Separate post: AhkLive GUI screenshot walkthrough.
+  - `blog_ahk_live_gui_en.txt`
+  - `blog_ahk_live_gui.txt`
 - Pages: analysis and extraction workflow.
   - `docs/pages_en.txt`
   - `docs/pages_zh.txt`

@@ -307,6 +307,36 @@ Wrapper 写入目标端全局字符串，因此 [c]RemoteEval[/c] 可以读取 T
 
 总计：19 个运行时，全部 9/9。
 
+[color=#BF4000][b]11.1 回归覆盖：错误捕获[/b][/color]
+
+GUI 会把每个 [c]AhkLiveResult[/c] 转成可见的日志行。[c]OnError()[/c] 同时把异常字段写入 GUI 日志和 [c]%TEMP%\ahk_live_gui_error.log[/c]；[c]SafeStr()[/c] 序列化 Map/Array 值，避免第二个错误再次弄崩日志器。Watch 与观测错误会作为 [c]Error[/c] 对象转发给回调。[c]--shot <pid> <tab>[/c] 会选中指定页签并写就绪标记，供完整窗口截图自动化使用。
+
+[codebox=autohotkey file=error-capture]
+AhkLive_OnError(e, exitCode := 0) {
+    msg := "ERR " e.What " | " e.Message
+        . " | " e.File ":" e.Line
+    FileAppend(msg "`n", A_Temp "\ahk_live_gui_error.log")
+    return true
+}
+
+OnError(AhkLive_OnError)
+[/codebox]
+
+回归测试 [c]tests\ahk_live_regression.ahk[/c] 覆盖构建 GUI 时发现的三类失败：
+
+- [c]EvalScript[/c] 之后执行 [c]TraceFunction[/c]，要求缓存 [c]script_layout[/c] 从 [c]script_loc[/c] 回填 [c]find_var[/c]；
+- 快照表达式在括号内含逗号，不能被当成配置分隔符拆分；
+- 重复的顶层函数名，必须在 [c]LoadIncludedFile[/c] 执行前拒绝：
+
+[codebox=autohotkey file=duplicate-preflight]
+for name in AhkMagic._DeclaredFunctionNames(text) {
+    if AhkMagic._RemoteFindUserFuncs(h, layout, name).Length
+        throw Error("function name already exists in target: " name, -1)
+}
+[/codebox]
+
+新回归测试已在 [c]2.1-alpha.30[/c] 与 [c]2.0.26[/c] 通过。19 运行时九项矩阵仍然是完整兼容门槛。
+
 [b]12. 安全与边界[/b]
 
 这个库会分配可执行内存、执行机器码，并写入当前或目标进程的解释器内存。它不具备沙箱隔离。

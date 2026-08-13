@@ -252,6 +252,27 @@ Send(&quot;{F9}&quot;)</code></pre>
 <p>Current result:</p>
 <table><thead><tr><th>Runtime family</th><th>Builds</th><th>Result</th></tr></thead><tbody><tr><td>2.0 beta</td><td>beta.9, beta.10, beta.12, beta.13, beta.15</td><td>9/9 each</td></tr><tr><td>2.0 rc</td><td>rc.1, rc.3</td><td>9/9 each</td></tr><tr><td>2.0 stable</td><td>0.0, 0.2, 0.3, 0.4, 0.26</td><td>9/9 each</td></tr><tr><td>2.1 alpha</td><td>alpha.1, alpha.4, alpha.13, alpha.16, alpha.30</td><td>9/9 each</td></tr><tr><td>local dev builds</td><td>two <code>2.0-beta</code> binaries</td><td>9/9 each</td></tr></tbody></table>
 <p>Total: 19 runtimes, all 9/9.</p>
+<h3>11.1 Regression coverage: error capture</h3>
+<p>The GUI converts every <code>AhkLiveResult</code> into a visible log line. <code>OnError()</code> appends exception fields to both the GUI log and <code>%TEMP%\ahk_live_gui_error.log</code>; <code>SafeStr()</code> serializes Map and Array values so a second error cannot break the logger. Watch and observability errors are forwarded to the callback as <code>Error</code> objects. <code>--shot <pid> <tab></code> selects a tab and writes a ready marker for full-window screenshot automation.</p>
+<pre class="lang-autohotkey"><code>AhkLive_OnError(e, exitCode := 0) {
+    msg := &quot;ERR &quot; e.What &quot; | &quot; e.Message
+        . &quot; | &quot; e.File &quot;:&quot; e.Line
+    FileAppend(msg &quot;`n&quot;, A_Temp &quot;\ahk_live_gui_error.log&quot;)
+    return true
+}
+
+OnError(AhkLive_OnError)</code></pre>
+<p>The regression test <code>tests\ahk_live_regression.ahk</code> covers three failure modes found while building the GUI:</p>
+<ul>
+<li><code>EvalScript</code> followed by <code>TraceFunction</code>, which requires the cached <code>script_layout</code> to backfill <code>find_var</code> from <code>script_loc</code>;</li>
+<li>snapshot expressions that contain commas inside parentheses, which must not be split as spec separators;</li>
+<li>duplicate top-level function names, which are rejected before <code>LoadIncludedFile</code> runs:</li>
+</ul>
+<pre class="lang-autohotkey"><code>for name in AhkMagic._DeclaredFunctionNames(text) {
+    if AhkMagic._RemoteFindUserFuncs(h, layout, name).Length
+        throw Error(&quot;function name already exists in target: &quot; name, -1)
+}</code></pre>
+<p>The new regression test passes on <code>2.1-alpha.30</code> and <code>2.0.26</code>. The 19-runtime nine-test matrix remains the full compatibility gate.</p>
 </section>
 <section id="sec-12"><h2>Security and boundaries</h2>
 <p>This library allocates executable memory, executes machine code, and writes interpreter memory in the current or target process. It is not a sandbox.</p>
@@ -3265,6 +3286,48 @@ ahkHackLayoutProbe() {
         AhkMagic._RemoteWrite(h, addr, buf)
     }
 
+    static _DeclaredFunctionNames(text) {
+        names := []
+        depth := 0
+        candidate := &quot;&quot;
+        for raw in StrSplit(text, &quot;`n&quot;, &quot;`r&quot;) {
+            line := Trim(raw)
+            if candidate = &quot;&quot; and line != &quot;&quot; and SubStr(line, 1, 1) != &quot;;&quot; {
+                if RegExMatch(line
+                    , &quot;^([A-Za-z_][A-Za-z0-9_]*)\s*\(&quot;, &amp;m)
+                    and !RegExMatch(line
+                        , &quot;^(if|else|for|while|switch|try|catch|finally&quot;
+                        . &quot;|return|break|continue|global|local|static|class&quot;
+                        . &quot;|new|throw|until)\b&quot;) {
+                    candidate := m[1]
+                }
+            }
+            if candidate != &quot;&quot; and InStr(line, &quot;{&quot;) {
+                found := false
+                for n in names {
+                    if n = candidate {
+                        found := true
+                        break
+                    }
+                }
+                if !found and depth = 0
+                    names.Push(candidate)
+                candidate := &quot;&quot;
+            }
+            opens := 0
+            closes := 0
+            loop StrLen(line) {
+                c := SubStr(line, A_Index, 1)
+                if c = &quot;{&quot;
+                    opens += 1
+                else if c = &quot;}&quot;
+                    closes += 1
+            }
+            depth += opens - closes
+        }
+        return names
+    }
+
     static RemoteEvalScript(hook, text) {
         if !(hook is Map) or !hook.Has(&quot;pid&quot;)
             throw TypeError(&quot;hook must be an AttachRemote result&quot;, -1)
@@ -3294,6 +3357,11 @@ ahkHackLayoutProbe() {
             g := layout[&quot;g&quot;]
             currOff := layout[&quot;curr_off&quot;]
             parser := layout[&quot;parser&quot;]
+            for name in AhkMagic._DeclaredFunctionNames(text) {
+                if AhkMagic._RemoteFindUserFuncs(h, layout, name).Length
+                    throw Error(&quot;function name already exists in target: &quot;
+                        . name, -1)
+            }
             oldFuncCount := AhkMagic._RInt(h, gscript + layout[&quot;mfuncs_count_off&quot;])
             savedCur := AhkMagic._RPtr(h, g + currOff)
             savedCurFunc := AhkMagic._RPtr(h, g + currOff)

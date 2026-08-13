@@ -381,6 +381,7 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
+& D:\...\AutoHotkey64.exe tests\ahk_live_regression.ahk
 [/codebox]
 
 The current matrix verifies 19 runtimes: [c]2.0-beta.9/10/12/13/15[/c], [c]2.0-rc.1/3[/c], [c]2.0.0/2/3/4/26[/c], [c]2.1-alpha.1/4/13/16/30[/c], and two local [c]2.0-beta[/c] dev builds. Every runtime passes all nine tests.
@@ -402,20 +403,81 @@ session := AhkLiveSession()
 if !session.Attach(pid).ok
     throw Error("attach failed")
 
+r := session.EvalScript("
+(
+rhkDemo(a, b) {
+    return a * b
+}
+rhkDemo(3, 4)
+)")
+if !r.ok
+    throw Error(r.error)
+
 snap := session.Snapshot(Map(
     "add", "Add(2, 3)",
     "mul", "Mul(4)"
 ))
+
+tracer := session.Trace("Add", A_Temp "\ahk_live_trace.log")
+if !tracer.ok
+    throw Error(tracer.error)
+r := session.Eval("Add(2, 3)")
+if !r.ok
+    throw Error(r.error)
+MsgBox r.value          ; 5
+traceValue := session.Eval(tracer.value["log_var"])
+if !traceValue.ok
+    throw Error(traceValue.error)
+MsgBox traceValue.value ; TRACE exit Add=5
 
 patch := session.BeginPatch()
 ps := patch.value
 ps.Replace("Mul", "NewMul")
 ps.Rollback()
 
+duplicate := session.EvalScript("
+(
+Add(a, b) {
+    return a + b
+}
+Add(1, 2)
+)")
+if duplicate.ok
+    throw Error("duplicate function was not rejected")
+
 session.Close()
 [/codebox]
 
 [c]TraceFunction[/c] no longer renames functions. It clones the target [c]UserFunc[/c], creates a [c]VAR_CONSTANT[/c] alias, injects a wrapper that calls the clone, aliases the wrapper's parameter [c]Var[/c] objects to the original parameters, and swaps [c]mJumpToLine[/c]. This keeps [c]mFuncs[/c] and [c]VarList[/c] sorted and stable across repeated script injections.
+
+[color=#BF4000][b]7.4 AhkLive GUI and error capture[/b][/color]
+
+The GUI is [c]ahk_live_gui.ahk[/c]: it lists AutoHotkey processes, attaches by PID, and exposes tabs for eval, script loading, snapshots, inventory, patch, trace, watch, reload, and forensics. [c]--demo <pid>[/c] runs the full path automatically; [c]--selftest <pid>[/c] runs a minimal attach-and-eval check; [c]--shot <pid> <tab>[/c] selects a tab and writes [c]%TEMP%\ahk_live_gui_shot_ready[/c] for full-window screenshot automation.
+
+Every handler converts an [c]AhkLiveResult[/c] into a visible log line. A failed trace, snapshot, script, patch, watch, or reload is written to the GUI log and to [c]%TEMP%\ahk_live_gui_error.log[/c]. [c]OnError()[/c] records the exception fields with a [c]SafeStr()[/c] helper so Map and Array values cannot crash the logger while another error is being reported. Watch and observability errors are also forwarded to the callback as [c]Error[/c] objects instead of being swallowed.
+
+The GUI exposed three real bugs that were fixed in the shared layer:
+
+- Process enumeration returned Maps, but the list view read them with dot syntax. The fix uses [c]proc["pid"]/proc["name"]/proc["title"][/c].
+- Snapshot specs such as [c]add=Add(2, 3)[/c] were split on every comma. The GUI now splits only on top-level commas outside parentheses, brackets, braces, and quoted strings.
+- [c]TraceFunction[/c] after an [c]EvalScript[/c] failed because the cached [c]script_layout[/c] had no [c]find_var[/c]. [c]_EnsureLayout()[/c] now backfills it from the cached [c]script_loc[/c].
+
+[c]RemoteEvalScript()[/c] also gained a duplicate-function preflight. Before loading text, it scans top-level function declarations at brace depth zero and compares them with the live function list. Redefining an existing name such as [c]Add[/c] now returns [c]function name already exists in target: Add[/c] instead of letting the target's delayed parser crash with a function-conflict error.
+
+[codebox=text file=gui-demo]
+& D:\...\AutoHotkey64.exe tests\ahk_live_probe_target.ahk
+& D:\...\AutoHotkey64.exe ahk_live_gui.ahk --demo 1234
+
+attached 1234
+eval => 5
+script => 12
+snapshot ok
+inventory ok count=10
+report ok
+trace active on Add
+tracecall Add(2, 3) => 5
+demo ready
+[/codebox]
 
 [codebox=text file=compiled]
 # Plain compile
@@ -491,7 +553,13 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - Fixed [c]AhkLiveObservability.WatchWhen[/c] so its watcher has a real [c]Stop()[/c] method;
 - Rebuilt [c]TraceFunction[/c] around [c]UserFunc[/c] cloning and shared parameter [c]Var[/c] objects;
 - Added [c]tools/verify_all_runtimes.ps1[/c] and the 19-runtime nine-test matrix;
-- Split the Pages site from the blog: Pages documents the analysis and extraction process, the blog keeps practical examples and the full single-file source.
+- Split the Pages site from the blog: Pages documents the analysis and extraction process, the blog keeps practical examples and the full single-file source;
+- Added the AhkLive GUI with eval, script, snapshot, inventory, patch, trace, watch, reload, and forensics tabs, plus [c]--demo[/c] and [c]--selftest[/c] modes;
+- Reworked GUI error capture: every handler writes visible [c]FAIL[/c] lines, [c]OnError()[/c] records exception fields, and [c]SafeStr()[/c] prevents Map/Array values from breaking the logger;
+- Fixed process-list Map access and top-level comma parsing in snapshot specs;
+- Backfilled [c]find_var[/c] in cached [c]script_layout[/c] so [c]TraceFunction[/c] works after [c]EvalScript[/c];
+- Added duplicate-function preflight to [c]RemoteEvalScript[/c] so redefining an existing name fails before the target becomes unstable;
+- Added [c]tests\ahk_live_regression.ahk[/c] covering EvalScript-to-Trace ordering, comma expressions in snapshots, and duplicate-function rejection.
 
 
 [b]10. Known limitations[/b]
@@ -3503,6 +3571,48 @@ ahkHackLayoutProbe() {
         AhkMagic._RemoteWrite(h, addr, buf)
     }
 
+    static _DeclaredFunctionNames(text) {
+        names := []
+        depth := 0
+        candidate := ""
+        for raw in StrSplit(text, "`n", "`r") {
+            line := Trim(raw)
+            if candidate = "" and line != "" and SubStr(line, 1, 1) != ";" {
+                if RegExMatch(line
+                    , "^([A-Za-z_][A-Za-z0-9_]*)\s*\(", &m)
+                    and !RegExMatch(line
+                        , "^(if|else|for|while|switch|try|catch|finally"
+                        . "|return|break|continue|global|local|static|class"
+                        . "|new|throw|until)\b") {
+                    candidate := m[1]
+                }
+            }
+            if candidate != "" and InStr(line, "{") {
+                found := false
+                for n in names {
+                    if n = candidate {
+                        found := true
+                        break
+                    }
+                }
+                if !found and depth = 0
+                    names.Push(candidate)
+                candidate := ""
+            }
+            opens := 0
+            closes := 0
+            loop StrLen(line) {
+                c := SubStr(line, A_Index, 1)
+                if c = "{"
+                    opens += 1
+                else if c = "}"
+                    closes += 1
+            }
+            depth += opens - closes
+        }
+        return names
+    }
+
     static RemoteEvalScript(hook, text) {
         if !(hook is Map) or !hook.Has("pid")
             throw TypeError("hook must be an AttachRemote result", -1)
@@ -3532,6 +3642,11 @@ ahkHackLayoutProbe() {
             g := layout["g"]
             currOff := layout["curr_off"]
             parser := layout["parser"]
+            for name in AhkMagic._DeclaredFunctionNames(text) {
+                if AhkMagic._RemoteFindUserFuncs(h, layout, name).Length
+                    throw Error("function name already exists in target: "
+                        . name, -1)
+            }
             oldFuncCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
             savedCur := AhkMagic._RPtr(h, g + currOff)
             savedCurFunc := AhkMagic._RPtr(h, g + currOff)

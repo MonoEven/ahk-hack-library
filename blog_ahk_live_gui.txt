@@ -1,0 +1,66 @@
+[b]AhkLive GUI：截图走读[/b]
+
+截图来自 [c]ahk_live_gui.ahk[/c] 附加 [c]tests\ahk_live_probe_target.ahk[/c]。完整窗口 1480x1016，DPI 感知 [c]PrintWindow[/c]；截图前已跑过 demo。
+
+[b]1. 主界面[/b]
+
+按 PID 附加；Eval 返回 [c]Add(2, 3) => 5[/c]。
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_main.png[/img]
+
+[b]2. Script[/b]
+
+[c]EvalScript[/c] 定义 [c]rhkDemo(a, b)[/c]，调用 [c]rhkDemo(3, 4) => 12[/c]；不写临时 [c].ahk[/c]。
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_script.png[/img]
+
+[b]3. Snapshot[/b]
+
+[c]add=Add(2, 3), mul=Mul(4)[/c] 返回 [c]5[/c] 与 [c]8[/c]；调用内的逗号保留为表达式一部分。
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_snapshot.png[/img]
+
+[b]4. Inventory[/b]
+
+从存活 [c]mFuncs[/c] 读取函数、参数名与类。
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_inventory.png[/img]
+
+[b]5. Patch[/b]
+
+带日志的 [c]Mul -> NewMul[/c] 替换；Rollback 恢复所有被改写地址。
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_patch.png[/img]
+
+[b]6. Trace[/b]
+
+克隆 [c]UserFunc[/c] 后交换函数体；[c]Add(2, 3) => 5[/c]，日志 [c]TRACE exit Add=5[/c]。
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_trace.png[/img]
+
+[b]7. Watch[/b]
+
+轮询 [c]Mul(4)[/c] 并输出值变化；求值错误以 [c]Error[/c] 对象转发。
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_watch.png[/img]
+
+[b]8. Reload[/b]
+
+监视脚本文件，签名变化时通过 [c]RemoteEvalScript[/c] 重新加载。
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_reload.png[/img]
+
+[b]9. Forensics[/b]
+
+运行时报告：PID、版本、模块、函数/类数量、表大小；支持 CSV 导出。
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_forensics.png[/img]
+
+[b]10. 截图方式[/b]
+
+[c]--shot <pid> <tab>[/c] 选中页签并写就绪标记；[c]PrintWindow(PW_RENDERFULLCONTENT)[/c] 抓完整窗口。
+
+[codebox=text file=gui-screenshot]
+& D:\...\AutoHotkey64.exe tests\ahk_live_probe_target.ahk
+& D:\...\AutoHotkey64.exe ahk_live_gui.ahk --shot <pid> 1
+[/codebox]

@@ -381,6 +381,7 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
+& D:\...\AutoHotkey64.exe tests\ahk_live_regression.ahk
 [/codebox]
 
 当前矩阵验证 19 个运行时：[c]2.0-beta.9/10/12/13/15[/c]、[c]2.0-rc.1/3[/c]、[c]2.0.0/2/3/4/26[/c]、[c]2.1-alpha.1/4/13/16/30[/c]，以及两个本机 [c]2.0-beta[/c] 开发副本。每个运行时都通过全部九项测试。
@@ -402,20 +403,81 @@ session := AhkLiveSession()
 if !session.Attach(pid).ok
     throw Error("attach failed")
 
+r := session.EvalScript("
+(
+rhkDemo(a, b) {
+    return a * b
+}
+rhkDemo(3, 4)
+)")
+if !r.ok
+    throw Error(r.error)
+
 snap := session.Snapshot(Map(
     "add", "Add(2, 3)",
     "mul", "Mul(4)"
 ))
+
+tracer := session.Trace("Add", A_Temp "\ahk_live_trace.log")
+if !tracer.ok
+    throw Error(tracer.error)
+r := session.Eval("Add(2, 3)")
+if !r.ok
+    throw Error(r.error)
+MsgBox r.value          ; 5
+traceValue := session.Eval(tracer.value["log_var"])
+if !traceValue.ok
+    throw Error(traceValue.error)
+MsgBox traceValue.value ; TRACE exit Add=5
 
 patch := session.BeginPatch()
 ps := patch.value
 ps.Replace("Mul", "NewMul")
 ps.Rollback()
 
+duplicate := session.EvalScript("
+(
+Add(a, b) {
+    return a + b
+}
+Add(1, 2)
+)")
+if duplicate.ok
+    throw Error("duplicate function was not rejected")
+
 session.Close()
 [/codebox]
 
 [c]TraceFunction[/c] 不再重命名函数。它克隆目标 [c]UserFunc[/c]，创建 [c]VAR_CONSTANT[/c] 别名，注入调用克隆体的 wrapper，把 wrapper 的参数 [c]Var[/c] 别名回原函数参数，再交换 [c]mJumpToLine[/c]。这样 [c]mFuncs[/c] 与 [c]VarList[/c] 始终保持排序，反复注入脚本也不会破坏状态。
+
+[color=#BF4000][b]7.4 AhkLive GUI 与错误捕获[/b][/color]
+
+GUI 位于 [c]ahk_live_gui.ahk[/c]：列出 AutoHotkey 进程、按 PID 附加，并提供 Eval、脚本、快照、清单、Patch、Trace、Watch、Reload、Forensics 等页签。[c]--demo <pid>[/c] 自动跑完整路径；[c]--selftest <pid>[/c] 只做最小附加与求值检查；[c]--shot <pid> <tab>[/c] 会选中指定页签并写 [c]%TEMP%\ahk_live_gui_shot_ready[/c]，供完整窗口截图自动化使用。
+
+每个处理器都会把 [c]AhkLiveResult[/c] 转成可见的日志行。Trace、快照、脚本、Patch、Watch 或 Reload 失败时，都会写入 GUI 日志和 [c]%TEMP%\ahk_live_gui_error.log[/c]。[c]OnError()[/c] 通过 [c]SafeStr()[/c] 记录异常字段，Map/Array 值不会在报告另一个错误时再次把日志器弄崩。Watch 与观测错误也会作为 [c]Error[/c] 对象转发给回调，不再被吞掉。
+
+GUI 暴露了共享层里的三个真实问题，均已修复：
+
+- 进程枚举返回 Map，列表却用点语法读取。现在改用 [c]proc["pid"]/proc["name"]/proc["title"][/c]。
+- [c]add=Add(2, 3)[/c] 这类快照配置原本按每个逗号拆分。现在只在括号、方括号、花括号和引号外拆顶层逗号。
+- [c]EvalScript[/c] 之后执行 [c]TraceFunction[/c] 失败，因为缓存的 [c]script_layout[/c] 缺少 [c]find_var[/c]。[c]_EnsureLayout()[/c] 现在会从缓存的 [c]script_loc[/c] 回填。
+
+[c]RemoteEvalScript()[/c] 还增加了重复函数预检。加载文本前，它会扫描括号深度为零处的顶层函数声明，并与存活函数列表比对。重新定义 [c]Add[/c] 这类已有名字时，现在直接返回 [c]function name already exists in target: Add[/c]，而不是让目标进程延迟报函数冲突并退出。
+
+[codebox=text file=gui-demo]
+& D:\...\AutoHotkey64.exe tests\ahk_live_probe_target.ahk
+& D:\...\AutoHotkey64.exe ahk_live_gui.ahk --demo 1234
+
+attached 1234
+eval => 5
+script => 12
+snapshot ok
+inventory ok count=10
+report ok
+trace active on Add
+tracecall Add(2, 3) => 5
+demo ready
+[/codebox]
 
 [codebox=text file=compiled]
 # 普通编译
@@ -491,7 +553,13 @@ session.Close()
 - 修复[c]AhkLiveObservability.WatchWhen[/c]，让 watcher 有真正的[c]Stop()[/c]；
 - 基于[c]UserFunc[/c]克隆与共享参数[c]Var[/c]重写[c]TraceFunction[/c]；
 - 新增[c]tools/verify_all_runtimes.ps1[/c]与 19 运行时九项矩阵；
-- 把 Pages 与 Blog 拆开：Pages 记录分析与提取流程，Blog 保留实践示例与完整单文件源码。
+- 把 Pages 与 Blog 拆开：Pages 记录分析与提取流程，Blog 保留实践示例与完整单文件源码；
+- 新增 AhkLive GUI，提供 Eval、脚本、快照、清单、Patch、Trace、Watch、Reload、Forensics 页签，以及[c]--demo[/c]与[c]--selftest[/c]模式；
+- 重做 GUI 错误捕获：每个处理器都写可见的[c]FAIL[/c]行，[c]OnError()[/c]记录异常字段，[c]SafeStr()[/c]避免 Map/Array 值再次弄崩日志器；
+- 修复进程列表的 Map 属性访问，以及快照配置里括号内逗号被错误拆分的问题；
+- 缓存[c]script_layout[/c]缺失[c]find_var[/c]时自动回填，[c]EvalScript[/c]之后执行[c]TraceFunction[/c]不再失败；
+- 为[c]RemoteEvalScript[/c]增加重复函数预检，重定义已有函数名会在目标进程不稳定之前明确报错；
+- 新增[c]tests\ahk_live_regression.ahk[/c]，覆盖 EvalScript 到 Trace 的顺序、快照中的逗号表达式与重复函数拒绝。
 
 
 [b]10. 已知限制[/b]
@@ -3502,6 +3570,48 @@ ahkHackLayoutProbe() {
         AhkMagic._RemoteWrite(h, addr, buf)
     }
 
+    static _DeclaredFunctionNames(text) {
+        names := []
+        depth := 0
+        candidate := ""
+        for raw in StrSplit(text, "`n", "`r") {
+            line := Trim(raw)
+            if candidate = "" and line != "" and SubStr(line, 1, 1) != ";" {
+                if RegExMatch(line
+                    , "^([A-Za-z_][A-Za-z0-9_]*)\s*\(", &m)
+                    and !RegExMatch(line
+                        , "^(if|else|for|while|switch|try|catch|finally"
+                        . "|return|break|continue|global|local|static|class"
+                        . "|new|throw|until)\b") {
+                    candidate := m[1]
+                }
+            }
+            if candidate != "" and InStr(line, "{") {
+                found := false
+                for n in names {
+                    if n = candidate {
+                        found := true
+                        break
+                    }
+                }
+                if !found and depth = 0
+                    names.Push(candidate)
+                candidate := ""
+            }
+            opens := 0
+            closes := 0
+            loop StrLen(line) {
+                c := SubStr(line, A_Index, 1)
+                if c = "{"
+                    opens += 1
+                else if c = "}"
+                    closes += 1
+            }
+            depth += opens - closes
+        }
+        return names
+    }
+
     static RemoteEvalScript(hook, text) {
         if !(hook is Map) or !hook.Has("pid")
             throw TypeError("hook must be an AttachRemote result", -1)
@@ -3531,6 +3641,11 @@ ahkHackLayoutProbe() {
             g := layout["g"]
             currOff := layout["curr_off"]
             parser := layout["parser"]
+            for name in AhkMagic._DeclaredFunctionNames(text) {
+                if AhkMagic._RemoteFindUserFuncs(h, layout, name).Length
+                    throw Error("function name already exists in target: "
+                        . name, -1)
+            }
             oldFuncCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
             savedCur := AhkMagic._RPtr(h, g + currOff)
             savedCurFunc := AhkMagic._RPtr(h, g + currOff)

@@ -307,6 +307,36 @@ Current result:
 
 Total: 19 runtimes, all 9/9.
 
+[color=#BF4000][b]11.1 Regression coverage: error capture[/b][/color]
+
+The GUI converts every [c]AhkLiveResult[/c] into a visible log line. [c]OnError()[/c] appends exception fields to both the GUI log and [c]%TEMP%\ahk_live_gui_error.log[/c]; [c]SafeStr()[/c] serializes Map and Array values so a second error cannot break the logger. Watch and observability errors are forwarded to the callback as [c]Error[/c] objects. [c]--shot <pid> <tab>[/c] selects a tab and writes a ready marker for full-window screenshot automation.
+
+[codebox=autohotkey file=error-capture]
+AhkLive_OnError(e, exitCode := 0) {
+    msg := "ERR " e.What " | " e.Message
+        . " | " e.File ":" e.Line
+    FileAppend(msg "`n", A_Temp "\ahk_live_gui_error.log")
+    return true
+}
+
+OnError(AhkLive_OnError)
+[/codebox]
+
+The regression test [c]tests\ahk_live_regression.ahk[/c] covers three failure modes found while building the GUI:
+
+- [c]EvalScript[/c] followed by [c]TraceFunction[/c], which requires the cached [c]script_layout[/c] to backfill [c]find_var[/c] from [c]script_loc[/c];
+- snapshot expressions that contain commas inside parentheses, which must not be split as spec separators;
+- duplicate top-level function names, which are rejected before [c]LoadIncludedFile[/c] runs:
+
+[codebox=autohotkey file=duplicate-preflight]
+for name in AhkMagic._DeclaredFunctionNames(text) {
+    if AhkMagic._RemoteFindUserFuncs(h, layout, name).Length
+        throw Error("function name already exists in target: " name, -1)
+}
+[/codebox]
+
+The new regression test passes on [c]2.1-alpha.30[/c] and [c]2.0.26[/c]. The 19-runtime nine-test matrix remains the full compatibility gate.
+
 [b]12. Security and boundaries[/b]
 
 This library allocates executable memory, executes machine code, and writes interpreter memory in the current or target process. It is not a sandbox.

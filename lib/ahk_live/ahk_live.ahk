@@ -649,8 +649,16 @@ class AhkLive {
     }
 
     static _EnsureLayout(hook) {
-        if hook.Has("script_layout")
-            return hook["script_layout"]
+        if hook.Has("script_layout") {
+            layout := hook["script_layout"]
+            if !layout.Has("find_var") {
+                if !hook.Has("script_loc")
+                    throw Error("script_loc missing", -1)
+                loc := hook["script_loc"]
+                layout["find_var"] := NumGet(loc["loc_out"], 16, "Ptr")
+            }
+            return layout
+        }
         h := AhkMagic._RemoteOpen(hook["pid"], true)
         try {
             modBase := AhkMagic._RemoteModuleBase(h, hook["pid"])

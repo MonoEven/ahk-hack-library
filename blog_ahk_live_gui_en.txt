@@ -1,0 +1,66 @@
+[b]AhkLive GUI: screenshot walkthrough[/b]
+
+Captures of [c]ahk_live_gui.ahk[/c] attached to [c]tests\ahk_live_probe_target.ahk[/c]. Full window, 1480x1016, DPI-aware [c]PrintWindow[/c]; the demo path ran before each capture.
+
+[b]1. Main[/b]
+
+Attach by PID; Eval returns [c]Add(2, 3) => 5[/c].
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_main.png[/img]
+
+[b]2. Script[/b]
+
+[c]EvalScript[/c] defines [c]rhkDemo(a, b)[/c], calls [c]rhkDemo(3, 4) => 12[/c]; no temp [c].ahk[/c].
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_script.png[/img]
+
+[b]3. Snapshot[/b]
+
+[c]add=Add(2, 3), mul=Mul(4)[/c] returns [c]5[/c] and [c]8[/c]; commas inside calls stay part of the expression.
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_snapshot.png[/img]
+
+[b]4. Inventory[/b]
+
+Functions, parameter names, and classes read from live [c]mFuncs[/c].
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_inventory.png[/img]
+
+[b]5. Patch[/b]
+
+Journaled [c]Mul -> NewMul[/c] replacement; rollback restores every written address.
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_patch.png[/img]
+
+[b]6. Trace[/b]
+
+Clone [c]UserFunc[/c], swap body; [c]Add(2, 3) => 5[/c], log [c]TRACE exit Add=5[/c].
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_trace.png[/img]
+
+[b]7. Watch[/b]
+
+Poll [c]Mul(4)[/c], emit value changes; eval errors are forwarded as [c]Error[/c] objects.
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_watch.png[/img]
+
+[b]8. Reload[/b]
+
+Watch a script file; [c]RemoteEvalScript[/c] reloads it on signature change.
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_reload.png[/img]
+
+[b]9. Forensics[/b]
+
+Runtime report with PID, version, module, function/class counts, and table sizes; CSV export.
+
+[img]https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/docs/images/ahk_live_gui_forensics.png[/img]
+
+[b]10. Capture method[/b]
+
+[c]--shot <pid> <tab>[/c] selects a tab and writes a ready marker; [c]PrintWindow(PW_RENDERFULLCONTENT)[/c] captures the full window.
+
+[codebox=text file=gui-screenshot]
+& D:\...\AutoHotkey64.exe tests\ahk_live_probe_target.ahk
+& D:\...\AutoHotkey64.exe ahk_live_gui.ahk --shot <pid> 1
+[/codebox]

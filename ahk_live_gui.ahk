@@ -15,8 +15,15 @@ if A_Args.Length >= 2 and (A_Args[1] = "--attach" or A_Args[1] = "--demo") {
     if A_Args[1] = "--demo"
         autoDemo := 1
 }
+global autoShot := 0
+if A_Args.Length >= 3 and A_Args[1] = "--shot" {
+    autoPid := Integer(A_Args[2])
+    autoDemo := 1
+    autoShot := Integer(A_Args[3])
+}
 
 global session := AhkLiveSession()
+global gTab := 0
 global gLv := 0
 global gShowAll := 0
 global gHookInfo := 0
@@ -47,30 +54,76 @@ global gReloadResult := 0
 global gReloader := 0
 global gForensicsResult := 0
 
+
+SafeStr(v) {
+    try {
+        if v is String or v is Integer or v is Float
+            return v
+        if v is Map
+            return "Map(count=" v.Count ")"
+        if v is Array
+            return "Array(len=" v.Length ")"
+        if v is Object
+            return Type(v)
+        return String(v)
+    } catch
+        return "<unprintable>"
+}
+
+
+SplitSpecs(text) {
+    out := []
+    depth := 0
+    quote := ""
+    start := 1
+    loop StrLen(text) {
+        c := SubStr(text, A_Index, 1)
+        if quote != "" {
+            if c = quote
+                quote := ""
+        } else if c = "'" or c = Chr(34)
+            quote := c
+        else if c = "(" or c = "[" or c = "{"
+            depth += 1
+        else if c = ")" or c = "]" or c = "}"
+            depth -= 1
+        else if c = "," and depth = 0 and quote = "" {
+            out.Push(SubStr(text, start, A_Index - start))
+            start := A_Index + 1
+        }
+    }
+    out.Push(SubStr(text, start))
+    return out
+}
+
+
 AhkLive_OnError(e, exitCode := 0) {
-    msg := FormatTime(, "HH:mm:ss") " ERR " e.What
-        . " | " e.Message " | line " e.Line
-        . (e.Extra = "" ? "" : " | " e.Extra)
-        . " | exit=" exitCode
+    msg := FormatTime(, "HH:mm:ss") " ERR " SafeStr(e.What)
+        . " | " SafeStr(e.Message)
+        . " | " SafeStr(e.File) ":" SafeStr(e.Line)
+        . " | extra=" SafeStr(e.Extra)
+        . " | exit=" SafeStr(exitCode)
+    FileAppend(msg "`n", A_Temp "\ahk_live_gui_error.log")
     try {
         global gLog
         if gLog
             gLog.Value .= msg "`n"
-    } catch
-        FileAppend(msg "`n", A_Temp "\ahk_live_gui_error.log")
+    } catch as inner
+        FileAppend("ERR log write failed: " SafeStr(inner.Message) "`n"
+            , A_Temp "\ahk_live_gui_error.log")
     return true
 }
 
 try
-    OnError(AhkLive_OnError.Bind())
+    OnError(AhkLive_OnError)
 catch as e
-    FileAppend("OnError unavailable: " e.Message "`n"
+    FileAppend("OnError unavailable: " SafeStr(e.Message) "`n"
         , A_Temp "\ahk_live_gui_error.log")
 BuildGui()
 
 
 BuildGui() {
-    global autoPid, autoDemo, gLv, gShowAll, gHookInfo, gLog
+    global autoPid, autoDemo, autoShot, gTab, gLv, gShowAll, gHookInfo, gLog
     global gEvalExpr, gEvalResult, gScriptEdit, gScriptResult
     global gSnapshotSpecs, gSnapshotResult, gGlobalsSpecs
     global gInventoryResult
@@ -101,6 +154,7 @@ BuildGui() {
     tab := g.Add("Tab3", "x390 y128 w570 h370"
         , ["Eval", "Script", "Snapshot", "Inventory", "Patch"
             , "Trace", "Watch", "Reload", "Forensics"])
+    gTab := tab
 
     tab.UseTab(1)
     gEvalExpr := g.Add("Edit", "x402 y168 w390 h56", "1 + 2 * 3")
@@ -195,6 +249,14 @@ BuildGui() {
         AttachTo(autoPid)
     if autoDemo
         RunDemo()
+    if autoShot {
+        gTab.Value := autoShot
+        try
+            FileAppend("ready`n tab=" gTab.Value "`n"
+                , A_Temp "\ahk_live_gui_shot_ready")
+        catch
+            FileAppend("ready`n", A_Temp "\ahk_live_gui_shot_ready")
+    }
     SetTimer(Gui_RefreshTimer, 2000)
     RefreshList()
 }
@@ -208,9 +270,23 @@ Gui_RefreshTimer() {
 
 Log(msg) {
     global gLog
-    line := FormatTime(, "HH:mm:ss") " " msg "`n"
-    gLog.Value .= line
+    line := FormatTime(, "HH:mm:ss") " " SafeStr(msg) "`n"
+    try {
+        if gLog
+            gLog.Value .= line
+    } catch as e {
+        FileAppend("GUI log append failed: " SafeStr(e.Message) "`n"
+            , A_Temp "\ahk_live_gui_error.log")
+    }
     FileAppend(line, A_Temp "\ahk_live_gui.log")
+}
+
+
+LogResult(label, result) {
+    if result.ok
+        Log(label " ok=" SafeStr(result.value))
+    else
+        Log(label " FAIL " SafeStr(result.error))
 }
 
 
@@ -240,12 +316,12 @@ RefreshList() {
     global gLv, gShowAll
     gLv.Delete()
     for proc in EnumProcesses() {
-        if !gShowAll.Value and !RegExMatch(proc.name, "i)autohotkey")
+        if !gShowAll.Value and !RegExMatch(proc["name"], "i)autohotkey")
             continue
         title := ""
         try
-            title := WinGetTitle("ahk_pid " proc.pid)
-        gLv.Add(, proc.pid, proc.name, title)
+            title := WinGetTitle("ahk_pid " proc["pid"])
+        gLv.Add(, proc["pid"], proc["name"], title)
     }
     gLv.ModifyCol(1, "AutoHdr")
     gLv.ModifyCol(2, "AutoHdr")
@@ -323,13 +399,16 @@ DoEval() {
     global session, gEvalExpr, gEvalResult
     try {
         result := session.Eval(gEvalExpr.Value)
-        if !result.ok
-            throw Error(result.error)
-        gEvalResult.Value := result.value
-        Log("eval => " result.value)
+        if !result.ok {
+            gEvalResult.Value := "FAIL " SafeStr(result.error)
+            Log("eval FAIL " SafeStr(result.error))
+            return
+        }
+        gEvalResult.Value := SafeStr(result.value)
+        Log("eval => " SafeStr(result.value))
     } catch as e {
-        gEvalResult.Value := "FAIL " e.Message
-        Log("eval FAIL " e.Message)
+        gEvalResult.Value := "FAIL " SafeStr(e.Message)
+        Log("eval FAIL " SafeStr(e.Message))
     }
 }
 
@@ -338,13 +417,16 @@ DoScript() {
     global session, gScriptEdit, gScriptResult
     try {
         result := session.EvalScript(gScriptEdit.Value)
-        if !result.ok
-            throw Error(result.error)
-        gScriptResult.Value := result.value
-        Log("script => " result.value)
+        if !result.ok {
+            gScriptResult.Value := "FAIL " SafeStr(result.error)
+            Log("script FAIL " SafeStr(result.error))
+            return
+        }
+        gScriptResult.Value := SafeStr(result.value)
+        Log("script => " SafeStr(result.value))
     } catch as e {
-        gScriptResult.Value := "FAIL " e.Message
-        Log("script FAIL " e.Message)
+        gScriptResult.Value := "FAIL " SafeStr(e.Message)
+        Log("script FAIL " SafeStr(e.Message))
     }
 }
 
@@ -352,7 +434,7 @@ DoScript() {
 DoSnapshot() {
     global session, gSnapshotSpecs, gSnapshotResult
     specs := Map()
-    for part in StrSplit(gSnapshotSpecs.Value, ",") {
+    for part in SplitSpecs(gSnapshotSpecs.Value) {
         item := Trim(part)
         if item = ""
             continue
@@ -362,33 +444,37 @@ DoSnapshot() {
     }
     result := session.Snapshot(specs)
     if !result.ok {
-        gSnapshotResult.Value := result.error
+        gSnapshotResult.Value := SafeStr(result.error)
+        Log("snapshot FAIL " SafeStr(result.error))
         return
     }
     out := ""
     for name, value in result.value
-        out .= name "=" value "`n"
+        out .= name "=" SafeStr(value) "`n"
     gSnapshotResult.Value := out
+    Log("snapshot ok")
 }
 
 
 DoGlobals() {
     global session, gGlobalsSpecs, gSnapshotResult
     names := []
-    for part in StrSplit(gGlobalsSpecs.Value, ",") {
+    for part in SplitSpecs(gGlobalsSpecs.Value) {
         item := Trim(part)
         if item != ""
             names.Push(item)
     }
     result := session.Globals(names)
     if !result.ok {
-        gSnapshotResult.Value := result.error
+        gSnapshotResult.Value := SafeStr(result.error)
+        Log("globals FAIL " SafeStr(result.error))
         return
     }
     out := ""
     for name, value in result.value
-        out .= name "=" value "`n"
+        out .= name "=" SafeStr(value) "`n"
     gSnapshotResult.Value := out
+    Log("globals ok")
 }
 
 
@@ -396,13 +482,15 @@ DoInventory() {
     global session, gInventoryResult
     result := session.ListFunctions()
     if !result.ok {
-        gInventoryResult.Value := result.error
+        gInventoryResult.Value := SafeStr(result.error)
+        Log("inventory FAIL " SafeStr(result.error))
         return
     }
     out := ""
     for name, info in result.value
         out .= name "(" AhkLive._JoinList(info["params"]) ")`n"
     gInventoryResult.Value := out
+    Log("inventory ok count=" result.value.Count)
 }
 
 
@@ -410,7 +498,8 @@ DoClasses() {
     global session, gInventoryResult
     result := session.ListClasses()
     if !result.ok {
-        gInventoryResult.Value := result.error
+        gInventoryResult.Value := SafeStr(result.error)
+        Log("classes FAIL " SafeStr(result.error))
         return
     }
     out := ""
@@ -419,6 +508,7 @@ DoClasses() {
             out .= cls "." method "`n"
     }
     gInventoryResult.Value := out
+    Log("classes ok count=" result.value.Count)
 }
 
 
@@ -434,14 +524,16 @@ DoPatch() {
     }
     result := session.BeginPatch()
     if !result.ok {
-        gPatchResult.Value := result.error
+        gPatchResult.Value := SafeStr(result.error)
+        Log("patch begin FAIL " SafeStr(result.error))
         return
     }
     ps := result.value
     patch := ps.Replace(gPatchOld.Value, gPatchNew.Value)
     if !patch.ok {
         ps.Rollback()
-        gPatchResult.Value := patch.error
+        gPatchResult.Value := SafeStr(patch.error)
+        Log("patch FAIL " SafeStr(patch.error))
         return
     }
     gPatchSession := ps
@@ -459,6 +551,7 @@ DoRollback() {
     result := gPatchSession.Rollback()
     gPatchSession := 0
     gPatchResult.Value := result.ok ? "rolled back" : result.error
+    Log("rollback " (result.ok ? "ok" : "FAIL " SafeStr(result.error)))
 }
 
 
@@ -474,7 +567,8 @@ DoTrace() {
     }
     result := session.Trace(gTraceName.Value, A_Temp "\ahk_live_trace.log")
     if !result.ok {
-        gTraceResult.Value := result.error
+        gTraceResult.Value := SafeStr(result.error)
+        Log("trace FAIL " SafeStr(result.error))
         return
     }
     gTracer := result.value
@@ -492,11 +586,20 @@ DoTraceCall() {
     expr := gTraceName.Value "(" gTraceArgs.Value ")"
     result := session.Eval(expr)
     if !result.ok {
-        gTraceResult.Value := result.error
+        gTraceResult.Value := SafeStr(result.error)
+        Log("tracecall FAIL " SafeStr(result.error))
         return
     }
     logResult := session.Eval(gTracer["log_var"])
-    gTraceResult.Value := expr " => " result.value "`n" logResult.value
+    if !logResult.ok {
+        gTraceResult.Value := expr " => " SafeStr(result.value)
+            . "`nlog FAIL " SafeStr(logResult.error)
+        Log("tracecall log FAIL " SafeStr(logResult.error))
+        return
+    }
+    gTraceResult.Value := expr " => " SafeStr(result.value)
+        . "`n" SafeStr(logResult.value)
+    Log("tracecall " expr " => " SafeStr(result.value))
 }
 
 
@@ -509,23 +612,31 @@ DoUntrace() {
     session.Untrace(gTracer)
     gTracer := 0
     gTraceResult.Value := "untraced"
+    Log("untraced")
 }
 
 
 StartWatch() {
     global session, gWatchExpr, gWatchMs, gWatchResult, gWatcher
-    if !session.hook {
-        gWatchResult.Value := "not attached"
-        return
+    try {
+        if !session.hook {
+            gWatchResult.Value := "not attached"
+            Log("watch FAIL not attached")
+            return
+        }
+        if gWatcher {
+            gWatcher.Stop()
+        }
+        obs := AhkLiveObservability(session.hook)
+        ms := Max(100, Integer(gWatchMs.Value))
+        gWatcher := obs.WatchWhen(gWatchExpr.Value, ""
+            , WatchCallback, ms)
+        gWatchResult.Value := "watching " gWatchExpr.Value
+        Log("watch active on " gWatchExpr.Value)
+    } catch as e {
+        gWatchResult.Value := "FAIL " SafeStr(e.Message)
+        Log("watch FAIL " SafeStr(e.Message))
     }
-    if gWatcher {
-        gWatcher.Stop()
-    }
-    obs := AhkLiveObservability(session.hook)
-    ms := Max(100, Integer(gWatchMs.Value))
-    gWatcher := obs.WatchWhen(gWatchExpr.Value, ""
-        , WatchCallback, ms)
-    gWatchResult.Value := "watching " gWatchExpr.Value
 }
 
 
@@ -536,32 +647,43 @@ StopWatch() {
         gWatcher := 0
     }
     gWatchResult.Value .= "`nstopped"
+    Log("watch stopped")
 }
 
 
 WatchCallback(event) {
     global gWatchResult
-    gWatchResult.Value .= "`n" event.value
+    value := event is Error ? SafeStr(event.Message) : SafeStr(event.value)
+    gWatchResult.Value .= "`n" value
+    Log("watch event " value)
 }
 
 
 StartReload() {
     global session, gReloadPath, gReloadMs, gReloadResult, gReloader
-    if !session.hook {
-        gReloadResult.Value := "not attached"
-        return
+    try {
+        if !session.hook {
+            gReloadResult.Value := "not attached"
+            Log("reload FAIL not attached")
+            return
+        }
+        path := gReloadPath.Value
+        if !FileExist(path) {
+            gReloadResult.Value := "file not found"
+            Log("reload FAIL file not found")
+            return
+        }
+        if gReloader {
+            gReloader.Stop()
+        }
+        ms := Max(200, Integer(gReloadMs.Value))
+        gReloader := session.HotReload(path, ms)
+        gReloadResult.Value := "watching " path
+        Log("reload active on " path)
+    } catch as e {
+        gReloadResult.Value := "FAIL " SafeStr(e.Message)
+        Log("reload FAIL " SafeStr(e.Message))
     }
-    path := gReloadPath.Value
-    if !FileExist(path) {
-        gReloadResult.Value := "file not found"
-        return
-    }
-    if gReloader {
-        gReloader.Stop()
-    }
-    ms := Max(200, Integer(gReloadMs.Value))
-    gReloader := session.HotReload(path, ms)
-    gReloadResult.Value := "watching " path
 }
 
 
@@ -572,42 +694,60 @@ StopReload() {
         gReloader := 0
     }
     gReloadResult.Value .= "`nstopped"
+    Log("reload stopped")
 }
 
 
 DoReport() {
     global session, gForensicsResult
-    if !session.hook {
-        gForensicsResult.Value := "not attached"
-        return
+    try {
+        if !session.hook {
+            gForensicsResult.Value := "not attached"
+            Log("report FAIL not attached")
+            return
+        }
+        report := AhkLiveForensics.Report(session.hook)
+        gForensicsResult.Value := "pid=" SafeStr(report["pid"])
+            . " version=" SafeStr(report["version"])
+            . "`nmodule=" SafeStr(report["module"])
+            . "`nfunctions=" SafeStr(report["functions"].Count)
+            . " classes=" SafeStr(report["classes"].Count)
+            . "`nbif=" SafeStr(report["builtins"])
+            . " native=" SafeStr(report["native_functions"])
+            . " biv=" SafeStr(report["builtin_vars"])
+        Log("report ok")
+    } catch as e {
+        gForensicsResult.Value := "FAIL " SafeStr(e.Message)
+        Log("report FAIL " SafeStr(e.Message))
     }
-    report := AhkLiveForensics.Report(session.hook)
-    gForensicsResult.Value := "pid=" report["pid"]
-        . " version=" report["version"]
-        . "`nmodule=" report["module"]
-        . "`nfunctions=" report["functions"].Count
-        . " classes=" report["classes"].Count
-        . "`nbif=" report["builtins"]
-        . " native=" report["native_functions"]
-        . " biv=" report["builtin_vars"]
 }
 
 
 DoExport() {
     global session, gForensicsResult
-    if !session.hook {
-        gForensicsResult.Value := "not attached"
-        return
+    try {
+        if !session.hook {
+            gForensicsResult.Value := "not attached"
+            Log("export FAIL not attached")
+            return
+        }
+        path := A_Temp "\ahk_live_inventory.csv"
+        AhkLiveCompat.ExportCsv(session.hook, path)
+        gForensicsResult.Value := path
+        Log("export ok " path)
+    } catch as e {
+        gForensicsResult.Value := "FAIL " SafeStr(e.Message)
+        Log("export FAIL " SafeStr(e.Message))
     }
-    path := A_Temp "\ahk_live_inventory.csv"
-    AhkLiveCompat.ExportCsv(session.hook, path)
-    gForensicsResult.Value := path
 }
 
 
 RunDemo() {
     global gEvalExpr, gScriptEdit, gSnapshotSpecs
+    global gTraceName, gTraceArgs
     gEvalExpr.Value := "Add(2, 3)"
+    gTraceName.Value := "Add"
+    gTraceArgs.Value := "2, 3"
     try
         DoEval()
     catch as e
