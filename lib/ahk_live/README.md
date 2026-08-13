@@ -63,6 +63,13 @@ exit code on failure.
 | `ReplaceFunction(hook, oldName, newName)` | Replace one user function body with another. |
 | `RestoreFunction(hook, record)` | Restore the original function body. |
 | `AhkLiveJournal` | Record raw remote memory and roll back recorded bytes. |
+| `AhkLiveSession` | Product API with structured `AhkLiveResult`. |
+| `AhkLiveAgent` | Agent runtime gate for eval, snapshot, inventory, and patching. |
+| `AhkLiveObservability` | Conditional watchpoints with an event log. |
+| `AhkLiveFault` | Fault injection through transactional replacement. |
+| `AhkLiveDesktop` | Enumerate running AutoHotkey processes. |
+| `AhkLiveForensics` | Build a runtime inventory report. |
+| `AhkLiveCompat` | Export function/class inventories to CSV. |
 
 ## Example
 

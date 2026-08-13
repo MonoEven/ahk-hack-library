@@ -7,3 +7,9 @@
 #Include trace.ahk
 #Include reload.ahk
 #Include api.ahk
+#Include observability.ahk
+#Include fault.ahk
+#Include desktop.ahk
+#Include forensics.ahk
+#Include compat.ahk
+#Include agent.ahk

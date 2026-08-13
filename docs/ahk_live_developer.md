@@ -10,6 +10,12 @@
 - `patch`: function replacement and rollback.
 - `trace`: function tracing and expression watchpoints.
 - `reload`: script-file hot reload.
+- `agent`: product command surface for coding agents.
+- `observability`: conditional watchpoints and event log.
+- `fault`: transactional fault injection.
+- `desktop`: process discovery for RPA-style workflows.
+- `forensics`: runtime inventory reports for packed or suspicious builds.
+- `compat`: CSV export for migration and IDE tooling.
 
 `api.ahk` adds the product surface: `AhkLiveSession`, `AhkLiveResult`, and
 `AhkLivePatchSession`.
