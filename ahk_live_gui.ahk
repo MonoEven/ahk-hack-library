@@ -254,6 +254,10 @@ DoClasses() {
 
 DoPatch() {
     global session, gPatchOld, gPatchNew, gPatchResult, gPatchSession
+    if !session.hook {
+        gPatchResult.Value := "not attached"
+        return
+    }
     result := session.BeginPatch()
     if !result.ok {
         gPatchResult.Value := result.error
@@ -289,6 +293,10 @@ DoRollback() {
 
 DoTrace() {
     global session, gTraceName, gTraceResult
+    if !session.hook {
+        gTraceResult.Value := "not attached"
+        return
+    }
     result := session.Trace(gTraceName.Value, A_Temp "\ahk_live_trace.log")
     if !result.ok {
         gTraceResult.Value := result.error
@@ -300,6 +308,10 @@ DoTrace() {
 
 StartObserve() {
     global session, gObserveExpr, gObserveCond, gObserveResult, gWatcher
+    if !session.hook {
+        gObserveResult.Value := "not attached"
+        return
+    }
     obs := AhkLiveObservability(session.hook)
     watcher := obs.WatchWhen(gObserveExpr.Value, gObserveCond.Value
         , ObserveCallback, 500)
