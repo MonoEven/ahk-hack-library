@@ -109,7 +109,7 @@ BuildGui() {
 
     tab.UseTab(2)
     gScriptEdit := g.Add("Edit", "x402 y168 w546 h150 "
-        , "`nadd(a, b) {`n    return a + b`n}`nadd(1, 2)`n")
+        , "`nguiScriptAdd(a, b) {`n    return a + b`n}`nguiScriptAdd(1, 2)`n")
     scriptBtn := g.Add("Button", "x800 y326 w148 h30", "EvalScript")
     scriptBtn.OnEvent("Click", (*) => DoScript())
     gScriptResult := g.Add("Edit", "x402 y366 w546 h130 ReadOnly", "")
