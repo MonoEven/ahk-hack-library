@@ -137,3 +137,6 @@ covered by `tests/ahk_live_test.ahk`.
 
 See [docs/ahk_live_developer.md](../docs/ahk_live_developer.md) for
 architecture, lifecycle, diagnostics, and compatibility notes.
+
+The complete runtime matrix is in
+[docs/ahk_live_versions.md](../docs/ahk_live_versions.md).
