@@ -323,7 +323,7 @@ StartObserve() {
 StopObserve() {
     global gWatcher, gObserveResult
     if gWatcher {
-        gWatcher["Stop"]()
+        gWatcher.Stop()
         gWatcher := 0
     }
     gObserveResult.Value .= "stopped`n"

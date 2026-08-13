@@ -15,7 +15,7 @@ try {
     seen := []
     watcher := obs.WatchWhen("Mul(4)", "Mul(4) > 5", (event) => seen.Push(event.value), 300)
     Sleep 900
-    watcher["Stop"]()
+    watcher.Stop()
     if seen.Length != 1
         throw Error("observability assertion failed")
     FileAppend("obs_events=" seen.Length "`n", outFile)

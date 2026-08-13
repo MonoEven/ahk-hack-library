@@ -52,8 +52,7 @@ class AhkLive {
         state := Map("running", true, "last", "")
         tick := AhkLive._WatchTick.Bind(hook, expr, state, onChange)
         state["timer"] := SetTimer(tick, ms)
-        state["Stop"] := AhkLive._WatchStop.Bind(state, tick)
-        return state
+        return AhkLiveWatcher(tick, state)
     }
 
     static HotReload(hook, scriptPath, interval := 1000) {
@@ -64,8 +63,7 @@ class AhkLive {
         state := Map("running", true, "sig", "")
         tick := AhkLive._HotReloadTick.Bind(hook, scriptPath, state)
         state["timer"] := SetTimer(tick, interval)
-        state["Stop"] := AhkLive._HotReloadStop.Bind(state, tick)
-        return state
+        return AhkLiveWatcher(tick, state)
     }
 
     static TraceFunction(hook, name, outFile, journal := 0) {
@@ -501,6 +499,24 @@ class AhkLive {
         } finally {
             DllCall("CloseHandle", "Ptr", h)
         }
+    }
+}
+
+
+class AhkLiveWatcher {
+    tick := 0
+    state := 0
+
+    __New(tick, state) {
+        this.tick := tick
+        this.state := state
+    }
+
+    Stop() {
+        if !this.state["running"]
+            return
+        this.state["running"] := false
+        SetTimer(this.tick, 0)
     }
 }
 

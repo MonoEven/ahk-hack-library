@@ -34,7 +34,7 @@ try {
     watchLog := []
     watcher := AhkLiveTrace.Watch(hook, "Mul(4)", (v) => watchLog.Push(v), 300)
     Sleep 900
-    watcher["Stop"]()
+    watcher.Stop()
     FileAppend("watch=" watchLog.Length "`n", outFile)
     if watchLog.Length < 1
         throw Error("watch assertion failed")
