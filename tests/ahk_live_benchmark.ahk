@@ -24,6 +24,8 @@ try {
     FileAppend("eval_ms=" evalMs " snap_ms=" snapMs " list_ms=" listMs "`n", outFile)
     FileAppend("PASS`n", outFile)
     session.Close()
+    ExitApp 0
 } catch as e {
     FileAppend("FAIL " e.What " | " e.Message " | line " e.Line "`n", outFile)
+    ExitApp 1
 }

@@ -7,6 +7,10 @@
 class AhkLive {
     static VERSION := "1.0.0"
     static renameSeq := 0
+    static FUNC_SCAN_SIZE := 0x800
+    static NAME_PROBE_SCAN_SIZE := 0x1000
+    static MIN_PTR := 0x10000
+    static MAX_PTR := 0x7fffffffffff
 
     static Attach(pid) {
         return AhkMagic.AttachRemote(pid)
@@ -229,7 +233,7 @@ class AhkLive {
             ptrBuf := Buffer(8)
             NumPut("Ptr", block, ptrBuf, 0)
             for nf in funcs {
-                data := AhkMagic._RemoteRead(h, nf, 0x800)
+                data := AhkMagic._RemoteRead(h, nf, AhkLive.FUNC_SCAN_SIZE)
                 inlineOff := 0
                 loop data.Size - StrLen(oldName) * 2 {
                     off := A_Index - 1
@@ -352,12 +356,12 @@ class AhkLive {
     }
 
     static _ParamNamesFromObject(h, nf, name, max) {
-        data := AhkMagic._RemoteRead(h, nf, 0x800)
+        data := AhkMagic._RemoteRead(h, nf, AhkLive.FUNC_SCAN_SIZE)
         names := []
         loop data.Size // 8 {
             off := (A_Index - 1) * 8
             p := NumGet(data, off, "Ptr")
-            if p < 0x10000 or p > 0x7fffffffffff
+            if p < AhkLive.MIN_PTR or p > AhkLive.MAX_PTR
                 continue
             try s := AhkMagic._RemoteReadString(h, p, 64)
             catch
@@ -436,11 +440,11 @@ class AhkLive {
             arr := AhkMagic._RPtr(h, gscript + layout["mfuncs_off"])
             count := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
             nf := AhkMagic._RPtr(h, arr + (count - 1) * 8)
-            data := AhkMagic._RemoteRead(h, nf, 0x1000)
+            data := AhkMagic._RemoteRead(h, nf, AhkLive.NAME_PROBE_SCAN_SIZE)
             loop data.Size // 8 {
                 off := (A_Index - 1) * 8
                 p := NumGet(data, off, "Ptr")
-                if p < 0x10000 or p > 0x7fffffffffff
+                if p < AhkLive.MIN_PTR or p > AhkLive.MAX_PTR
                     continue
                 try s := AhkMagic._RemoteReadString(h, p, StrLen(name) + 1)
                 catch

@@ -2064,6 +2064,9 @@ ahkHackLayoutProbe() {
             open := AhkMagic._FindBytePattern(text
                 , "40535556574154415541564157B8D8000100")
         if !open
+            open := AhkMagic._FindBytePattern(text
+                , "48895C240848895424105556574154415541564157488DAC24")
+        if !open
             throw Error("OpenIncludedFile not found", -1)
         loadTs := AhkMagic._LocateLoadTs(text, open)
         if !loadTs
