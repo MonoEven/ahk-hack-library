@@ -1,16 +1,13 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
 
-AHK = os.environ.get(
-    "AHK_LIVE_AHK",
-    r"D:\Tech\Projects\Autohotkey\Lib\.worktrees\ahk-runtime\AutoHotkey64.exe",
-)
-REPO = os.environ.get(
-    "AHK_LIVE_REPO",
-    r"D:\Tech\Projects\Autohotkey\Lib\visual_studio\tasks\2026-08-11-ahkhack-foundation",
-)
+AHK = os.environ.get("AHK_LIVE_AHK") or shutil.which("AutoHotkey64.exe")
+REPO = os.environ.get("AHK_LIVE_REPO") or os.getcwd()
+if not AHK:
+    raise SystemExit("set AHK_LIVE_AHK or put AutoHotkey64.exe on PATH")
 CLI = os.path.join(REPO, "ahk_live_cli.ahk")
 OUT = os.path.join(os.environ.get("TEMP", "."), "ahk_live_cli.out")
 
