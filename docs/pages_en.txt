@@ -2,7 +2,7 @@
 
 The goal is to analyze [c]AutoHotkey64.exe[/c] as a live interpreter and extract enough structure to implement expression evaluation, script loading from memory, remote hooking, and live function tracing. The method is a repeatable loop: read the source tree to identify candidate fields, inspect process memory to confirm their actual offsets, encode the stable logic as position-independent machine code, then validate every result against structural invariants.
 
-This page documents that loop in detail. It is not an API reference; it is an extraction process.
+This page documents that loop in detail.
 
 [b]2. PE parsing and section mapping[/b]
 
@@ -81,7 +81,7 @@ The memory probe confirms the actual x64 layout on two representative builds:
 | [c]mParam[/c] | [c]0x50[/c] | [c]0x48[/c] |
 | [c]mVars[/c] | [c]0x80[/c] | [c]0x70[/c] |
 
-The offsets differ, so the library discovers them at runtime instead of shipping a version table.
+The offsets differ, so the library discovers them at runtime and does not maintain a version table.
 
 [b]5. Machine-code extraction pipeline[/b]
 
@@ -221,7 +221,7 @@ AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
 Send("{F9}")
 [/codebox]
 
-The target writes [c]A()=42[/c] instead of [c]A()=1[/c].
+The target writes [c]A()=42[/c] after the original output was [c]A()=1[/c].
 
 [b]9. Dynamic offset discovery[/b]
 
@@ -243,7 +243,7 @@ The struct validator then discovers:
 
 Token arrays are validated by walking until [c]SYM_INVALID[/c] and requiring a [c]SYM_VAR[/c] token before the terminator. [c]DerefType[/c] is read from [c]ArgStruct.deref[/c] arrays that already exist in the running process.
 
-[b]10. TraceFunction: cloning instead of renaming[/b]
+[b]10. TraceFunction: clone-based tracing[/b]
 
 Function tracing is harder than function replacement. The original implementation renamed the target function and injected a wrapper. That broke because:
 

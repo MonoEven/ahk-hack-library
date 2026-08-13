@@ -168,9 +168,9 @@ MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2，类已加载并在进程内使
 
 [c]为什么这样就能 Eval：[/c]AutoHotkey 不会直接求值表达式字符串。脚本加载时，[c]Line::ExpressionToPostfix[/c]把每个表达式编译成后缀[c]ExprTokenType[/c]数组，[c]PreparseExpressions[/c]在加载期预编译表达式行，[c]PreprocessLocalVars[/c]绑定局部变量，最后[c]Line::ExpandExpression[/c]执行后缀。[c]EvalNative()[/c]构造同样的临时[c]Line[/c]/[c]ArgStruct[/c]并调用这些函数，所以复用的是解释器自己的语法和求值语义。[c]EvalScript()[/c]则通过内存[c]TextStream[/c]喂给同一条[c]LoadIncludedFile(TextStream*, int)[/c]管线；解析器不知道文本来自磁盘还是合成流，这就是函数和类能在进程内生效的原因。
 
-[c]为什么能动态获取：[/c]稳定错误字符串在每次构建里都由 RIP 相对的[c]lea[/c]指令引用，扫描这些交叉引用并回退到函数开头就能得到函数地址；全局变量也用同样方式物化。布局偏移则让运行中的解释器自己暴露：一次性探针加载一个临时函数，diff 存活[c]Script[/c]对象得到[c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c]，沿新函数的行链找到[c]mJumpLine[/c]，再从[c]LoadIncludedFile[/c]的[c]cmp[/c] prologue 读取解析器状态锚点。[c]TextStream[/c]对象同时填充两个[c]mData[/c]区域，不需要选择布局。
+[c]动态获取原理：[/c]稳定错误字符串在每次构建里都由 RIP 相对的[c]lea[/c]指令引用，扫描这些交叉引用并回退到函数开头就能得到函数地址；全局变量也用同样方式物化。布局偏移则让运行中的解释器自己暴露：一次性探针加载一个临时函数，diff 存活[c]Script[/c]对象得到[c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c]，沿新函数的行链找到[c]mJumpLine[/c]，再从[c]LoadIncludedFile[/c]的[c]cmp[/c] prologue 读取解析器状态锚点。[c]TextStream[/c]对象同时填充两个[c]mData[/c]区域，不需要选择布局。
 
-[c]多版本兼容：[/c]四版本矩阵用同一份 blob 跑 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30。稳定偏移在这些构建中没有变化；变化的都改为运行时发现。无法识别的布局会让探针抛错，而不是猜一个偏移继续，失败因此是显式且隔离的。
+[c]多版本兼容：[/c]四版本矩阵用同一份 blob 跑 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30。稳定偏移在这些构建中没有变化；变化的都改为运行时发现。无法识别的布局会让探针抛错，不猜测偏移，失败因此是显式且隔离的。
 
 [codebox=text file=source-snippets]
 // source/script.h (AutoHotkey v2.1-alpha.30)
@@ -199,7 +199,7 @@ private:
 
 [b]6. 远程 Hook[/b]
 
-把目标进程想象成一台正在运行的机器。我们不往里面安装任何东西，它也不需要配合：不需要[c]#Include[/c]、不需要导出指针、不需要回调。我们读取它的内存地图，找到内部架子上的标签，再通过操作系统的远程线程入口放进一个小工人。
+目标不需要[c]#Include[/c]、导出指针或回调。附加端读取它的内存地图，定位解释器对象，并通过系统远程线程 API 启动一个远程线程。
 
 [color=#BF4000][b]6.1 外部扫描工具[/b][/color]
 
@@ -436,7 +436,7 @@ session.Close()
 
 [color=#BF4000]这个库会在你的进程里分配可执行内存、执行机器码，并直接读写解释器内部结构。请按逆向工程研究工具的标准来使用。[/color]
 
-[c]Eval 安全吗？不安全。[/c][c]Eval[/c]、[c]EvalNative[/c]、[c]EvalScript[/c]会在当前进程以宿主脚本相同的权限执行任意代码，不是沙箱。进程内路径还会伪造解释器对象，布局错误或状态保存失误可能直接损坏内存，而不是抛出一个干净的异常。远程 API 等价于在另一个 AutoHotkey 进程里执行同样的操作。
+[c]Eval 安全吗？不安全。[/c][c]Eval[/c]、[c]EvalNative[/c]、[c]EvalScript[/c]会在当前进程以宿主脚本相同的权限执行任意代码，不具备沙箱隔离。进程内路径还会伪造解释器对象，布局错误或状态保存失误可能直接损坏内存，并且不会抛出干净异常。远程 API 等价于在另一个 AutoHotkey 进程里执行同样的操作。
 
 操作分三类：
 
@@ -480,7 +480,7 @@ session.Close()
 - 新增[c]RemoteEvalScript[/c]，先支持函数定义，再支持 class 定义（注入线程在[c]PreparseExpressions[/c]前设置[c]g->CurrentFunc[/c]）；
 - 新增[c]RemoteReplaceFuncBody[/c]，替换函数体地址，热键验证从[c]1[/c]变成[c]42[/c]；
 - 新增[c]tools\verify_remote_compat.ps1[/c]，远程兼容矩阵解释器 x 解释器 16/16、UPX 目标 x 解释器 16/16 通过；
-- 修复[c]EvalNative[/c]对字符串内花括号的解析：字符串字面量以 QSTRING deref 交给解释器，不再误判为对象字面量；远程字符串结果改为按 UTF-16 字符边界读取；
+- 修复[c]EvalNative[/c]对字符串内花括号的解析：字符串字面量以 QSTRING deref 交给解释器，避免误判为对象字面量；远程字符串结果改为按 UTF-16 字符边界读取；
 - 同步博客附录中的单文件源码，与仓库内[c]ahk_hack_single.ahk[/c]保持一致；
 - 重排博客章节，拆分重复示例并补齐更新记录；Pages 远程章节独立成章。
 

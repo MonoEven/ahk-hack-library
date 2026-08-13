@@ -39,7 +39,7 @@
 <li><a href="#sec-7">EvalScript: parser and in-memory loading</a></li>
 <li><a href="#sec-8">Remote introspection</a></li>
 <li><a href="#sec-9">Dynamic offset discovery</a></li>
-<li><a href="#sec-10">TraceFunction: cloning instead of renaming</a></li>
+<li><a href="#sec-10">TraceFunction: clone-based tracing</a></li>
 <li><a href="#sec-11">Verification matrix</a></li>
 <li><a href="#sec-12">Security and boundaries</a></li>
 <li><a href="#sec-13">Further reading</a></li><li><a href="#appendix">Appendix: single-file core</a></li>
@@ -63,7 +63,7 @@
     <article>
 <section id="sec-1"><h2>Objective and method</h2>
 <p>The goal is to analyze <code>AutoHotkey64.exe</code> as a live interpreter and extract enough structure to implement expression evaluation, script loading from memory, remote hooking, and live function tracing. The method is a repeatable loop: read the source tree to identify candidate fields, inspect process memory to confirm their actual offsets, encode the stable logic as position-independent machine code, then validate every result against structural invariants.</p>
-<p>This page documents that loop in detail. It is not an API reference; it is an extraction process.</p>
+<p>This page documents that loop in detail.</p>
 </section>
 <section id="sec-2"><h2>PE parsing and section mapping</h2>
 <p>Every x64 AutoHotkey v2 executable starts with an <code>MZ</code> DOS header. The PE signature is at the offset stored in <code>e_lfanew</code>. The optional header uses PE32+ magic <code>0x20B</code>. The section table immediately follows the optional header.</p>
@@ -111,7 +111,7 @@ public:
 };</code></pre>
 <p>The memory probe confirms the actual x64 layout on two representative builds:</p>
 <table><thead><tr><th>Field</th><th>v2.1-alpha.30</th><th>v2.0.26</th></tr></thead><tbody><tr><td><code>mName</code></td><td><code>0x28</code></td><td><code>0x20</code></td></tr><tr><td><code>mJumpToLine</code></td><td><code>0x48</code></td><td><code>0x40</code></td></tr><tr><td><code>mParam</code></td><td><code>0x50</code></td><td><code>0x48</code></td></tr><tr><td><code>mVars</code></td><td><code>0x80</code></td><td><code>0x70</code></td></tr></tbody></table>
-<p>The offsets differ, so the library discovers them at runtime instead of shipping a version table.</p>
+<p>The offsets differ, so the library discovers them at runtime and does not maintain a version table.</p>
 </section>
 <section id="sec-5"><h2>Machine-code extraction pipeline</h2>
 <p>The stable scanner is written in C under <code>lib/mcode/</code>. The build uses clang to produce a freestanding, position-independent COFF object:</p>
@@ -202,7 +202,7 @@ NewA()
 )&quot;)
 AhkMagic.RemoteReplaceFuncBody(hook, &quot;A&quot;, &quot;NewA&quot;)
 Send(&quot;{F9}&quot;)</code></pre>
-<p>The target writes <code>A()=42</code> instead of <code>A()=1</code>.</p>
+<p>The target writes <code>A()=42</code> after the original output was <code>A()=1</code>.</p>
 </section>
 <section id="sec-9"><h2>Dynamic offset discovery</h2>
 <p>The remote layout scanner derives <code>mFuncs</code>, <code>mFuncsCount</code>, the function name field, and <code>mJumpToLine</code> from live memory:</p>
@@ -216,7 +216,7 @@ Send(&quot;{F9}&quot;)</code></pre>
 <table><thead><tr><th>Struct</th><th>Validated fields</th></tr></thead><tbody><tr><td><code>Line</code></td><td>action, argc, arg pointer, attribute, next line</td></tr><tr><td><code>ArgStruct</code></td><td>is_expression, postfix pointer, deref pointer</td></tr><tr><td><code>ExprTokenType</code></td><td>stride, symbol offset, usage offset, value offset</td></tr><tr><td><code>DerefType</code></td><td>marker, var, type, length</td></tr></tbody></table>
 <p>Token arrays are validated by walking until <code>SYM_INVALID</code> and requiring a <code>SYM_VAR</code> token before the terminator. <code>DerefType</code> is read from <code>ArgStruct.deref</code> arrays that already exist in the running process.</p>
 </section>
-<section id="sec-10"><h2>TraceFunction: cloning instead of renaming</h2>
+<section id="sec-10"><h2>TraceFunction: clone-based tracing</h2>
 <p>Function tracing is harder than function replacement. The original implementation renamed the target function and injected a wrapper. That broke because:</p>
 <ul>
 <li>function names live in <code>Func.mName</code> and global <code>Var.mName</code>;</li>

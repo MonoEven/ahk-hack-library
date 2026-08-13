@@ -164,13 +164,13 @@ MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2, class loaded and used in-proces
 
 [c]EvalScript[/c] does not write a temp [c].ahk[/c] file. It encodes the text as UTF-16, builds a [c]TextMem[/c]-compatible [c]TextStream[/c] in a scratch buffer, and passes it directly to [c]LoadIncludedFile(TextStream*)[/c]. Function definitions and class definitions therefore work in-process.
 
-[color=#BF4000][b]5.4 Why this works[/b][/color]
+[color=#BF4000][b]5.4 Evaluation pipeline[/b][/color]
 
-[c]Why this enables Eval:[/c] AutoHotkey does not evaluate expression strings directly. During script load, [c]Line::ExpressionToPostfix[/c] compiles each expression into a postfix [c]ExprTokenType[/c] array, [c]PreparseExpressions[/c] pre-compiles expression lines, [c]PreprocessLocalVars[/c] binds local variables, and [c]Line::ExpandExpression[/c] later evaluates the postfix. [c]EvalNative()[/c] builds the same temporary [c]Line[/c]/[c]ArgStruct[/c] and calls those functions, so it reuses the interpreter's own grammar and evaluation semantics. [c]EvalScript()[/c] feeds the same [c]LoadIncludedFile(TextStream*, int)[/c] pipeline through an in-memory [c]TextStream[/c]; the parser does not know whether the text came from disk or from a synthetic stream, which is why function and class definitions work in-process.
+[c]How the pipeline evaluates expressions:[/c] AutoHotkey compiles expression strings into postfix [c]ExprTokenType[/c] arrays during script load. [c]Line::ExpressionToPostfix[/c] performs the compilation, [c]PreparseExpressions[/c] pre-compiles expression lines, [c]PreprocessLocalVars[/c] binds local variables, and [c]Line::ExpandExpression[/c] evaluates the postfix. [c]EvalNative()[/c] builds the same temporary [c]Line[/c]/[c]ArgStruct[/c] and calls those functions, so it reuses the interpreter's own grammar and evaluation semantics. [c]EvalScript()[/c] feeds the same [c]LoadIncludedFile(TextStream*, int)[/c] pipeline through an in-memory [c]TextStream[/c]; the parser receives the text from a synthetic stream, and function and class definitions work in-process.
 
 [c]Why dynamic discovery works:[/c] stable error strings are referenced with RIP-relative [c]lea[/c] instructions in every build, so scanning those cross-references and walking back to the prologue yields function addresses. Globals are materialized the same way. Layout offsets are revealed by the running interpreter itself: a one-time probe loads a throwaway function, diffs the live [c]Script[/c] object for [c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c], walks the new function's line chain for [c]mJumpLine[/c], and reads parser-state anchors from [c]LoadIncludedFile[/c]'s [c]cmp[/c] prologue. The [c]TextStream[/c] object is built with both [c]mData[/c] regions populated, so no layout choice is needed.
 
-[c]Multi-version compatibility:[/c] the four-version matrix runs the same blob on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30. Stable [c]Line[/c]/[c]ArgStruct[/c]/token offsets have not changed in those builds; everything that changed is discovered at runtime. An unrecognized layout makes the probe throw instead of guessing, which keeps failures explicit and isolated.
+[c]Multi-version compatibility:[/c] the four-version matrix runs the same blob on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30. Stable [c]Line[/c]/[c]ArgStruct[/c]/token offsets have not changed in those builds; everything that changed is discovered at runtime. An unrecognized layout makes the probe throw without guessing, which keeps failures explicit and isolated.
 
 [codebox=text file=source-snippets]
 // source/script.h (AutoHotkey v2.1-alpha.30)
@@ -199,7 +199,7 @@ private:
 
 [b]6. Remote hooking[/b]
 
-Think of the target as a running machine. We do not install anything into it and it does not have to cooperate: no [c]#Include[/c], no exported pointer, no callback. We read its memory map, find the labels on its internal shelves, then insert a small worker thread through the OS remote-thread door.
+The target does not require [c]#Include[/c], exported pointers, or callbacks. The attacher reads its memory map, locates the interpreter objects, and starts a remote thread through the OS remote-thread API.
 
 [color=#BF4000][b]6.1 External attach tool[/b][/color]
 
@@ -275,7 +275,7 @@ F8:: {
 }
 [/codebox]
 
-Start the target, press [c]F1[/c] to attach, then [c]F2[/c] to redirect [c]Abs[/c] to [c]Sin[/c]. When the target receives [c]F7[/c], it writes [c]0.8414709848078965[/c] ([c]Sin(1)[/c]) instead of [c]1[/c]. Press [c]F3[/c] to evaluate [c]x := 1 + 2 * 3[/c] remotely; the target writes [c]7[/c] when [c]F8[/c] fires.
+Start the target, press [c]F1[/c] to attach, then [c]F2[/c] to redirect [c]Abs[/c] to [c]Sin[/c]. When the target receives [c]F7[/c], it writes [c]0.8414709848078965[/c] ([c]Sin(1)[/c]) where it previously wrote [c]1[/c]. Press [c]F3[/c] to evaluate [c]x := 1 + 2 * 3[/c] remotely; the target writes [c]7[/c] when [c]F8[/c] fires.
 
 [color=#BF4000][b]6.4 RemoteEval[/b][/color]
 
@@ -436,7 +436,7 @@ session.Close()
 
 [color=#BF4000]This library allocates executable memory, executes machine code, and reads or writes interpreter internals directly. Use it with reverse-engineering research discipline.[/color]
 
-[c]Is Eval safe? No.[/c] [c]Eval[/c], [c]EvalNative[/c], and [c]EvalScript[/c] execute arbitrary code in the current process with the same privileges as the host script. They are not sandboxes. The in-process path also fabricates interpreter objects, so a wrong layout or state-save mistake can corrupt memory instead of raising a clean exception. The remote APIs perform the same operations in another AutoHotkey process.
+[c]Is Eval safe? No.[/c] [c]Eval[/c], [c]EvalNative[/c], and [c]EvalScript[/c] execute arbitrary code in the current process with the same privileges as the host script. They are not sandboxes. The in-process path also fabricates interpreter objects, so a wrong layout or state-save mistake can corrupt memory without raising a clean exception. The remote APIs perform the same operations in another AutoHotkey process.
 
 Operations fall into three categories:
 
@@ -480,7 +480,7 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - Added [c]RemoteEvalScript[/c], first with function definitions and then with class definitions (the injected thread sets [c]g->CurrentFunc[/c] before [c]PreparseExpressions[/c]);
 - Added [c]RemoteReplaceFuncBody[/c], which swaps function body addresses; hotkey verification changes the result from [c]1[/c] to [c]42[/c];
 - Added [c]tools\verify_remote_compat.ps1[/c]; the remote matrix passed 16/16 interpreter x interpreter and 16/16 UPX target x interpreter combinations;
-- Fixed [c]EvalNative[/c] parsing of braces inside string literals: quoted strings are passed to the interpreter as QSTRING derefs instead of being misparsed as object literals, and remote string results are read on UTF-16 code-unit boundaries;
+- Fixed [c]EvalNative[/c] parsing of braces inside string literals: quoted strings are passed to the interpreter as QSTRING derefs so they are not misparsed as object literals, and remote string results are read on UTF-16 code-unit boundaries;
 - Resynced the single-file source embedded in the blog appendix with [c]ahk_hack_single.ahk[/c];
 - Reorganized the blog structure, split duplicated examples, completed the update log, and moved the Pages remote chapter into its own section.
 

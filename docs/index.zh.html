@@ -39,7 +39,7 @@
 <li><a href="#sec-7">EvalScript：解析器与内存加载</a></li>
 <li><a href="#sec-8">远程内省</a></li>
 <li><a href="#sec-9">动态偏移发现</a></li>
-<li><a href="#sec-10">TraceFunction：克隆而不是重命名</a></li>
+<li><a href="#sec-10">TraceFunction：基于克隆的 Trace</a></li>
 <li><a href="#sec-11">验证矩阵</a></li>
 <li><a href="#sec-12">安全与边界</a></li>
 <li><a href="#sec-13">继续阅读</a></li><li><a href="#appendix">附录：单文件核心源码</a></li>
@@ -63,7 +63,7 @@
     <article>
 <section id="sec-1"><h2>目标与方法</h2>
 <p>目标是把 <code>AutoHotkey64.exe</code> 当作活体解释器分析，并提取足够多的结构来实现表达式求值、内存脚本加载、远程 Hook 和在线函数 Trace。方法是可重复的循环：先读源码找出候选字段，再检查进程内存确认真实偏移，把稳定逻辑编码成位置无关机器码，最后用结构不变量验证每个结果。</p>
-<p>本页记录的就是这个循环。它不是 API 参考，而是提取流程。</p>
+<p>本页记录的就是这个循环。</p>
 </section>
 <section id="sec-2"><h2>PE 解析与节区映射</h2>
 <p>每个 x64 AutoHotkey v2 可执行文件都以 <code>MZ</code> DOS 头开始。PE 签名位于 <code>e_lfanew</code> 指向的偏移，可选头使用 PE32+ 魔数 <code>0x20B</code>。节表紧随可选头。</p>
@@ -111,7 +111,7 @@ public:
 };</code></pre>
 <p>内存探针在两个代表性构建上确认了实际 x64 布局：</p>
 <table><thead><tr><th>字段</th><th>v2.1-alpha.30</th><th>v2.0.26</th></tr></thead><tbody><tr><td><code>mName</code></td><td><code>0x28</code></td><td><code>0x20</code></td></tr><tr><td><code>mJumpToLine</code></td><td><code>0x48</code></td><td><code>0x40</code></td></tr><tr><td><code>mParam</code></td><td><code>0x50</code></td><td><code>0x48</code></td></tr><tr><td><code>mVars</code></td><td><code>0x80</code></td><td><code>0x70</code></td></tr></tbody></table>
-<p>偏移不同，所以库在运行时发现它们，而不是维护一张版本表。</p>
+<p>偏移不同，所以库在运行时发现它们，不维护版本表。</p>
 </section>
 <section id="sec-5"><h2>机器码提取流水线</h2>
 <p>稳定扫描器写在 <code>lib/mcode/</code> 下的 C 源码中。构建使用 clang 生成无 CRT、位置无关的 COFF 对象：</p>
@@ -202,7 +202,7 @@ NewA()
 )&quot;)
 AhkMagic.RemoteReplaceFuncBody(hook, &quot;A&quot;, &quot;NewA&quot;)
 Send(&quot;{F9}&quot;)</code></pre>
-<p>目标开始输出 <code>A()=42</code>，而不是 <code>A()=1</code>。</p>
+<p>目标开始输出 <code>A()=42</code>，原始输出为 <code>A()=1</code>。</p>
 </section>
 <section id="sec-9"><h2>动态偏移发现</h2>
 <p>远程布局扫描器从存活内存推导 <code>mFuncs</code>、<code>mFuncsCount</code>、函数名字段与 <code>mJumpToLine</code>：</p>
@@ -216,7 +216,7 @@ Send(&quot;{F9}&quot;)</code></pre>
 <table><thead><tr><th>结构</th><th>验证字段</th></tr></thead><tbody><tr><td><code>Line</code></td><td>action、argc、arg 指针、attribute、next</td></tr><tr><td><code>ArgStruct</code></td><td>is_expression、postfix 指针、deref 指针</td></tr><tr><td><code>ExprTokenType</code></td><td>stride、symbol 偏移、usage 偏移、value 偏移</td></tr><tr><td><code>DerefType</code></td><td>marker、var、type、length</td></tr></tbody></table>
 <p>Token 数组通过走到 <code>SYM_INVALID</code> 并在终止符前要求一个 <code>SYM_VAR</code> token 来验证。<code>DerefType</code> 从运行进程中已有的 <code>ArgStruct.deref</code> 数组读取。</p>
 </section>
-<section id="sec-10"><h2>TraceFunction：克隆而不是重命名</h2>
+<section id="sec-10"><h2>TraceFunction：基于克隆的 Trace</h2>
 <p>函数 Trace 比函数替换更难。最初实现重命名目标函数并注入 wrapper，结果失败，因为：</p>
 <ul>
 <li>函数名同时存在于 <code>Func.mName</code> 与全局 <code>Var.mName</code>；</li>
@@ -254,14 +254,14 @@ Send(&quot;{F9}&quot;)</code></pre>
 <p>总计：19 个运行时，全部 9/9。</p>
 </section>
 <section id="sec-12"><h2>安全与边界</h2>
-<p>这个库会分配可执行内存、执行机器码，并写入当前或目标进程的解释器内存。它不是沙箱。</p>
+<p>这个库会分配可执行内存、执行机器码，并写入当前或目标进程的解释器内存。它不具备沙箱隔离。</p>
 <p>规则：</p>
 <ul>
 <li>只附加自己拥有的进程；</li>
 <li>反复实验使用一次性目标；</li>
 <li>补丁用 <code>finally</code> 或 <code>AhkLivePatchSession.Rollback()</code> 恢复；</li>
 <li>永远不要 eval 不可信输入；</li>
-<li>定位失败是错误，不是猜测的理由。</li>
+<li>定位失败应视为错误，不猜测偏移。</li>
 </ul>
 <p>加壳或恶意构建可能改节名或删字符串。内容分类扫描可以处理常见加壳器，但恶意构建仍可能绕过发现。</p>
 </section>
