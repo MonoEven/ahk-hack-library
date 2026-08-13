@@ -54,6 +54,10 @@ class AhkLiveSession {
         return this._Wrap((hook) => AhkLive.Eval(hook, expr))
     }
 
+    EvalScript(text) {
+        return this._Wrap((hook) => AhkLive.LoadScript(hook, text))
+    }
+
     Snapshot(specs) {
         return this._Wrap((hook) => AhkLive.Snapshot(hook, specs))
     }

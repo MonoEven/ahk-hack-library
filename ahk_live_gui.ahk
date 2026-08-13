@@ -47,6 +47,24 @@ global gReloadResult := 0
 global gReloader := 0
 global gForensicsResult := 0
 
+AhkLive_OnError(e) {
+    msg := FormatTime(, "HH:mm:ss") " ERR " e.What
+        . " | " e.Message " | line " e.Line
+        . (e.Extra = "" ? "" : " | " e.Extra)
+    try {
+        global gLog
+        if gLog
+            gLog.Value .= msg "`n"
+    } catch
+        FileAppend(msg "`n", A_Temp "\ahk_live_gui_error.log")
+    return true
+}
+
+try
+    OnError(AhkLive_OnError.Bind())
+catch as e
+    FileAppend("OnError unavailable: " e.Message "`n"
+        , A_Temp "\ahk_live_gui_error.log")
 BuildGui()
 
 
@@ -587,16 +605,38 @@ DoExport() {
 RunDemo() {
     global gEvalExpr, gScriptEdit, gSnapshotSpecs
     gEvalExpr.Value := "Add(2, 3)"
-    DoEval()
+    try
+        DoEval()
+    catch as e
+        Log("demo eval FAIL " e.Message)
     gScriptEdit.Value := "`nrhkDemo(a, b) {`n    return a * b`n}`nrhkDemo(3, 4)`n"
-    DoScript()
+    try
+        DoScript()
+    catch as e
+        Log("demo script FAIL " e.Message)
     gSnapshotSpecs.Value := "add=Add(2, 3), mul=Mul(4)"
-    DoSnapshot()
-    DoInventory()
-    DoReport()
-    DoTrace()
-    DoTraceCall()
+    try
+        DoSnapshot()
+    catch as e
+        Log("demo snapshot FAIL " e.Message)
+    try
+        DoInventory()
+    catch as e
+        Log("demo inventory FAIL " e.Message)
+    try
+        DoReport()
+    catch as e
+        Log("demo report FAIL " e.Message)
+    try
+        DoTrace()
+    catch as e
+        Log("demo trace FAIL " e.Message)
+    try
+        DoTraceCall()
+    catch as e
+        Log("demo tracecall FAIL " e.Message)
     Log("demo ready")
+    FileAppend("ready`n", A_Temp "\ahk_live_gui_demo_ready")
 }
 
 
