@@ -11,6 +11,7 @@
 - `trace`: function tracing and expression watchpoints.
 - `reload`: script-file hot reload.
 - `agent`: product command surface for coding agents.
+- `mcp`: stdio MCP adapter in `tools/ahk_live_mcp.py`.
 - `observability`: conditional watchpoints and event log.
 - `fault`: transactional fault injection.
 - `desktop`: process discovery for RPA-style workflows.

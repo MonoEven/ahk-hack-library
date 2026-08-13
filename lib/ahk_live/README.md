@@ -44,6 +44,13 @@ AutoHotkey64.exe ahk_live_cli.ahk --version
 Output is written to `%TEMP%\ahk_live_cli.out`; the process returns a nonzero
 exit code on failure.
 
+## MCP runtime gate
+
+`tools/ahk_live_mcp.py` is a dependency-free stdio JSON-RPC server exposing
+`ahk_eval`, `ahk_functions`, `ahk_classes`, and `ahk_version` to MCP-capable
+coding agents. Set `AHK_LIVE_AHK` and `AHK_LIVE_REPO` to override the
+default runtime and repository paths.
+
 ## API
 
 | Method | Purpose |
