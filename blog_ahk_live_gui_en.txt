@@ -1,6 +1,6 @@
 [b]AhkLive GUI: screenshot walkthrough[/b]
 
-Captures of [c]ahk_live_gui.ahk[/c] attached to [c]tests\ahk_live_probe_target.ahk[/c]. Full window, 1480x1016, DPI-aware [c]PrintWindow[/c]; the demo path ran before each capture.
+Captures of [c]ahk_live_gui.ahk[/c] attached to [c]tests\ahk_live_probe_target.ahk[/c]. Full-window captures use a DPI-aware [c]PrintWindow[/c]; display size is 1100x755 and the demo path ran before each capture.
 
 [b]1. Main[/b]
 

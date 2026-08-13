@@ -1,6 +1,6 @@
 [b]AhkLive GUI：截图走读[/b]
 
-截图来自 [c]ahk_live_gui.ahk[/c] 附加 [c]tests\ahk_live_probe_target.ahk[/c]。完整窗口 1480x1016，DPI 感知 [c]PrintWindow[/c]；截图前已跑过 demo。
+截图来自 [c]ahk_live_gui.ahk[/c] 附加 [c]tests\ahk_live_probe_target.ahk[/c]。完整窗口由 DPI 感知的 [c]PrintWindow[/c] 抓取，展示尺寸为 1100x755；截图前已跑过 demo。
 
 [b]1. 主界面[/b]
 
