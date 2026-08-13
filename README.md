@@ -457,6 +457,14 @@ per-version table: `mFuncs`, `mFuncsCount`, `mLastLine`, `mJumpLine`, the
 parser-state anchors, and the `TextStream` layout are all discovered at
 runtime by a one-time probe.
 
+The exact audit of dynamic offsets versus intentional ABI constants is in
+[`docs/hardcoded-audit.md`](docs/hardcoded-audit.md).
+
+The local machine also contains 19 AutoHotkey runtime builds from
+`2.0-beta.9` through `2.1-alpha.30`. `tools/verify_all_runtimes.ps1` runs a
+nine-test matrix against all of them; the latest results are in
+[`reports/runtime_matrix_all.txt`](reports/runtime_matrix_all.txt).
+
 Ahk2Exe packaging does not disable the in-process Eval pipeline. When
 `AutoHotkey64.exe` is selected as the base file, the compiled exe embeds that
 runtime, so `Init`, `EvalNative`, and `EvalScript` keep working. This was

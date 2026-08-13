@@ -40,6 +40,7 @@ class AhkMagic {
     static evalMLastLineOff := 0
     static evalMJumpLineOff := 0
     static evalCurrOff := 0
+    static evalStructOffsets := 0
     static evalParserLocated := false
     static evalParser := Map()
     static evalPreparse := 0
@@ -294,6 +295,9 @@ class AhkMagic {
                 "ptr", base + va
             )
         }
+        pdata := result.Has(".pdata") ? result[".pdata"] : 0
+        for _, sec in result
+            sec["pdata"] := pdata
         return result
     }
 
@@ -364,17 +368,99 @@ class AhkMagic {
         return refs
     }
 
-    static _FnStart(sec, refRva) {
-        p := sec["ptr"]
-        off := refRva - sec["rva"]
-        i := off
-        while i > 0 {
-            if NumGet(p + i - 1, "UChar") = 0xCC
-                and i >= 2 and NumGet(p + i - 2, "UChar") = 0xCC
-                break
-            i -= 1
+    static _PdataFunctionStart(pdata, rva, sec) {
+        if !pdata or pdata["size"] < 12
+            throw Error("PE .pdata section is missing", -1)
+        p := pdata["ptr"]
+        count := pdata["size"] // 12
+        lo := 1
+        hi := count
+        idx := 0
+        while lo <= hi {
+            mid := (lo + hi) // 2
+            off := (mid - 1) * 12
+            begin := NumGet(p + off, "UInt")
+            end := NumGet(p + off + 4, "UInt")
+            if rva < begin {
+                hi := mid - 1
+                continue
+            }
+            if rva >= end {
+                lo := mid + 1
+                continue
+            }
+            idx := mid
+            break
         }
-        return sec["rva"] + i
+        if !idx
+            throw Error("function start not found for RVA "
+            . Format("0x{:X}", rva), -1)
+        loop idx {
+            current := idx - A_Index + 1
+            off := (current - 1) * 12
+            begin := NumGet(p + off, "UInt")
+            if AhkMagic._IsFunctionEntryCode(sec, begin)
+                return begin
+        }
+        throw Error("logical function entry not found for RVA "
+            . Format("0x{:X}", rva), -1)
+    }
+
+    static _PdataEntryStart(pdata, rva) {
+        if !pdata or pdata["size"] < 12
+            return 0
+        p := pdata["ptr"]
+        count := pdata["size"] // 12
+        lo := 1
+        hi := count
+        while lo <= hi {
+            mid := (lo + hi) // 2
+            off := (mid - 1) * 12
+            begin := NumGet(p + off, "UInt")
+            end := NumGet(p + off + 4, "UInt")
+            if rva < begin {
+                hi := mid - 1
+                continue
+            }
+            if rva >= end {
+                lo := mid + 1
+                continue
+            }
+            return begin
+        }
+        return 0
+    }
+
+    static _IsFunctionEntryCode(sec, rva) {
+        off := rva - sec["rva"]
+        if off < 0 or off + 4 > sec["size"]
+            return false
+        p := sec["ptr"]
+        b0 := NumGet(p + off, "UChar")
+        b1 := NumGet(p + off + 1, "UChar")
+        b2 := NumGet(p + off + 2, "UChar")
+        b3 := NumGet(p + off + 3, "UChar")
+        if b0 = 0x48 and b1 = 0x89
+            and ((b2 = 0x5C and b3 = 0x24)
+                or (b2 = 0x54 and b3 = 0x24)
+                or (b2 = 0x4C and b3 = 0x24))
+            return true
+        if b0 = 0x4C and b1 = 0x89
+            and ((b2 = 0x44 and b3 = 0x24)
+                or (b2 = 0x4C and b3 = 0x24))
+            return true
+        if b0 = 0x40 and b1 >= 0x50 and b1 <= 0x57
+            return true
+        if b0 = 0x55 or b0 = 0x53 or b0 = 0x56 or b0 = 0x57
+            or b0 = 0x41
+            return true
+        return false
+    }
+
+    static _FnStart(sec, refRva) {
+        if !sec.Has("pdata")
+            throw Error("section has no PE .pdata context", -1)
+        return AhkMagic._PdataFunctionStart(sec["pdata"], refRva, sec)
     }
 
     static _FindCallers(sec, targetRva) {
@@ -486,74 +572,6 @@ class AhkMagic {
         throw Error("CRT free not found")
     }
 
-    static _FindBytePattern(sec, hexPattern, startRva := 0) {
-        p := sec["ptr"]
-        size := sec["size"]
-        start := sec["rva"] + startRva
-        needle := Buffer(StrLen(hexPattern) // 2)
-        loop needle.Size {
-            byte := Integer("0x" SubStr(hexPattern, 2 * A_Index - 1, 2))
-            NumPut("UChar", byte, needle, A_Index - 1)
-        }
-        max := size - needle.Size + 1
-        loop max {
-            i := A_Index - 1
-            if NumGet(p + i, "UChar") != NumGet(needle, 0, "UChar")
-                continue
-            ok := true
-            loop needle.Size {
-                if NumGet(p + i + A_Index - 1, "UChar")
-                    != NumGet(needle, A_Index - 1, "UChar") {
-                    ok := false
-                    break
-                }
-            }
-            if ok
-                return sec["rva"] + i
-        }
-        return 0
-    }
-
-    static _FindAnyBytePattern(sec, patterns) {
-        for pattern in patterns {
-            found := AhkMagic._FindBytePattern(sec, pattern)
-            if found
-                return found
-        }
-        return 0
-    }
-
-    static _FindBytePatternInFunc(sec, startRva, hexPattern) {
-        p := sec["ptr"]
-        off := startRva - sec["rva"]
-        limit := Min(sec["size"] - 4, off + 0x4000)
-        needle := Buffer(StrLen(hexPattern) // 2)
-        loop needle.Size {
-            byte := Integer("0x" SubStr(hexPattern, 2 * A_Index - 1, 2))
-            NumPut("UChar", byte, needle, A_Index - 1)
-        }
-        i := off
-        while i < limit {
-            if NumGet(p + i, "UChar") = 0xCC
-                and NumGet(p + i + 1, "UChar") = 0xCC
-                break
-            if NumGet(p + i, "UChar") = NumGet(needle, 0, "UChar") {
-                ok := true
-                loop needle.Size {
-                    if NumGet(p + i + A_Index - 1, "UChar")
-                        != NumGet(needle, A_Index - 1, "UChar") {
-                        ok := false
-                        break
-                    }
-                }
-                if ok
-                    return true
-            }
-            i += 1
-        }
-        return false
-    }
-
     static _LocatePreprocessFunc(sec) {
         p := sec["ptr"]
         size := sec["size"]
@@ -600,14 +618,14 @@ class AhkMagic {
                     and NumGet(p + i + 2, "UChar") = 0x05 {
                     j := i + 7
                     while j < Min(i + 24, limit) {
-                        if NumGet(p + j, "UChar") = 0x48
-                            and NumGet(p + j + 1, "UChar") = 0x89
-                            and NumGet(p + j + 2, "UChar") = 0x58
-                            and NumGet(p + j + 3, "UChar") = 0x28
-                            or NumGet(p + j, "UChar") = 0x48
-                            and NumGet(p + j + 1, "UChar") = 0x89
-                            and NumGet(p + j + 2, "UChar") = 0x50
-                            and NumGet(p + j + 3, "UChar") = 0x28 {
+                        b0 := NumGet(p + j, "UChar")
+                        b1 := NumGet(p + j + 1, "UChar")
+                        b2 := NumGet(p + j + 2, "UChar")
+                        b3 := NumGet(p + j + 3, "UChar")
+                        if b0 = 0x48
+                            and b1 = 0x89
+                            and (b2 = 0x58 or b2 = 0x50)
+                            and (b3 = 0x28 or b3 = 0x50) {
                             disp := NumGet(p + i + 3, "Int")
                             return sec["rva"] + i + 7 + disp
                         }
@@ -618,11 +636,6 @@ class AhkMagic {
             }
         }
         return 0
-    }
-
-    static _HasBytesNear(sec, rva, hexPattern, range := 40) {
-        found := AhkMagic._FindBytePattern(sec, hexPattern, rva - sec["rva"])
-        return found and found - rva < range
     }
 
     static _LocateLoadTs(sec, openRva) {
@@ -646,8 +659,7 @@ class AhkMagic {
                         if NumGet(p + j, "UChar") = 0xE8 {
                             disp := NumGet(p + j + 1, "Int")
                             target := base + j + 5 + disp
-                            if AhkMagic._HasBytesNear(sec, target
-                                , "555356574154415541564157", 40)
+                            if AhkMagic._PdataEntryStart(sec["pdata"], target) = target
                                 return target
                         }
                         j += 1
@@ -656,6 +668,24 @@ class AhkMagic {
                 }
                 i += 1
             }
+        }
+        return 0
+    }
+
+    static _LocateOpenInclude(secs) {
+        text := AhkMagic._TextSection(secs)
+        anchors := [
+            '%s file "%s" cannot be opened',
+            '#Include'
+        ]
+        for anchor in anchors {
+            hit := AhkMagic._FindUtf16(secs, anchor)
+            if !hit.Length
+                continue
+            refs := AhkMagic._RipRefs(text, hit[1])
+            start := AhkMagic._BestStart(text, refs)
+            if start
+                return start
         }
         return 0
     }
@@ -717,12 +747,7 @@ class AhkMagic {
         if !preprocess
             throw Error("PreprocessLocalVars not found")
 
-        openPatterns := [
-            "48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200",
-            "40535556574154415541564157B8D8000100",
-            "48895C240848895424105556574154415541564157488DAC24"
-        ]
-        open := AhkMagic._FindAnyBytePattern(text, openPatterns)
+        open := AhkMagic._LocateOpenInclude(secs)
         if !open
             throw Error("OpenIncludedFile not found")
 
@@ -747,19 +772,9 @@ class AhkMagic {
     }
 
     static _EvalStructOffsets() {
-        return Map(
-            "line_action", 0,
-            "line_argc", 1,
-            "line_arg", 8,
-            "line_attribute", 16,
-            "line_next", 32,
-            "arg_postfix", 24,
-            "token_symbol", 16,
-            "token_usage", 8,
-            "token_value", 0,
-            "deref_marker", 0,
-            "deref_len", 20
-        )
+        if !AhkMagic.evalStructOffsets
+            AhkMagic._DiscoverEvalLayout()
+        return AhkMagic.evalStructOffsets
     }
 
     static _DiscoverCurrOff() {
@@ -818,7 +833,7 @@ class AhkMagic {
         probe := "
 (
 ahkHackLayoutProbe() {
-    return 1
+    return A_Args.Length + 1
 }
 )"
         AhkMagic._LoadScriptMemory(probe)
@@ -882,27 +897,35 @@ ahkHackLayoutProbe() {
         newFunc := NumGet(arrPtr, oldCount * 8, "Ptr")
         oldLast := NumGet(snap, lastOff, "Ptr")
         newLast := NumGet(gScript, lastOff, "Ptr")
-        lineSet := Map()
-        line := oldLast ? NumGet(oldLast, 32, "Ptr") : 0
-        loop 10000 {
-            if !line
-                break
-            lineSet[line] := true
-            if line = newLast
-                break
-            line := NumGet(line, 32, "Ptr")
-        }
         jumpOff := 0
-        loop 0x100 // 8 {
+        loop 0x200 // 8 {
             off := (A_Index - 1) * 8
             p := NumGet(newFunc, off, "Ptr")
-            if p > 0x10000 and lineSet.Has(p) {
+            if p <= 0x10000 or p >= 0x7fffffffffff
+                continue
+            try {
+                lineData := Buffer(0x100)
+                DllCall("RtlMoveMemory", "Ptr", lineData.Ptr, "Ptr", p
+                    , "UPtr", 0x100)
+            } catch
+                continue
+            found := false
+            loop lineData.Size // 8 {
+                if NumGet(lineData, (A_Index - 1) * 8, "Ptr") = newFunc {
+                    found := true
+                    break
+                }
+            }
+            if found {
                 jumpOff := off
                 break
             }
         }
         if !jumpOff
             throw Error("mJumpLine offset not found")
+
+        AhkMagic.evalStructOffsets := AhkMagic._DiscoverInProcStructs(
+            gScript, arrPtr, oldCount, newFunc, jumpOff)
 
         DllCall("RtlMoveMemory", "Ptr", gScript, "Ptr", snap.Ptr, "UPtr", 0x200)
         if AhkMagic.evalSrcCount
@@ -1192,7 +1215,8 @@ ahkHackLayoutProbe() {
                         argc := NumGet(line, off["line_argc"], "UChar")
                         if argc {
                             arg := NumGet(line, off["line_arg"], "Ptr")
-                            if arg and NumGet(arg, 1, "UChar") {
+                            if arg and NumGet(arg, off["arg_expression"]
+                                , "UChar") {
                                 postfix := NumGet(arg, off["arg_postfix"], "Ptr")
                                 if postfix {
                                     while NumGet(postfix, off["token_symbol"], "UInt") != AhkMagic.symInvalid {
@@ -1200,11 +1224,13 @@ ahkHackLayoutProbe() {
                                             and NumGet(postfix, off["token_usage"], "UInt") < 3 {
                                             deref := NumGet(postfix, off["token_value"], "Ptr")
                                             if deref {
-                                                derefType := NumGet(deref, 16, "UChar")
+                                                derefType := NumGet(deref
+                                                    , off["deref_type"], "UChar")
                                                 marker := NumGet(deref, off["deref_marker"], "Ptr")
                                                 len := NumGet(deref, off["deref_len"], "UInt")
                                                 if derefType = 7 {
-                                                    NumPut("Ptr", NumGet(deref, 8, "Ptr")
+                                                    NumPut("Ptr", NumGet(deref
+                                                        , off["deref_var"], "Ptr")
                                                         , postfix, off["token_value"])
                                                 } else if derefType = 0 and marker and len > 0 and len <= 64 {
                                                     var := DllCall(AhkMagic.findOrAddVar
@@ -1218,7 +1244,7 @@ ahkHackLayoutProbe() {
                                                 }
                                             }
                                         }
-                                        postfix += 24
+                                        postfix += off["token_stride"]
                                     }
                                 }
                             }
@@ -1363,6 +1389,7 @@ ahkHackLayoutProbe() {
         secs := Map()
         hasText := false
         hasData := false
+        hasPdata := false
         loop num {
             off := (A_Index - 1) * 40
             name := StrGet(hdrs.Ptr + off, 8, "UTF-8")
@@ -1374,6 +1401,8 @@ ahkHackLayoutProbe() {
                 hasText := true
             if name = ".rdata" or name = ".data"
                 hasData := true
+            if name = ".pdata"
+                hasPdata := true
             secs[name] := Map("name", name, "rva", va, "size", size
                 , "start", base + va, "end", base + va + size
                 , "data", Buffer(0), "ptr", 0)
@@ -1393,6 +1422,21 @@ ahkHackLayoutProbe() {
                 sec["ptr"] := sec["data"].Ptr
             }
         }
+        pdata := 0
+        if hasPdata {
+            sec := secs[".pdata"]
+            if sec["size"] > 0 and sec["size"] < 0x800000 {
+                try {
+                    sec["data"] := AhkMagic._RemoteRead(h, sec["start"]
+                        , sec["size"])
+                    sec["ptr"] := sec["data"].Ptr
+                    pdata := sec
+                } catch
+                    pdata := 0
+            }
+        }
+        for _, sec in secs
+            sec["pdata"] := pdata
         return secs
     }
 
@@ -1983,7 +2027,7 @@ ahkHackLayoutProbe() {
         return 0
     }
 
-    static _RemoteParserOffsets(text, loadTsRva) {
+    static _RemoteParserAnchors(text, loadTsRva) {
         p := text["ptr"]
         base := text["rva"]
         off := loadTsRva - base
@@ -2013,20 +2057,50 @@ ahkHackLayoutProbe() {
         }
         if qCmp < 0 or dCmp < 0
             throw Error("parser state anchors not found", -1)
-        if dCmp > 0x100
+        return Map("q", qCmp, "d", dCmp)
+    }
+
+    static _RemoteDiscoverParser(h, gscript, qCmp, dCmp) {
+        buf := AhkMagic._RemoteRead(h, gscript, 0x400)
+        if dCmp <= 0 or dCmp + 4 > buf.Size
+            or NumGet(buf, dCmp, "Int") < 0
+            or NumGet(buf, dCmp, "Int") > 100000
+            throw Error("mClassObjectCount offset invalid", -1)
+
+        exprIndexOff := 0
+        loop Min(0x40, dCmp) // 4 {
+            off := dCmp - (A_Index - 1) * 4
+            if off + 8 > buf.Size
+                continue
+            if NumGet(buf, off, "Int") = 0x7fffffff
+                and NumGet(buf, off + 4, "Int") = 0 {
+                exprIndexOff := off + 4
+                break
+            }
+        }
+
+        if exprIndexOff {
+            ; v2.1 layout: parser fields form a compact run ending at
+            ; mClassObjectCount, anchored by the sentinel mExprFuncIndex.
+            if exprIndexOff + 8 > buf.Size
+                throw Error("v2.1 parser region invalid", -1)
             return Map(
                 "mclass_count", dCmp,
-                "mline_parent", dCmp - 0x30,
-                "mpending_related", dCmp - 0x28,
-                "mlast_param_init", dCmp - 0x20,
-                "mpending_hotkey", dCmp - 0x18,
-                "mexpr_func", dCmp - 0x10,
-                "mexpr_func_index", dCmp - 8,
-                "mnext_func_body", dCmp - 4,
-                "mignore_block", dCmp - 3,
-                "mbackcompat", dCmp - 2,
-                "mcurrent_module", dCmp - 0x50,
-                "mlast_module", dCmp - 0x48)
+                "mline_parent", exprIndexOff - 0x28,
+                "mpending_related", exprIndexOff - 0x20,
+                "mlast_param_init", exprIndexOff - 0x18,
+                "mpending_hotkey", exprIndexOff - 0x10,
+                "mexpr_func", exprIndexOff - 8,
+                "mexpr_func_index", exprIndexOff,
+                "mnext_func_body", exprIndexOff + 4,
+                "mignore_block", exprIndexOff + 5,
+                "mbackcompat", exprIndexOff + 6,
+                "mcurrent_module", exprIndexOff - 0x48,
+                "mlast_module", exprIndexOff - 0x40)
+        }
+
+        if qCmp <= 0 or qCmp + 0x28 > buf.Size
+            throw Error("v2.0 parser region invalid", -1)
         return Map(
             "mopen", qCmp,
             "mpending_parent", qCmp + 8,
@@ -2053,12 +2127,7 @@ ahkHackLayoutProbe() {
         preprocess := AhkMagic._LocatePreprocessFunc(text)
         if !preprocess
             throw Error("PreprocessLocalVars not found", -1)
-        openPatterns := [
-            "48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200",
-            "40535556574154415541564157B8D8000100",
-            "48895C240848895424105556574154415541564157488DAC24"
-        ]
-        open := AhkMagic._FindAnyBytePattern(text, openPatterns)
+        open := AhkMagic._LocateOpenInclude(secs)
         if !open
             throw Error("OpenIncludedFile not found", -1)
         loadTs := AhkMagic._LocateLoadTs(text, open)
@@ -2070,7 +2139,7 @@ ahkHackLayoutProbe() {
         currOff := AhkMagic._RemoteCurrOff(secs, preparse)
         if !currOff
             throw Error("g->curr offset not found", -1)
-        parser := AhkMagic._RemoteParserOffsets(text, loadTs)
+        anchors := AhkMagic._RemoteParserAnchors(text, loadTs)
         return Map(
             "postfix_rva", postfixRva,
             "expand_rva", expandRva,
@@ -2081,7 +2150,634 @@ ahkHackLayoutProbe() {
             "src_count_rva", 0,
             "gptr_rva", gptr,
             "curr_off", currOff,
-            "parser", parser)
+            "q_cmp", anchors["q"],
+            "d_cmp", anchors["d"],
+            "parser", Map())
+    }
+
+    static _RemoteLineRows(h, funcs, funcData, jumpOff, backOff) {
+        rows := []
+        for index, q in funcs {
+            linePtr := NumGet(funcData[index], jumpOff, "Ptr")
+            if linePtr <= 0x10000 or linePtr >= 0x7fffffffffff
+                continue
+            try
+                lineData := AhkMagic._RemoteRead(h, linePtr, 0x100)
+            catch
+                continue
+            if backOff + 8 <= lineData.Size
+                and NumGet(lineData, backOff, "Ptr") = q
+                rows.Push(Map("func", q, "ptr", linePtr, "data", lineData))
+        }
+        return rows
+    }
+
+    static _RemoteLineHasFuncRef(lineData, q) {
+        loop lineData.Size // 8 {
+            if NumGet(lineData, (A_Index - 1) * 8, "Ptr") = q
+                return true
+        }
+        return false
+    }
+
+    static _RemoteIsArgLike(h, p) {
+        try
+            argData := AhkMagic._RemoteRead(h, p, 40)
+        catch
+            return false
+        if NumGet(argData, 0, "UChar") > 2
+            or NumGet(argData, 1, "UChar") > 1
+            return false
+        if NumGet(argData, 4, "UInt") > 0x10000
+            return false
+        for off in [8, 16, 24] {
+            v := NumGet(argData, off, "Ptr")
+            if v and (v <= 0x10000 or v >= 0x7fffffffffff)
+                return false
+        }
+        return true
+    }
+
+    static _RemoteTokenValid(data, stride, symOff, sentinel) {
+        if symOff + 4 > stride
+            return 0
+        count := Min(data.Size // stride, 64)
+        seenVar := false
+        loop count {
+            sym := NumGet(data, (A_Index - 1) * stride + symOff, "UInt")
+            if sym = sentinel
+                return seenVar ? A_Index : 0
+            if sym > 0x1000
+                return 0
+            if sym = 4
+                seenVar := true
+        }
+        return 0
+    }
+
+    static _RemoteCollectPostfixes(h, rows) {
+        postfixes := []
+        seen := Map()
+        for row in rows {
+            lineData := row["data"]
+            loop lineData.Size // 8 {
+                p := NumGet(lineData, (A_Index - 1) * 8, "Ptr")
+                if p <= 0x10000 or p >= 0x7fffffffffff
+                    continue
+                if !AhkMagic._RemoteIsArgLike(h, p)
+                    continue
+                try
+                    argData := AhkMagic._RemoteRead(h, p, 40)
+                catch
+                    continue
+                loop argData.Size // 8 {
+                    q := NumGet(argData, (A_Index - 1) * 8, "Ptr")
+                    if q <= 0x10000 or q >= 0x7fffffffffff
+                        continue
+                    if seen.Has(q)
+                        continue
+                    seen[q] := true
+                    postfixes.Push(q)
+                }
+            }
+        }
+        return postfixes
+    }
+
+    static _RemoteDiscoverTokens(h, postfixes, sentinel) {
+        bestStride := 0
+        bestSym := 0
+        bestScore := -1
+        for stride in [24, 32, 16, 40] {
+            for symOff in [16, 20, 12, 8, 4, 0] {
+                if symOff + 4 > stride
+                    continue
+                ok := 0
+                bestLen := 0
+                for p in postfixes {
+                    try
+                        data := AhkMagic._RemoteRead(h, p, stride * 64)
+                    catch
+                        continue
+                    got := AhkMagic._RemoteTokenValid(data, stride, symOff
+                        , sentinel)
+                    if got {
+                        ok += 1
+                        bestLen := Max(bestLen, got)
+                    }
+                }
+                score := ok * 10000 - bestLen - stride
+                if score > bestScore {
+                    bestScore := score
+                    bestStride := stride
+                    bestSym := symOff
+                }
+            }
+        }
+        if !bestStride
+            throw Error("dynamic token layout not found", -1)
+
+        varSym := 4
+        usageOff := 8
+        usageScore := -1
+        for uOff in [8, 12, 4, 20] {
+            if uOff = bestSym
+                continue
+            if uOff + 8 > bestStride
+                continue
+            score := 0
+            for p in postfixes {
+                try
+                    data := AhkMagic._RemoteRead(h, p, bestStride * 64)
+                catch
+                    continue
+                loop data.Size // bestStride {
+                    off := (A_Index - 1) * bestStride
+                    if NumGet(data, off + bestSym, "UInt") = varSym
+                        and NumGet(data, off + uOff, "UInt64") < 0x1000
+                        score += 1
+                }
+            }
+            if score > usageScore {
+                usageScore := score
+                usageOff := uOff
+            }
+        }
+
+        valueOff := 0
+        valueScore := -1
+        for vOff in [0, 8, 16] {
+            if vOff = bestSym
+                continue
+            score := 0
+            for p in postfixes {
+                try
+                    data := AhkMagic._RemoteRead(h, p, bestStride * 64)
+                catch
+                    continue
+                loop data.Size // bestStride {
+                    off := (A_Index - 1) * bestStride
+                    if NumGet(data, off + bestSym, "UInt") = varSym {
+                        v := NumGet(data, off + vOff, "Ptr")
+                        if v > 0x10000 and v < 0x7fffffffffff
+                            score += 1
+                    }
+                }
+            }
+            if score > valueScore {
+                valueScore := score
+                valueOff := vOff
+            }
+        }
+
+        return Map(
+            "stride", bestStride,
+            "symbol", bestSym,
+            "usage", usageOff,
+            "value", valueOff,
+            "var_symbol", varSym)
+    }
+
+    static _RemoteLineHeaderOff(rows) {
+        bestAction := 0
+        bestArgc := 1
+        bestScore := -1
+        loop 4 {
+            ao := A_Index - 1
+            loop 4 {
+                ac := A_Index - 1
+                if ac = ao
+                    continue
+                score := 0
+                for row in rows {
+                    data := row["data"]
+                    if ao + 1 >= data.Size or ac + 1 >= data.Size
+                        continue
+                    if NumGet(data, ao, "UChar") <= 0x40
+                        and NumGet(data, ac, "UChar") <= 0x10
+                        score += 1
+                }
+                if score > bestScore {
+                    bestScore := score
+                    bestAction := ao
+                    bestArgc := ac
+                }
+            }
+        }
+        if !bestScore
+            throw Error("dynamic Line header layout not found", -1)
+        return Map("action", bestAction, "argc", bestArgc)
+    }
+
+    static _RemoteLineArgOff(h, rows, tokens, sentinel) {
+        counts := Map()
+        argPostfixCounts := Map()
+        for row in rows {
+            lineData := row["data"]
+            loop lineData.Size // 8 {
+                lineOff := (A_Index - 1) * 8
+                p := NumGet(lineData, lineOff, "Ptr")
+                if p <= 0x10000 or p >= 0x7fffffffffff
+                    continue
+                if !AhkMagic._RemoteIsArgLike(h, p)
+                    continue
+                try
+                    argData := AhkMagic._RemoteRead(h, p, 40)
+                catch
+                    continue
+                loop argData.Size // 8 {
+                    argOff := (A_Index - 1) * 8
+                    q := NumGet(argData, argOff, "Ptr")
+                    if q <= 0x10000 or q >= 0x7fffffffffff
+                        continue
+                    try
+                        tokenData := AhkMagic._RemoteRead(h, q
+                            , tokens["stride"] * 64)
+                    catch
+                        continue
+                    if AhkMagic._RemoteTokenValid(tokenData
+                        , tokens["stride"], tokens["symbol"], sentinel) {
+                        counts[lineOff] := (counts.Has(lineOff)
+                            ? counts[lineOff] : 0) + 1
+                        argPostfixCounts[argOff] := (argPostfixCounts.Has(argOff)
+                            ? argPostfixCounts[argOff] : 0) + 1
+                    }
+                }
+            }
+        }
+        bestOff := 0
+        bestScore := 0
+        for off, score in counts {
+            if score > bestScore or (score = bestScore and bestOff
+                and off < bestOff) {
+                bestScore := score
+                bestOff := off
+            }
+        }
+        bestArgPostfix := 24
+        bestArgScore := 0
+        for off, score in argPostfixCounts {
+            if score > bestArgScore or (score = bestArgScore
+                and bestArgPostfix and off < bestArgPostfix) {
+                bestArgScore := score
+                bestArgPostfix := off
+            }
+        }
+        if !bestOff or !bestArgScore
+            throw Error("dynamic Line.mArg / ArgStruct.postfix not found", -1)
+        return Map("line_arg", bestOff, "arg_postfix", bestArgPostfix)
+    }
+
+    static _RemoteArgExpressionOff(h, rows, lineArg, argPostfix, tokens
+        , sentinel) {
+        counts := Map()
+        for row in rows {
+            arg := NumGet(row["data"], lineArg, "Ptr")
+            if arg <= 0x10000 or arg >= 0x7fffffffffff
+                continue
+            try
+                argData := AhkMagic._RemoteRead(h, arg, 40)
+            catch
+                continue
+            postfix := NumGet(argData, argPostfix, "Ptr")
+            if postfix <= 0x10000 or postfix >= 0x7fffffffffff
+                continue
+            try
+                tokenData := AhkMagic._RemoteRead(h, postfix
+                    , tokens["stride"] * 64)
+            catch
+                continue
+            if !AhkMagic._RemoteTokenValid(tokenData, tokens["stride"]
+                , tokens["symbol"], sentinel)
+                continue
+            loop 8 {
+                off := A_Index - 1
+                if NumGet(argData, off, "UChar") = 1
+                    counts[off] := (counts.Has(off) ? counts[off] : 0) + 1
+            }
+        }
+        bestOff := 1
+        bestScore := 0
+        for off, score in counts {
+            if score > bestScore or (score = bestScore and off < bestOff) {
+                bestScore := score
+                bestOff := off
+            }
+        }
+        if !bestScore
+            throw Error("dynamic ArgStruct.is_expression not found", -1)
+        return bestOff
+    }
+
+    static _RemoteLineNextOff(h, rows, lineArg, backOff) {
+        forward := Map()
+        total := Map()
+        loop 0x100 // 8 {
+            off := (A_Index - 1) * 8
+            if off = lineArg
+                continue
+            for row in rows {
+                p := NumGet(row["data"], off, "Ptr")
+                if p <= 0x10000 or p >= 0x7fffffffffff
+                    or p = row["ptr"]
+                    continue
+                try
+                    lineData := AhkMagic._RemoteRead(h, p, 0x100)
+                catch
+                    continue
+                if !AhkMagic._RemoteLineHasFuncRef(lineData, row["func"])
+                    continue
+                total[off] := (total.Has(off) ? total[off] : 0) + 1
+                if p > row["ptr"]
+                    forward[off] := (forward.Has(off) ? forward[off] : 0) + 1
+            }
+        }
+        bestOff := 0
+        bestForward := -1
+        bestTotal := -1
+        for off, score in forward {
+            t := total.Has(off) ? total[off] : 0
+            if score > bestForward
+                or (score = bestForward and t > bestTotal)
+                or (score = bestForward and t = bestTotal and bestOff
+                    and off < bestOff) {
+                bestForward := score
+                bestTotal := t
+                bestOff := off
+            }
+        }
+        if !bestOff
+            throw Error("dynamic Line.mNextLine not found", -1)
+        return bestOff
+    }
+
+    static _RemoteLineAttributeOff(h, rows, lineArg, lineNext, backOff
+        , funcs) {
+        known := Map()
+        for q in funcs
+            known[q] := true
+        counts := Map()
+        for row in rows {
+            visited := Map()
+            stack := [row["ptr"]]
+            while stack.Length {
+                line := stack.Pop()
+                if visited.Has(line)
+                    continue
+                visited[line] := true
+                try
+                    lineData := AhkMagic._RemoteRead(h, line, 0x100)
+                catch
+                    continue
+                loop lineData.Size // 8 {
+                    off := (A_Index - 1) * 8
+                    if off = lineArg or off = lineNext
+                        continue
+                    p := NumGet(lineData, off, "Ptr")
+                    if known.Has(p) {
+                        counts[off] := (counts.Has(off)
+                            ? counts[off] : 0) + 1
+                        continue
+                    }
+                    if p <= 0x10000 or p >= 0x7fffffffffff or p = line
+                        continue
+                    if AhkMagic._RemoteLineHasFuncRef(lineData, row["func"])
+                        and !visited.Has(p)
+                        stack.Push(p)
+                }
+            }
+        }
+        bestOff := 0
+        bestScore := 0
+        for off, score in counts {
+            if score > bestScore or (score = bestScore and bestOff
+                and off < bestOff) {
+                bestScore := score
+                bestOff := off
+            }
+        }
+        if !bestOff
+            throw Error("dynamic Line.mAttribute not found", -1)
+        return bestOff
+    }
+
+    static _RemoteDerefArrayLike(data) {
+        if NumGet(data, 0, "Ptr") <= 0x10000
+            or NumGet(data, 0, "Ptr") >= 0x7fffffffffff
+            return false
+        loop 24 {
+            to := A_Index - 1
+            if to < 8 or to + 8 > data.Size
+                continue
+            if NumGet(data, to, "UChar") <= 7
+                and NumGet(data, to + 4, "UInt") <= 0x10000
+                return true
+        }
+        return false
+    }
+
+    static _RemoteDerefLayout(h, rows, lineArg) {
+        arrays := []
+        argDerefCounts := Map()
+        for row in rows {
+            arg := NumGet(row["data"], lineArg, "Ptr")
+            if arg <= 0x10000 or arg >= 0x7fffffffffff
+                continue
+            try
+                argData := AhkMagic._RemoteRead(h, arg, 40)
+            catch
+                continue
+            loop argData.Size // 8 {
+                off := (A_Index - 1) * 8
+                p := NumGet(argData, off, "Ptr")
+                if p <= 0x10000 or p >= 0x7fffffffffff
+                    continue
+                try
+                    data := AhkMagic._RemoteRead(h, p, 0x100)
+                catch
+                    continue
+                if AhkMagic._RemoteDerefArrayLike(data) {
+                    arrays.Push(data)
+                    argDerefCounts[off] := (argDerefCounts.Has(off)
+                        ? argDerefCounts[off] : 0) + 1
+                }
+            }
+        }
+        if arrays.Length < 1
+            throw Error("dynamic ArgStruct.deref not found", -1)
+
+        argDerefOff := 0
+        argDerefScore := -1
+        for off, score in argDerefCounts {
+            if score > argDerefScore
+                or (score = argDerefScore and off < argDerefOff) {
+                argDerefScore := score
+                argDerefOff := off
+            }
+        }
+        if !argDerefScore
+            throw Error("dynamic ArgStruct.deref offset not found", -1)
+
+        bestStride := 24
+        bestType := 16
+        bestScore := -1
+        for stride in [24, 32, 16, 40] {
+            for typeOff in [16, 20, 24] {
+                if typeOff + 8 > stride
+                    continue
+                score := 0
+                for data in arrays {
+                    loop Min(data.Size // stride, 8) {
+                        off := (A_Index - 1) * stride
+                        marker := NumGet(data, off, "Ptr")
+                        if marker <= 0x10000
+                            or marker >= 0x7fffffffffff
+                            break
+                        if NumGet(data, off + typeOff, "UChar") <= 7
+                            and NumGet(data, off + typeOff + 1, "UChar") <= 3
+                            and NumGet(data, off + typeOff + 4, "UInt")
+                                <= 0x10000
+                            score += 1
+                    }
+                }
+                if score > bestScore
+                    or (score = bestScore and typeOff < bestType)
+                    or (score = bestScore and typeOff = bestType
+                        and stride < bestStride) {
+                    bestScore := score
+                    bestType := typeOff
+                    bestStride := stride
+                }
+            }
+        }
+        if !bestScore
+            throw Error("dynamic DerefType layout not found", -1)
+
+        markerOff := bestType - 16
+        varOff := bestType - 8
+        markerScore := 0
+        for data in arrays {
+            if NumGet(data, markerOff, "Ptr") > 0x10000
+                and NumGet(data, markerOff, "Ptr") < 0x7fffffffffff
+                markerScore += 1
+        }
+        if !markerScore
+            throw Error("dynamic DerefType markers not found", -1)
+
+        return Map(
+            "arg_deref", argDerefOff,
+            "stride", bestStride,
+            "marker", markerOff,
+            "var", varOff,
+            "type", bestType,
+            "len", bestType + 4)
+    }
+
+    static _RemoteDiscoverBackOff(h, funcs, funcData, jumpOff) {
+        counts := Map()
+        for index, q in funcs {
+            linePtr := NumGet(funcData[index], jumpOff, "Ptr")
+            if linePtr <= 0x10000 or linePtr >= 0x7fffffffffff
+                continue
+            try
+                lineData := AhkMagic._RemoteRead(h, linePtr, 0x80)
+            catch
+                continue
+            loop lineData.Size // 8 {
+                bo := (A_Index - 1) * 8
+                if NumGet(lineData, bo, "Ptr") = q
+                    counts[bo] := (counts.Has(bo) ? counts[bo] : 0) + 1
+            }
+        }
+        bestOff := 0
+        bestCount := 0
+        for off, count in counts {
+            if count > bestCount or (count = bestCount and off < bestOff) {
+                bestCount := count
+                bestOff := off
+            }
+        }
+        if !bestOff
+            throw Error("back-reference slot not found", -1)
+        return bestOff
+    }
+
+    static _DiscoverInProcStructs(gScript, arrPtr, oldCount, newFunc
+        , jumpOff) {
+        h := DllCall("OpenProcess", "UInt", 0x1F0FFF, "Int", 0
+            , "UInt", DllCall("GetCurrentProcessId"), "Ptr")
+        if !h
+            throw Error("OpenProcess(self) failed", -1)
+        try {
+            funcs := []
+            funcData := []
+            loop oldCount {
+                q := NumGet(arrPtr + (A_Index - 1) * 8, "Ptr")
+                if q <= 0x10000 or q >= 0x7fffffffffff
+                    continue
+                funcs.Push(q)
+                data := Buffer(0x400)
+                DllCall("RtlMoveMemory", "Ptr", data.Ptr, "Ptr", q
+                    , "UPtr", 0x400)
+                funcData.Push(data)
+            }
+            funcs.Push(newFunc)
+            data := Buffer(0x400)
+            DllCall("RtlMoveMemory", "Ptr", data.Ptr, "Ptr", newFunc
+                , "UPtr", 0x400)
+            funcData.Push(data)
+            backOff := AhkMagic._RemoteDiscoverBackOff(h, funcs, funcData
+                , jumpOff)
+            locOut := Buffer(64, 0)
+            NumPut("Ptr", AhkMagic.gScript, locOut, 0)
+            NumPut("Ptr", AhkMagic.finalizeExpr, locOut, 8)
+            NumPut("Ptr", AhkMagic.findOrAddVar, locOut, 16)
+            NumPut("Ptr", AhkMagic.crtFree, locOut, 24)
+            NumPut("UInt", AhkMagic.symInvalid, locOut, 32)
+            return AhkMagic._RemoteDiscoverStructs(h, locOut, funcs
+                , funcData, jumpOff, backOff)
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
+    }
+
+    static _RemoteDiscoverStructs(h, locOut, funcs, funcData, jumpOff
+        , backOff) {
+        rows := AhkMagic._RemoteLineRows(h, funcs, funcData, jumpOff, backOff)
+        if rows.Length < 1
+            throw Error("no ordinary functions for struct discovery"
+                , -1)
+        sentinel := NumGet(locOut, 32, "UInt")
+        postfixes := AhkMagic._RemoteCollectPostfixes(h, rows)
+        tokens := AhkMagic._RemoteDiscoverTokens(h, postfixes, sentinel)
+        header := AhkMagic._RemoteLineHeaderOff(rows)
+        arg := AhkMagic._RemoteLineArgOff(h, rows, tokens, sentinel)
+        argExpr := AhkMagic._RemoteArgExpressionOff(h, rows
+            , arg["line_arg"], arg["arg_postfix"], tokens, sentinel)
+        lineNext := AhkMagic._RemoteLineNextOff(h, rows, arg["line_arg"]
+            , backOff)
+        lineAttr := AhkMagic._RemoteLineAttributeOff(h, rows
+            , arg["line_arg"], lineNext, backOff, funcs)
+        deref := AhkMagic._RemoteDerefLayout(h, rows, arg["line_arg"])
+        return Map(
+            "line_action", header["action"],
+            "line_argc", header["argc"],
+            "line_arg", arg["line_arg"],
+            "line_attribute", lineAttr,
+            "line_next", lineNext,
+            "arg_expression", argExpr,
+            "arg_postfix", arg["arg_postfix"],
+            "arg_deref", deref["arg_deref"],
+            "token_stride", tokens["stride"],
+            "token_symbol", tokens["symbol"],
+            "token_usage", tokens["usage"],
+            "token_value", tokens["value"],
+            "token_var_symbol", tokens["var_symbol"],
+            "deref_stride", deref["stride"],
+            "deref_marker", deref["marker"],
+            "deref_var", deref["var"],
+            "deref_type", deref["type"],
+            "deref_len", deref["len"])
     }
 
     static _RemoteDiscoverLayout(h, secs, base, loc) {
@@ -2090,123 +2786,176 @@ ahkHackLayoutProbe() {
         loc["loc_out"] := locOut
         gscript := NumGet(locOut, 0, "Ptr")
         gAddr := base + loc["gptr_rva"]
-        g := NumGet(AhkMagic._RemoteRead(h, gAddr, 8), 0, "Ptr")
+        g := AhkMagic._RPtr(h, gAddr)
         currOff := loc["curr_off"]
-        snap := AhkMagic._RemoteRead(h, gscript, 0x200)
-        gsnap := AhkMagic._RemoteRead(h, g, 0x100)
-        savedCur := NumGet(AhkMagic._RemoteRead(h, g + currOff, 8), 0, "Ptr")
-        zeroBuf := Buffer(0x100, 0)
-        AhkMagic._RemoteWrite(h, g, zeroBuf)
-        curBuf := Buffer(8)
-        NumPut("Ptr", 0, curBuf, 0)
-        AhkMagic._RemoteWrite(h, g + currOff, curBuf)
-        parser := loc["parser"]
-        for key in ["mopen", "mpending_parent", "mline_parent"
-            , "mpending_related", "mlast_param_init", "mpending_hotkey"
-            , "mexpr_func"]
-            if parser.Has(key)
-                AhkMagic._WPtr(h, gscript + parser[key], 0)
-        if parser.Has("mexpr_func_index")
-            AhkMagic._WInt(h, gscript + parser["mexpr_func_index"], 0x7fffffff)
-        if parser.Has("mnext_func_body")
-            AhkMagic._WByte(h, gscript + parser["mnext_func_body"], 0)
-        if parser.Has("mignore_block")
-            AhkMagic._WByte(h, gscript + parser["mignore_block"], 0)
-        if parser.Has("mbackcompat")
-            AhkMagic._WByte(h, gscript + parser["mbackcompat"], 1)
-        if parser.Has("mclass_count")
-            AhkMagic._WInt(h, gscript + parser["mclass_count"], 0)
-        probeName := "ahkHackLayoutProbe_" Format("{:x}", A_TickCount)
-            . Format("{:x}", Random(1, 0x7fffffff))
-        probe := "`n" probeName "() {`n    return 1`n}`n"
-        rc := AhkMagic._RemoteLoadScript(h, base, loc, probe)
-        if rc != 0
-            throw Error("layout probe load rc=" rc, -1)
-        after := AhkMagic._RemoteRead(h, gscript, 0x400)
-        countOff := 0
-        loop 0x400 // 4 {
-            off := (A_Index - 1) * 4
-            before := NumGet(snap, off, "Int")
-            afterVal := NumGet(after, off, "Int")
-            if afterVal = before + 1 and before >= 0 and afterVal < 100000 {
-                countOff := off
-                break
-            }
-        }
-        if !countOff
-            throw Error("mFuncsCount offset not found", -1)
-        oldCount := NumGet(snap, countOff, "Int")
-        lastOff := -1
-        loop 0x400 // 8 {
+        snap := AhkMagic._RemoteRead(h, gscript, 0x800)
+        bestScore := -1
+        best := Map("funcs_off", 0, "count_off", 0, "arr_ptr", 0
+            , "count", 0, "name_off", 0, "jump_off", 0
+            , "back_off", 0, "funcs", [], "func_data", [])
+
+        loop 0x200 // 8 {
             off := (A_Index - 1) * 8
-            before := NumGet(snap, off, "Ptr")
-            afterVal := NumGet(after, off, "Ptr")
-            if before != afterVal and afterVal > 0x10000 {
-                lastOff := off
-                break
-            }
-        }
-        if lastOff < 0
-            throw Error("mLastLine offset not found", -1)
-        oldLast := NumGet(snap, lastOff, "Ptr")
-        newLast := NumGet(after, lastOff, "Ptr")
-        lineSet := Map()
-        line := oldLast ? NumGet(AhkMagic._RemoteRead(h, oldLast + 32, 8)
-            , 0, "Ptr") : 0
-        loop 10000 {
-            if !line
-                break
-            lineSet[line] := true
-            if line = newLast
-                break
-            line := NumGet(AhkMagic._RemoteRead(h, line + 32, 8), 0, "Ptr")
-        }
-        funcsOff := 0
-        jumpOff := 0
-        loop 0x400 // 8 {
-            off := (A_Index - 1) * 8
-            p := NumGet(after, off, "Ptr")
-            if p <= 0x10000 or p >= 0x7fffffffffff
+            if off + 12 > snap.Size
                 continue
-            try {
-                newFunc := NumGet(AhkMagic._RemoteRead(h, p + oldCount * 8, 8)
-                    , 0, "Ptr")
-            } catch
+            arrPtr := NumGet(snap, off, "Ptr")
+            count := NumGet(snap, off + 8, "Int")
+            if arrPtr <= 0x10000 or arrPtr >= 0x7fffffffffff
+                or count < 1 or count > 100000
                 continue
-            if newFunc <= 0x10000 or newFunc >= 0x7fffffffffff
-                continue
-            loop 0x200 // 8 {
-                joff := (A_Index - 1) * 8
-                try {
-                    q := NumGet(AhkMagic._RemoteRead(h, newFunc + joff, 8)
-                        , 0, "Ptr")
-                } catch
-                    continue
-                if q > 0x10000 and lineSet.Has(q) {
-                    funcsOff := off
-                    jumpOff := joff
+
+            limit := Min(count, 16)
+            funcs := []
+            funcData := []
+            lineCache := Map()
+            valid := true
+            loop limit {
+                try
+                    q := AhkMagic._RPtr(h, arrPtr + (A_Index - 1) * 8)
+                catch {
+                    valid := false
                     break
                 }
+                if q <= 0x10000 or q >= 0x7fffffffffff {
+                    valid := false
+                    break
+                }
+                funcs.Push(q)
+                funcData.Push(AhkMagic._RemoteRead(h, q, 0x400))
             }
-            if funcsOff
-                break
+            if !valid
+                continue
+
+            jumpOff := 0
+            jumpMatches := 0
+            jumpBestSlot := 0
+            jumpSlotOff := 0
+            loop 0x200 // 8 {
+                jo := (A_Index - 1) * 8
+                matches := 0
+                slotCount := Map()
+                for index, q in funcs {
+                    linePtr := NumGet(funcData[index], jo, "Ptr")
+                    if linePtr <= 0x10000 or linePtr >= 0x7fffffffffff
+                        continue
+                    if lineCache.Has(linePtr) {
+                        lineData := lineCache[linePtr]
+                    } else {
+                        try {
+                            lineData := AhkMagic._RemoteRead(h, linePtr, 0x80)
+                            lineCache[linePtr] := lineData
+                        } catch {
+                            continue
+                        }
+                    }
+                    foundSlot := 0
+                    loop lineData.Size // 8 {
+                        bo := (A_Index - 1) * 8
+                        if NumGet(lineData, bo, "Ptr") = q {
+                            foundSlot := bo
+                            break
+                        }
+                    }
+                    if foundSlot {
+                        matches += 1
+                        slotCount[foundSlot] := (slotCount.Has(foundSlot)
+                            ? slotCount[foundSlot] : 0) + 1
+                    }
+                }
+                bestSlot := 0
+                bestSlotCount := 0
+                for slot, count in slotCount {
+                    if count > bestSlotCount or count = bestSlotCount {
+                        bestSlotCount := count
+                        bestSlot := slot
+                    }
+                }
+                if bestSlotCount > jumpBestSlot
+                    or (bestSlotCount = jumpBestSlot and jumpBestSlot
+                        and jo < jumpOff) {
+                    jumpMatches := matches
+                    jumpBestSlot := bestSlotCount
+                    jumpSlotOff := bestSlot
+                    jumpOff := jo
+                }
+            }
+
+            minJump := limit < 2 ? 1 : 2
+            if jumpBestSlot < minJump
+                continue
+
+            nameOff := 0
+            nameMatches := 0
+            nameUnique := 0
+            loop 0x200 // 8 {
+                no := (A_Index - 1) * 8
+                matches := 0
+                seen := Map()
+                for index, q in funcs {
+                    namePtr := NumGet(funcData[index], no, "Ptr")
+                    if namePtr <= 0x10000 or namePtr >= 0x7fffffffffff
+                        continue
+                    try
+                        name := AhkMagic._RemoteReadString(h, namePtr, 128)
+                    catch
+                        continue
+                    if name = "" or StrLen(name) > 127
+                        continue
+                    if !RegExMatch(name, "^[A-Za-z_][A-Za-z0-9_.]*$")
+                        continue
+                    matches += 1
+                    seen[name] := 1
+                }
+                if matches > nameMatches
+                    or (matches = nameMatches and seen.Count > nameUnique) {
+                    nameMatches := matches
+                    nameUnique := seen.Count
+                    nameOff := no
+                }
+            }
+
+            minName := limit < 2 ? 1 : 2
+            if nameMatches < minName
+                continue
+
+            score := nameMatches * 100000 + nameUnique * 1000
+                + jumpMatches * 100 + limit
+            if score > bestScore {
+                bestScore := score
+                best["funcs_off"] := off
+                best["count_off"] := off + 8
+                best["arr_ptr"] := arrPtr
+                best["count"] := count
+                best["name_off"] := nameOff
+                best["jump_off"] := jumpOff
+                best["back_off"] := jumpSlotOff
+                best["funcs"] := funcs
+                best["func_data"] := funcData
+            }
         }
-        if !funcsOff or !jumpOff
-            throw Error("mFuncs/mJumpLine offset not found", -1)
-        AhkMagic._RemoteWrite(h, gscript, snap)
-        AhkMagic._RemoteWrite(h, g, gsnap)
-        savedBuf := Buffer(8)
-        NumPut("Ptr", savedCur, savedBuf, 0)
-        AhkMagic._RemoteWrite(h, g + currOff, savedBuf)
-        return Map(
+
+        if !best["funcs_off"] or !best["name_off"] or !best["jump_off"]
+            throw Error("dynamic function layout not found", -1)
+
+        loc["parser"] := AhkMagic._RemoteDiscoverParser(h, gscript
+            , loc["q_cmp"], loc["d_cmp"])
+        layout := Map(
             "gscript", gscript,
             "g", g,
             "curr_off", currOff,
-            "mfuncs_off", funcsOff,
-            "mfuncs_count_off", countOff,
-            "mlast_line_off", lastOff,
-            "mjump_line_off", jumpOff,
+            "mfuncs_off", best["funcs_off"],
+            "mfuncs_count_off", best["count_off"],
+            "mlast_line_off", 0,
+            "mjump_line_off", best["jump_off"],
+            "name_off", best["name_off"],
+            "jump_back_off", best["back_off"],
+            "funcs", best["funcs"],
+            "func_data", best["func_data"],
             "parser", loc["parser"])
+        layout["struct"] := AhkMagic._RemoteDiscoverStructs(h, locOut
+            , best["funcs"], best["func_data"], best["jump_off"]
+            , best["back_off"])
+        return layout
     }
 
     static _RPtr(h, addr) {
@@ -2255,14 +3004,18 @@ ahkHackLayoutProbe() {
                 hook["script_layout"] := layout
             }
             locOut := loc["loc_out"]
+            if !layout.Has("struct")
+                layout["struct"] := AhkMagic._RemoteDiscoverStructs(h, locOut
+                    , layout["funcs"], layout["func_data"]
+                    , layout["mjump_line_off"], layout["jump_back_off"])
+            s := layout["struct"]
             gscript := layout["gscript"]
             g := layout["g"]
             currOff := layout["curr_off"]
             parser := layout["parser"]
-            oldLast := AhkMagic._RPtr(h, gscript + layout["mlast_line_off"])
             oldFuncCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
             savedCur := AhkMagic._RPtr(h, g + currOff)
-            savedCurFunc := AhkMagic._RPtr(h, g + 0x28)
+            savedCurFunc := AhkMagic._RPtr(h, g + currOff)
 
             savedState := []
             for key in ["mopen", "mpending_parent", "mline_parent"
@@ -2307,15 +3060,6 @@ ahkHackLayoutProbe() {
                 funcsItem := AhkMagic._RPtr(h, gscript + layout["mfuncs_off"])
                 funcCount := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
                 if funcCount > oldFuncCount {
-                    firstNew := oldLast
-                        ? AhkMagic._RPtr(h, oldLast + 32) : 0
-                    if firstNew {
-                        rc := AhkMagic._RemoteCall(h
-                            , mod["base"] + loc["preparse_rva"]
-                            , [gscript, firstNew])
-                        if rc != 1
-                            throw Error("PreparseExpressions(tail) rc=" rc, -1)
-                    }
                     loop funcCount - oldFuncCount {
                         idx := oldFuncCount + A_Index - 1
                         newFunc := AhkMagic._RPtr(h, funcsItem + idx * 8)
@@ -2323,7 +3067,7 @@ ahkHackLayoutProbe() {
                             , newFunc + layout["mjump_line_off"])
                         if !jump
                             continue
-                        AhkMagic._WPtr(h, g + 0x28, newFunc)
+                        AhkMagic._WPtr(h, g + currOff, newFunc)
                         rc := AhkMagic._RemoteCall(h
                             , mod["base"] + loc["preparse_rva"]
                             , [gscript, jump])
@@ -2332,40 +3076,57 @@ ahkHackLayoutProbe() {
                         AhkMagic._WPtr(h, g + currOff, newFunc)
                         line := jump
                         while line {
-                            lineData := AhkMagic._RemoteRead(h, line, 40)
-                            action := NumGet(lineData, 0, "UChar")
-                            attr := NumGet(lineData, 16, "Ptr")
-                            argc := NumGet(lineData, 1, "UChar")
-                            arg := NumGet(lineData, 8, "Ptr")
+                            lineSize := Max(0x40, s["line_next"] + 8
+                                , s["line_attribute"] + 8, s["line_arg"] + 8)
+                            lineData := AhkMagic._RemoteRead(h, line, lineSize)
+                            action := NumGet(lineData, s["line_action"], "UChar")
+                            attr := NumGet(lineData, s["line_attribute"], "Ptr")
+                            argc := NumGet(lineData, s["line_argc"], "UChar")
+                            arg := NumGet(lineData, s["line_arg"], "Ptr")
                             if action = 3 and attr
                                 AhkMagic._WPtr(h, g + currOff, attr)
                             if argc and arg
-                                and NumGet(AhkMagic._RemoteRead(h, arg + 1, 1)
+                                and NumGet(AhkMagic._RemoteRead(h
+                                    , arg + s["arg_expression"], 1)
                                     , 0, "UChar") {
-                                postfix := AhkMagic._RPtr(h, arg + 24)
+                                postfix := AhkMagic._RPtr(h
+                                    , arg + s["arg_postfix"])
                                 if postfix {
                                     loop {
+                                        tokenSize := Max(s["token_stride"]
+                                            , s["token_symbol"] + 4
+                                            , s["token_usage"] + 8
+                                            , s["token_value"] + 8)
                                         token := AhkMagic._RemoteRead(h
-                                            , postfix, 24)
-                                        symbol := NumGet(token, 16, "UInt")
+                                            , postfix, tokenSize)
+                                        symbol := NumGet(token
+                                            , s["token_symbol"], "UInt")
                                         if symbol = NumGet(locOut, 32, "UInt")
                                             break
-                                        if symbol = 4
-                                            and NumGet(token, 8, "UInt") < 3 {
-                                            deref := NumGet(token, 0, "Ptr")
+                                        if symbol = s["token_var_symbol"]
+                                            and NumGet(token, s["token_usage"]
+                                                , "UInt") < 3 {
+                                            deref := NumGet(token
+                                                , s["token_value"], "Ptr")
                                             if deref {
+                                                derefSize := Max(24
+                                                    , s["deref_len"] + 4
+                                                    , s["deref_type"] + 1
+                                                    , s["deref_marker"] + 8
+                                                    , s["deref_var"] + 8)
                                                 derefData := AhkMagic._RemoteRead(h
-                                                    , deref, 24)
+                                                    , deref, derefSize)
                                                 derefType := NumGet(derefData
-                                                    , 16, "UChar")
+                                                    , s["deref_type"], "UChar")
                                                 marker := NumGet(derefData
-                                                    , 0, "Ptr")
+                                                    , s["deref_marker"], "Ptr")
                                                 derefLen := NumGet(derefData
-                                                    , 20, "UInt")
+                                                    , s["deref_len"], "UInt")
                                                 if derefType = 7 {
                                                     AhkMagic._WPtr(h, postfix
                                                         , AhkMagic._RPtr(h
-                                                            , deref + 8))
+                                                            , deref
+                                                            + s["deref_var"]))
                                                 } else if derefType = 0
                                                     and marker
                                                     and derefLen > 0
@@ -2375,16 +3136,19 @@ ahkHackLayoutProbe() {
                                                         , [gscript, marker
                                                             , derefLen, 0x103])
                                                     if var
-                                                        AhkMagic._WPtr(h, postfix
+                                                        AhkMagic._WPtr(h
+                                                            , postfix
+                                                                + s["token_value"]
                                                             , var)
                                                 }
                                             }
                                         }
-                                        postfix += 24
+                                        postfix += s["token_stride"]
                                     }
                                 }
                             }
-                            line := AhkMagic._RPtr(h, line + 32)
+                            line := AhkMagic._RPtr(h
+                                , line + s["line_next"])
                         }
                         AhkMagic._WPtr(h, g + currOff, savedCur)
                         rc := AhkMagic._RemoteCall(h
@@ -2392,7 +3156,7 @@ ahkHackLayoutProbe() {
                             , [gscript, newFunc])
                         if rc != 1
                             throw Error("PreprocessLocalVars rc=" rc, -1)
-                        AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
+                        AhkMagic._WPtr(h, g + currOff, savedCurFunc)
                     }
                 }
                 AhkMagic._WPtr(h, g + currOff, 0)
@@ -2421,7 +3185,7 @@ ahkHackLayoutProbe() {
                     else
                         AhkMagic._WByte(h, gscript + parser[item[1]], item[3])
                 }
-                AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
+                AhkMagic._WPtr(h, g + currOff, savedCurFunc)
                 AhkMagic._WPtr(h, g + currOff, savedCur)
             }
         } finally {

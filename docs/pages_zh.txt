@@ -1,0 +1,168 @@
+[b]1. 目标与范围[/b]
+
+这篇文章记录 [c]ahk-hack[/c] 的完整分析与提取流程。目标是让运行中的
+[c]AutoHotkey64.exe[/c] 暴露内部解释器结构，并在此基础上实现表达式求值、
+内存脚本加载、远程 Hook 和在线函数 Trace。
+
+这不是单个脚本，而是一个循环：
+
+- 阅读 AutoHotkey 源码形成假设；
+- 检查进程内存确认偏移；
+- 把稳定部分编码为位置无关机器码；
+- 用结构不变量验证每个指针；
+- 在大量解释器版本上重复验证。
+
+[b]2. PE 解析与节区映射[/b]
+
+第一步是映射已加载镜像。AutoHotkey v2 x64 使用标准 PE32+ 布局：
+
+[codebox=autohotkey file=pe-map]
+peOff := NumGet(base, 0x3C, "UInt")
+numSections := NumGet(base + peOff + 6, "UShort")
+optSize := NumGet(base + peOff + 20, "UShort")
+secTable := base + peOff + 24 + optSize
+[/codebox]
+
+扫描器按名称分类节区。[c].text[/c] 是可执行代码，[c].rdata[/c] 保存只读
+字符串，[c].data[/c] 保存可写解释器全局量。
+
+[b]3. 解释器表发现[/b]
+
+解释器在镜像中维护三张表：
+
+- [c]g_BIF[/c]：脚本可见内置函数，如 [c]Abs[/c]、[c]Sin[/c]；
+- [c]sMdFunc[/c]：带类型签名的原生函数，如 [c]MsgBox[/c]；
+- [c]g_BIV_A[/c]：以 [c]A_[/c] 开头的内置变量。
+
+扫描器不信任 RVA 表。它按指针对齐槽位扫描，只有同时满足以下条件才接受
+记录：
+
+- 名字指针指向可打印 UTF-16 文本；
+- 函数指针落在 [c].text[/c]；
+- 相邻记录按名字排序；
+- 存在 [c]Abs[/c]、[c]BlockInput[/c] 或 [c]AhkPath[/c] 等锚点。
+
+最长的合法连续区就是目标表。这套逻辑可以在 2.0-beta 到 2.1-alpha 之间
+工作，不需要按版本维护偏移表。
+
+[b]4. 源码考古[/b]
+
+源码树提供名字层面的真相，但不提供最终偏移。编译器布局、调试器字段和构建
+选项都会移动成员。因此流程是先读源码学习要找什么，再在内存里验证。
+
+例如 [c]script.h[/c] 中的 [c]UserFunc[/c] 拥有：
+
+- [c]mJumpToLine[/c]：函数体第一行；
+- [c]mParam[/c]：正式参数数组；
+- [c]mVars[/c]：排序后的局部变量列表。
+
+内存探针确认了实际 x64 偏移：
+
+[codebox=text file=func-layout]
+2.1-alpha.30: mName=0x28, mJumpToLine=0x48, mParam=0x50
+2.0.26:       mName=0x20, mJumpToLine=0x40, mParam=0x48
+[/codebox]
+
+这些偏移在不同版本间不同，所以库在运行时发现它们，而不是内嵌一张表。
+
+[b]5. 机器码提取[/b]
+
+稳定的扫描逻辑写在 [c]lib/mcode/[/c] 下的 C 源码中。构建使用 clang 生成
+无 CRT 的 COFF 对象：
+
+[codebox=text file=clang-build]
+clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
+  -fno-builtin -fno-stack-protector -fno-unwind-tables \
+  -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
+[/codebox]
+
+[c]tools/build_mcode.py[/c] 提取 [c].text[/c]，检查重定位记录，并拒绝任何
+引用逃出代码块的内容。最终十六进制字符串被嵌入
+[c]ahk_hack_single.ahk[/c]。
+
+[b]6. 进程内表达式求值[/b]
+
+AutoHotkey 把表达式编译成后缀 [c]ExprTokenType[/c] 数组。[c]EvalNative()[/c]
+构造临时 [c]Line[/c]/[c]ArgStruct[/c]，调用解释器自己的
+[c]ExpressionToPostfix[/c] 与 [c]ExpandExpression[/c]，再读取结果。定位器从
+机器码引用中发现 [c]gScript[/c]、[c]FindOrAddVar[/c]、
+[c]FinalizeExpression[/c] 与 [c]SYM_INVALID[/c]。
+
+[codebox=autohotkey file=evalnative]
+#Include ahk_hack_single.ahk
+AhkMagic.Init()
+
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
+MsgBox AhkMagic.EvalNative("Abs(-5)")             ; 5
+MsgBox AhkMagic.EvalNative("Point(1, 2).y")       ; 2，类已加载
+[/codebox]
+
+[b]7. 内存脚本加载[/b]
+
+表达式求值无法定义函数或类。[c]EvalScript()[/c] 通过内存 [c]TextStream[/c]
+把多行文本喂给 [c]LoadIncludedFile(TextStream*)[/c]。解析器入口、[c]g[/c]、
+[c]gScript[/c] 与解析器状态偏移都在运行时发现。
+
+加载前保存脚本状态，并在 [c]finally[/c] 中恢复：
+
+- 待处理的 parent/related 行；
+- 待处理的参数初始化器；
+- 当前模块；
+- 表达式函数索引；
+- class 对象数量。
+
+[b]8. 远程内省[/b]
+
+[c]AttachRemote(pid)[/c] 打开目标进程，读取 PE 镜像与解释器表，并返回
+hook。[c]RemoteEval()[/c] 注入定位器/求值线程；[c]RemoteEvalScript()[/c]
+通过目标自己的解析器加载脚本文本；[c]RemoteReplaceFuncBody()[/c] 交换
+[c]mJumpToLine[/c]，让已有调用方执行新函数体。
+
+[b]9. 动态偏移发现[/b]
+
+远程布局扫描器从存活内存验证 [c]mFuncs[/c]、[c]mFuncsCount[/c]、
+[c]mJumpToLine[/c]、函数名字段、解析器锚点、[c]Line[/c]、[c]ArgStruct[/c]、
+token 与 [c]DerefType[/c] 偏移。它优先使用结构不变量：
+
+- [c]Line[/c] 包含指向所属 [c]Func[/c] 的回引用；
+- [c]ArgStruct[/c] 包含后缀 token 数组；
+- token 数组以发现的 [c]SYM_INVALID[/c] 终止；
+- [c]DerefType[/c] 在类型字节前有两个指针字段。
+
+[b]10. TraceFunction 克隆实验[/b]
+
+Trace 功能暴露了一个深层问题：重命名函数会破坏 [c]mFuncs[/c] 与
+[c]VarList[/c] 的排序。稳定修复是克隆 [c]UserFunc[/c]，创建
+[c]VAR_CONSTANT[/c] 别名，注入 wrapper，并把 wrapper 的参数 [c]Var[/c]
+别名回原函数的参数。[c]UserFunc::Call[/c] 通过 [c]mParam[i].var[/c] 写入，
+因此共享同一组 [c]Var[/c] 对象可以让原函数体与 wrapper 使用一致的参数值。
+
+[b]11. 验证[/b]
+
+[c]tools/verify_all_runtimes.ps1[/c] 对本机所有 AutoHotkey 运行时运行九项
+矩阵。当前矩阵覆盖：
+
+- [c]2.0-beta.9[/c]、[c]beta.10[/c]、[c]beta.12[/c]、[c]beta.13[/c]、
+  [c]beta.15[/c]；
+- [c]2.0-rc.1[/c]、[c]rc.3[/c]；
+- [c]2.0.0[/c]、[c]2.0.2[/c]、[c]2.0.3[/c]、[c]2.0.4[/c]、
+  [c]2.0.26[/c]；
+- [c]2.1-alpha.1[/c]、[c]alpha.4[/c]、[c]alpha.13[/c]、
+  [c]alpha.16[/c]、[c]alpha.30[/c]；
+- 两个本机 [c]2.0-beta[/c] 开发副本。
+
+全部 19 个运行时都通过全部 9 项测试。
+
+[b]12. 安全与边界[/b]
+
+这个库会执行机器码、伪造解释器对象，并写入目标进程内存。它不是沙箱。请
+使用一次性目标、及时恢复补丁，并且永远不要 eval 不可信输入。加壳或恶意
+构建可能破坏基于字符串的发现；扫描器会显式失败，而不是猜测。
+
+[b]13. 继续阅读[/b]
+
+- 仓库：[url=https://github.com/MonoEven/ahk-hack-library]MonoEven/ahk-hack-library[/url]
+- 单文件核心：[url=https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk]ahk_hack_single.ahk[/url]
+- 机器码源码：[url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode]lib/mcode[/url]
+- AhkLive 层：[url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/ahk_live]lib/ahk_live[/url]
+- 完整矩阵报告：[url=https://github.com/MonoEven/ahk-hack-library/tree/master/reports]reports[/url]

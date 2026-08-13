@@ -1,0 +1,234 @@
+﻿AHK runtime verification matrix
+Generated: 2026-08-13 19:38:49
+Runtimes: 19
+
+===== 2.1-alpha.30 (D:\Tech\Projects\Autohotkey\AutoHotkey64.exe) =====
+[2.1-alpha.30] tests\ahk_live_cross_smoke.ahk = PASS
+[2.1-alpha.30] tests\ahk_live_test.ahk = PASS
+[2.1-alpha.30] tests\ahk_live_product_test.ahk = PASS
+[2.1-alpha.30] tests\ahk_live_six_test.ahk = PASS
+[2.1-alpha.30] tests\ahk_live_benchmark.ahk = PASS
+[2.1-alpha.30] tests\remote_hook_test.ahk = PASS
+[2.1-alpha.30] tests\evalscript_inproc.ahk = PASS
+[2.1-alpha.30] tests\evalscript_repeat.ahk = PASS
+[2.1-alpha.30] tests\evalscript_class.ahk = PASS
+
+===== 2.0.26 (D:\Tech\Projects\Autohotkey\Lib\.codex\autohotkey-2.0.26\runtime\AutoHotkey64.exe) =====
+[2.0.26] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0.26] tests\ahk_live_test.ahk = PASS
+[2.0.26] tests\ahk_live_product_test.ahk = PASS
+[2.0.26] tests\ahk_live_six_test.ahk = PASS
+[2.0.26] tests\ahk_live_benchmark.ahk = PASS
+[2.0.26] tests\remote_hook_test.ahk = PASS
+[2.0.26] tests\evalscript_inproc.ahk = PASS
+[2.0.26] tests\evalscript_repeat.ahk = PASS
+[2.0.26] tests\evalscript_class.ahk = PASS
+
+===== 2.0-beta-MyAutohotkey (D:\Tech\Projects\Autohotkey\MyAutohotkey\AutoHotkey64.exe) =====
+[2.0-beta-MyAutohotkey] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0-beta-MyAutohotkey] tests\ahk_live_test.ahk = PASS
+[2.0-beta-MyAutohotkey] tests\ahk_live_product_test.ahk = PASS
+[2.0-beta-MyAutohotkey] tests\ahk_live_six_test.ahk = PASS
+[2.0-beta-MyAutohotkey] tests\ahk_live_benchmark.ahk = PASS
+[2.0-beta-MyAutohotkey] tests\remote_hook_test.ahk = PASS
+[2.0-beta-MyAutohotkey] tests\evalscript_inproc.ahk = PASS
+[2.0-beta-MyAutohotkey] tests\evalscript_repeat.ahk = PASS
+[2.0-beta-MyAutohotkey] tests\evalscript_class.ahk = PASS
+
+===== 2.0-beta-bin (D:\Tech\Projects\Autohotkey\Projects\MyAutoHotkey\AutoHotkey-alpha\bin\AutoHotkey64.exe) =====
+[2.0-beta-bin] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0-beta-bin] tests\ahk_live_test.ahk = PASS
+[2.0-beta-bin] tests\ahk_live_product_test.ahk = PASS
+[2.0-beta-bin] tests\ahk_live_six_test.ahk = PASS
+[2.0-beta-bin] tests\ahk_live_benchmark.ahk = PASS
+[2.0-beta-bin] tests\remote_hook_test.ahk = PASS
+[2.0-beta-bin] tests\evalscript_inproc.ahk = PASS
+[2.0-beta-bin] tests\evalscript_repeat.ahk = PASS
+[2.0-beta-bin] tests\evalscript_class.ahk = PASS
+
+===== 2.0-beta.10 (D:\Tech\Projects\Autohotkey\v2.0-beta.10\AutoHotkey64.exe) =====
+[2.0-beta.10] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0-beta.10] tests\ahk_live_test.ahk = PASS
+[2.0-beta.10] tests\ahk_live_product_test.ahk = PASS
+[2.0-beta.10] tests\ahk_live_six_test.ahk = PASS
+[2.0-beta.10] tests\ahk_live_benchmark.ahk = PASS
+[2.0-beta.10] tests\remote_hook_test.ahk = PASS
+[2.0-beta.10] tests\evalscript_inproc.ahk = PASS
+[2.0-beta.10] tests\evalscript_repeat.ahk = PASS
+[2.0-beta.10] tests\evalscript_class.ahk = PASS
+
+===== 2.0-beta.12 (D:\Tech\Projects\Autohotkey\v2.0-beta.12\AutoHotkey64.exe) =====
+[2.0-beta.12] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0-beta.12] tests\ahk_live_test.ahk = PASS
+[2.0-beta.12] tests\ahk_live_product_test.ahk = PASS
+[2.0-beta.12] tests\ahk_live_six_test.ahk = PASS
+[2.0-beta.12] tests\ahk_live_benchmark.ahk = PASS
+[2.0-beta.12] tests\remote_hook_test.ahk = PASS
+[2.0-beta.12] tests\evalscript_inproc.ahk = PASS
+[2.0-beta.12] tests\evalscript_repeat.ahk = PASS
+[2.0-beta.12] tests\evalscript_class.ahk = PASS
+
+===== 2.0-beta.13 (D:\Tech\Projects\Autohotkey\v2.0-beta.13\AutoHotkey64.exe) =====
+[2.0-beta.13] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0-beta.13] tests\ahk_live_test.ahk = PASS
+[2.0-beta.13] tests\ahk_live_product_test.ahk = PASS
+[2.0-beta.13] tests\ahk_live_six_test.ahk = PASS
+[2.0-beta.13] tests\ahk_live_benchmark.ahk = PASS
+[2.0-beta.13] tests\remote_hook_test.ahk = PASS
+[2.0-beta.13] tests\evalscript_inproc.ahk = PASS
+[2.0-beta.13] tests\evalscript_repeat.ahk = PASS
+[2.0-beta.13] tests\evalscript_class.ahk = PASS
+
+===== 2.0-beta.15 (D:\Tech\Projects\Autohotkey\v2.0-beta.15\AutoHotkey64.exe) =====
+[2.0-beta.15] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0-beta.15] tests\ahk_live_test.ahk = PASS
+[2.0-beta.15] tests\ahk_live_product_test.ahk = PASS
+[2.0-beta.15] tests\ahk_live_six_test.ahk = PASS
+[2.0-beta.15] tests\ahk_live_benchmark.ahk = PASS
+[2.0-beta.15] tests\remote_hook_test.ahk = PASS
+[2.0-beta.15] tests\evalscript_inproc.ahk = PASS
+[2.0-beta.15] tests\evalscript_repeat.ahk = PASS
+[2.0-beta.15] tests\evalscript_class.ahk = PASS
+
+===== 2.0-beta.9 (D:\Tech\Projects\Autohotkey\v2.0-beta.9\AutoHotkey64.exe) =====
+[2.0-beta.9] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0-beta.9] tests\ahk_live_test.ahk = PASS
+[2.0-beta.9] tests\ahk_live_product_test.ahk = PASS
+[2.0-beta.9] tests\ahk_live_six_test.ahk = PASS
+[2.0-beta.9] tests\ahk_live_benchmark.ahk = PASS
+[2.0-beta.9] tests\remote_hook_test.ahk = PASS
+[2.0-beta.9] tests\evalscript_inproc.ahk = PASS
+[2.0-beta.9] tests\evalscript_repeat.ahk = PASS
+[2.0-beta.9] tests\evalscript_class.ahk = PASS
+
+===== 2.0-rc.1 (D:\Tech\Projects\Autohotkey\v2.0-rc.1\AutoHotkey64.exe) =====
+[2.0-rc.1] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0-rc.1] tests\ahk_live_test.ahk = PASS
+[2.0-rc.1] tests\ahk_live_product_test.ahk = PASS
+[2.0-rc.1] tests\ahk_live_six_test.ahk = PASS
+[2.0-rc.1] tests\ahk_live_benchmark.ahk = PASS
+[2.0-rc.1] tests\remote_hook_test.ahk = PASS
+[2.0-rc.1] tests\evalscript_inproc.ahk = PASS
+[2.0-rc.1] tests\evalscript_repeat.ahk = PASS
+[2.0-rc.1] tests\evalscript_class.ahk = PASS
+
+===== 2.0-rc.3 (D:\Tech\Projects\Autohotkey\v2.0-rc.3\AutoHotkey64.exe) =====
+[2.0-rc.3] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0-rc.3] tests\ahk_live_test.ahk = PASS
+[2.0-rc.3] tests\ahk_live_product_test.ahk = PASS
+[2.0-rc.3] tests\ahk_live_six_test.ahk = PASS
+[2.0-rc.3] tests\ahk_live_benchmark.ahk = PASS
+[2.0-rc.3] tests\remote_hook_test.ahk = PASS
+[2.0-rc.3] tests\evalscript_inproc.ahk = PASS
+[2.0-rc.3] tests\evalscript_repeat.ahk = PASS
+[2.0-rc.3] tests\evalscript_class.ahk = PASS
+
+===== 2.0.0 (D:\Tech\Projects\Autohotkey\v2.0.0\AutoHotkey64.exe) =====
+[2.0.0] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0.0] tests\ahk_live_test.ahk = PASS
+[2.0.0] tests\ahk_live_product_test.ahk = PASS
+[2.0.0] tests\ahk_live_six_test.ahk = PASS
+[2.0.0] tests\ahk_live_benchmark.ahk = PASS
+[2.0.0] tests\remote_hook_test.ahk = PASS
+[2.0.0] tests\evalscript_inproc.ahk = PASS
+[2.0.0] tests\evalscript_repeat.ahk = PASS
+[2.0.0] tests\evalscript_class.ahk = PASS
+
+===== 2.0.2 (D:\Tech\Projects\Autohotkey\v2.0.2\AutoHotkey64.exe) =====
+[2.0.2] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0.2] tests\ahk_live_test.ahk = PASS
+[2.0.2] tests\ahk_live_product_test.ahk = PASS
+[2.0.2] tests\ahk_live_six_test.ahk = PASS
+[2.0.2] tests\ahk_live_benchmark.ahk = PASS
+[2.0.2] tests\remote_hook_test.ahk = PASS
+[2.0.2] tests\evalscript_inproc.ahk = PASS
+[2.0.2] tests\evalscript_repeat.ahk = PASS
+[2.0.2] tests\evalscript_class.ahk = PASS
+
+===== 2.0.3 (D:\Tech\Projects\Autohotkey\v2.0.3\AutoHotkey64.exe) =====
+[2.0.3] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0.3] tests\ahk_live_test.ahk = PASS
+[2.0.3] tests\ahk_live_product_test.ahk = PASS
+[2.0.3] tests\ahk_live_six_test.ahk = PASS
+[2.0.3] tests\ahk_live_benchmark.ahk = PASS
+[2.0.3] tests\remote_hook_test.ahk = PASS
+[2.0.3] tests\evalscript_inproc.ahk = PASS
+[2.0.3] tests\evalscript_repeat.ahk = PASS
+[2.0.3] tests\evalscript_class.ahk = PASS
+
+===== 2.0.4 (D:\Tech\Projects\Autohotkey\v2.0.4\AutoHotkey64.exe) =====
+[2.0.4] tests\ahk_live_cross_smoke.ahk = PASS
+[2.0.4] tests\ahk_live_test.ahk = PASS
+[2.0.4] tests\ahk_live_product_test.ahk = PASS
+[2.0.4] tests\ahk_live_six_test.ahk = PASS
+[2.0.4] tests\ahk_live_benchmark.ahk = PASS
+[2.0.4] tests\remote_hook_test.ahk = PASS
+[2.0.4] tests\evalscript_inproc.ahk = PASS
+[2.0.4] tests\evalscript_repeat.ahk = PASS
+[2.0.4] tests\evalscript_class.ahk = PASS
+
+===== 2.1-alpha.1 (D:\Tech\Projects\Autohotkey\v2.1-alpha.1\AutoHotkey64.exe) =====
+[2.1-alpha.1] tests\ahk_live_cross_smoke.ahk = PASS
+[2.1-alpha.1] tests\ahk_live_test.ahk = PASS
+[2.1-alpha.1] tests\ahk_live_product_test.ahk = PASS
+[2.1-alpha.1] tests\ahk_live_six_test.ahk = PASS
+[2.1-alpha.1] tests\ahk_live_benchmark.ahk = PASS
+[2.1-alpha.1] tests\remote_hook_test.ahk = PASS
+[2.1-alpha.1] tests\evalscript_inproc.ahk = PASS
+[2.1-alpha.1] tests\evalscript_repeat.ahk = PASS
+[2.1-alpha.1] tests\evalscript_class.ahk = PASS
+
+===== 2.1-alpha.13 (D:\Tech\Projects\Autohotkey\v2.1-alpha.13\AutoHotkey64.exe) =====
+[2.1-alpha.13] tests\ahk_live_cross_smoke.ahk = PASS
+[2.1-alpha.13] tests\ahk_live_test.ahk = PASS
+[2.1-alpha.13] tests\ahk_live_product_test.ahk = PASS
+[2.1-alpha.13] tests\ahk_live_six_test.ahk = PASS
+[2.1-alpha.13] tests\ahk_live_benchmark.ahk = PASS
+[2.1-alpha.13] tests\remote_hook_test.ahk = PASS
+[2.1-alpha.13] tests\evalscript_inproc.ahk = PASS
+[2.1-alpha.13] tests\evalscript_repeat.ahk = PASS
+[2.1-alpha.13] tests\evalscript_class.ahk = PASS
+
+===== 2.1-alpha.16 (D:\Tech\Projects\Autohotkey\v2.1-alpha.16\AutoHotkey64.exe) =====
+[2.1-alpha.16] tests\ahk_live_cross_smoke.ahk = PASS
+[2.1-alpha.16] tests\ahk_live_test.ahk = PASS
+[2.1-alpha.16] tests\ahk_live_product_test.ahk = PASS
+[2.1-alpha.16] tests\ahk_live_six_test.ahk = PASS
+[2.1-alpha.16] tests\ahk_live_benchmark.ahk = PASS
+[2.1-alpha.16] tests\remote_hook_test.ahk = PASS
+[2.1-alpha.16] tests\evalscript_inproc.ahk = PASS
+[2.1-alpha.16] tests\evalscript_repeat.ahk = PASS
+[2.1-alpha.16] tests\evalscript_class.ahk = PASS
+
+===== 2.1-alpha.4 (D:\Tech\Projects\Autohotkey\v2.1-alpha.4\AutoHotkey64.exe) =====
+[2.1-alpha.4] tests\ahk_live_cross_smoke.ahk = PASS
+[2.1-alpha.4] tests\ahk_live_test.ahk = PASS
+[2.1-alpha.4] tests\ahk_live_product_test.ahk = PASS
+[2.1-alpha.4] tests\ahk_live_six_test.ahk = PASS
+[2.1-alpha.4] tests\ahk_live_benchmark.ahk = PASS
+[2.1-alpha.4] tests\remote_hook_test.ahk = PASS
+[2.1-alpha.4] tests\evalscript_inproc.ahk = PASS
+[2.1-alpha.4] tests\evalscript_repeat.ahk = PASS
+[2.1-alpha.4] tests\evalscript_class.ahk = PASS
+
+===== Summary =====
+Runtime                Pass/Total
+2.0.0                  9/9
+2.0.2                  9/9
+2.0.26                 9/9
+2.0.3                  9/9
+2.0.4                  9/9
+2.0-beta.10            9/9
+2.0-beta.12            9/9
+2.0-beta.13            9/9
+2.0-beta.15            9/9
+2.0-beta.9             9/9
+2.0-beta-bin           9/9
+2.0-beta-MyAutohotkey  9/9
+2.0-rc.1               9/9
+2.0-rc.3               9/9
+2.1-alpha.1            9/9
+2.1-alpha.13           9/9
+2.1-alpha.16           9/9
+2.1-alpha.30           9/9
+2.1-alpha.4            9/9

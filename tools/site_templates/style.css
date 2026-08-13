@@ -12,7 +12,7 @@
   --code-ink: #e6e9ef;
   --code-muted: #9aa7b8;
   --radius: 8px;
-  --content-max: 52rem;
+  --content-max: 60rem;
 }
 
 * {
@@ -247,7 +247,7 @@ body {
   font-size: clamp(2rem, 5vw, 3rem);
   line-height: 1.16;
   letter-spacing: 0;
-  max-width: 18ch;
+  max-width: 24ch;
 }
 
 .lede {

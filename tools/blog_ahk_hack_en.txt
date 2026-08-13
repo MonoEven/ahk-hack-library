@@ -1,0 +1,193 @@
+[b]Inside AutoHotkey64.exe: a field journal[/b]
+
+Repository: [url=https://github.com/MonoEven/ahk-hack-library]MonoEven/ahk-hack-library[/url]
+
+Online technical walkthrough: [url=https://monoeven.github.io/ahk-hack-library/]https://monoeven.github.io/ahk-hack-library/[/url]
+
+This is the field journal behind the project. It is written like a diary of
+experiments: what was tried, what broke, and what eventually worked. If you
+want the formal extraction process, read the Pages site. This file is the
+story.
+
+[b]1. The first question[/b]
+
+AutoHotkey v2 exposes [c]A_AhkPath[/c] and a lot of built-ins, but it does not
+expose a C API for interpreter internals. I wanted to know whether a script
+could read the executable that is running it, find the interpreter tables, and
+then build real features on top of that.
+
+The answer turned out to be yes, with enough care.
+
+[b]2. Reading the PE image[/b]
+
+The first experiment was simple: parse the DOS header, follow [c]e_lfanew[/c],
+walk the section table, and print [c].text[/c], [c].rdata[/c], and
+[c].data[/c]. That part was easy. The PE format is stable and documented.
+
+[codebox=autohotkey file=pe-read]
+peOff := NumGet(base, 0x3C, "UInt")
+numSections := NumGet(base + peOff + 6, "UShort")
+optSize := NumGet(base + peOff + 20, "UShort")
+secTable := base + peOff + 24 + optSize
+[/codebox]
+
+[b]3. Finding tables without an RVA table[/b]
+
+The interpreter tables are ordinary arrays in the image. The first idea was to
+search for the string [c]Abs[/c] and then walk backwards. That worked once, but
+it felt fragile.
+
+The better idea was to validate records structurally. A table record must have
+a UTF-16 name pointer and a function pointer in executable code. Neighboring
+records must stay sorted. The longest run that satisfies all three checks is
+the table. This removed version-specific addresses.
+
+[b]4. Why machine code?[/b]
+
+An AutoHotkey loop can parse PE headers, but it is slow and visible. I wanted
+the same logic to run at C speed inside the same process. The solution was to
+write the scanner in C, compile it with clang as freestanding x64 code, check
+that no relocation escapes the blob, and embed the resulting hex string in an
+AHK file.
+
+The build script refuses to embed a broken blob. That rule saved me more than
+once.
+
+[b]5. The Eval rabbit hole[/b]
+
+Expression evaluation was the next wall. AutoHotkey does not evaluate
+expression strings directly. It compiles them into postfix token arrays and
+evaluates those arrays later.
+
+The breakthrough was realizing that [c]EvalNative()[/c] does not need a new
+interpreter. It needs a temporary [c]Line[/c] and [c]ArgStruct[/c], the same
+objects the parser would create, plus pointers to the interpreter's own
+[c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c].
+
+[codebox=autohotkey file=evalnative]
+#Include ahk_hack_single.ahk
+AhkMagic.Init()
+
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
+MsgBox AhkMagic.EvalNative("Abs(-5)")             ; 5
+MsgBox AhkMagic.EvalNative("Point(1, 2).y")       ; 2, class loaded in-process
+[/codebox]
+
+[b]6. Loading scripts from memory[/b]
+
+Expression eval cannot define functions or classes. The next experiment fed
+multi-line text into the interpreter's include loader from an in-memory
+[c]TextStream[/c]. No temp file. The parser could not tell the difference.
+
+That unlocked function definitions, class definitions, and in-process script
+loading.
+
+[b]7. Going remote[/b]
+
+The same primitives work on another AutoHotkey process. [c]AttachRemote(pid)[/c]
+opens the process, reads its tables, and returns a hook. [c]RemoteEval()[/c]
+runs an expression in the target. [c]RemoteEvalScript()[/c] loads whole scripts
+through the target's parser.
+
+The hotkey verification was the satisfying part:
+
+[codebox=autohotkey file=remote-hotkey]
+hook := AhkMagic.AttachRemote(pid)
+AhkMagic.RemoteEvalScript(hook, "
+(
+NewA() {
+    return 42
+}
+NewA()
+)")
+AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
+Send("{F9}")
+[/codebox]
+
+The target starts writing [c]A()=42[/c] instead of [c]A()=1[/c].
+
+[b]8. The trace bug that refused to die[/b]
+
+The hardest bug was [c]TraceFunction[/c]. The first implementation renamed the
+original function and injected a wrapper. It worked sometimes, then broke.
+
+The root cause was deeper than a bad offset:
+
+- function names live in both [c]Func.mName[/c] and global [c]Var.mName[/c];
+- [c]mFuncs[/c] and [c]VarList[/c] are sorted arrays;
+- renaming one side breaks binary search;
+- body replacement alone does not rebind parameter [c]Var[/c] objects.
+
+I tried reordering both lists. I tried removing the old function and creating
+an alias. Both were unstable after a second script injection.
+
+The stable fix came from reading [c]UserFunc::Call[/c]:
+
+[codebox=cpp file=usercall]
+for (j = 0; j < mParamCount; ++j)
+{
+    FuncParam &this_formal_param = mParam[j];
+    ...
+}
+[/codebox]
+
+The call path writes through [c]mParam[i].var[/c]. That means two function
+objects can share the same parameter [c]Var[/c] objects, and both their bodies
+will see the same values.
+
+The final design:
+
+- clone the [c]UserFunc[/c] object;
+- create a [c]VAR_CONSTANT[/c] alias for the clone;
+- inject a wrapper that calls the clone;
+- alias the wrapper's parameter [c]Var[/c] objects to the original function's
+  parameters;
+- replace the original function body pointer.
+
+That version passed all 19 local runtimes.
+
+[b]9. Verification culture[/b]
+
+The machine has many AutoHotkey builds. The matrix script
+[c]tools/verify_all_runtimes.ps1[/c] runs nine tests against each one:
+
+- live snapshot and inventory;
+- full trace/replace path;
+- product sessions;
+- observability and fault injection;
+- benchmark;
+- remote hook and class loading;
+- in-process EvalScript variants.
+
+The current result is 19 runtimes, 9/9 tests each.
+
+[b]10. What the single file contains[/b]
+
+The whole core is one file: [c]ahk_hack_single.ahk[/c]. It contains
+[c]MCode()[/c], [c]AhkMagic[/c], all embedded machine-code blobs, the dynamic
+layout scanners, and the remote primitives.
+
+Copy it next to your script and include it:
+
+[codebox=autohotkey file=single-usage]
+#Include ahk_hack_single.ahk
+
+AhkMagic.Init()
+MsgBox AhkMagic.Summary()
+
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
+[/codebox]
+
+The full source is embedded below.
+
+[codebox=autohotkey file=ahk_hack_single]
+<!--AHK_SINGLE_FILE-->
+[/codebox]
+
+[b]11. Links[/b]
+
+- [url=https://github.com/MonoEven/ahk-hack-library]Repository[/url]
+- [url=https://monoeven.github.io/ahk-hack-library/]Technical pages[/url]
+- [url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode]Machine-code C sources[/url]
+- [url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/ahk_live]AhkLive layer[/url]
+- [url=https://github.com/MonoEven/ahk-hack-library/tree/master/tests]Tests[/url]

@@ -130,10 +130,17 @@ interpreter memory and can crash the target or trigger AV/EDR.
 
 ## Verification
 
-The full suite is verified on AutoHotkey 2.1-alpha.30 and 2.0.26. The
-`tests/ahk_live_cross_smoke.ahk` script covers the core, introspection,
-patch, and watch layers on both runtimes; the full trace/replace path is
-covered by `tests/ahk_live_test.ahk`.
+The matrix runner (`tools/verify_all_runtimes.ps1`) checks 19 AutoHotkey
+runtime builds from `2.0-beta.9` through `2.1-alpha.30`. All nine tests,
+including the full trace/replace path in `tests/ahk_live_test.ahk`, pass on
+every runtime.
+
+`TraceFunction` now clones the target `UserFunc`, creates a `VAR_CONSTANT`
+alias for the clone, injects a wrapper that calls the clone, aliases the
+wrapper's parameter variables back to the original function's `Var` objects,
+and replaces the original function body pointer. This avoids renaming the
+global function name or reordering `mFuncs`/`VarList`, which were the unstable
+parts of earlier experiments.
 
 See [docs/ahk_live_developer.md](../docs/ahk_live_developer.md) for
 architecture, lifecycle, diagnostics, and compatibility notes.

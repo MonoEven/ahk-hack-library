@@ -24,6 +24,10 @@ try {
     if r != 5
         throw Error("trace assertion failed")
     FileAppend("traced_add=" r "`n", outFile)
+    traceText := AhkLiveInspect.Eval(hook, tracer["log_var"])
+    if !InStr(traceText, "TRACE exit Add=5")
+        throw Error("trace log assertion failed")
+    FileAppend("trace_log=" traceText "`n", outFile)
     AhkLiveTrace.Untrace(hook, tracer)
     r := AhkLiveInspect.Eval(hook, "Add(2, 3)")
     if r != 5

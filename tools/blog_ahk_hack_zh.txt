@@ -1,0 +1,177 @@
+[b]AutoHotkey64.exe 内部：一份实验日志[/b]
+
+仓库：[url=https://github.com/MonoEven/ahk-hack-library]MonoEven/ahk-hack-library[/url]
+
+在线技术流程：[url=https://monoeven.github.io/ahk-hack-library/]https://monoeven.github.io/ahk-hack-library/[/url]
+
+这是项目背后的实验日志。它按探索过程写：试了什么、哪里坏了、最后怎么解决。
+如果你想看正式的分析与提取流程，请读 Pages 站点；这份文件是故事。
+
+[b]1. 第一个问题[/b]
+
+AutoHotkey v2 暴露了 [c]A_AhkPath[/c] 和大量内置函数，但没有暴露解释器
+内部的 C API。我想知道一个脚本能不能读取正在运行它的 exe、找到解释器表，
+然后在上面构建真实功能。
+
+答案是：可以，但需要足够小心。
+
+[b]2. 读 PE 镜像[/b]
+
+第一个实验很简单：解析 DOS 头，跟随 [c]e_lfanew[/c]，遍历节表，打印
+[c].text[/c]、[c].rdata[/c] 和 [c].data[/c]。这部分很容易。PE 格式稳定
+且有文档。
+
+[codebox=autohotkey file=pe-read]
+peOff := NumGet(base, 0x3C, "UInt")
+numSections := NumGet(base + peOff + 6, "UShort")
+optSize := NumGet(base + peOff + 20, "UShort")
+secTable := base + peOff + 24 + optSize
+[/codebox]
+
+[b]3. 不靠 RVA 表找表[/b]
+
+解释器表就是镜像里的普通数组。最初的想法是搜索 [c]Abs[/c] 字符串再往回走。
+那能跑一次，但感觉太脆弱。
+
+更好的想法是结构化验证记录：记录必须有 UTF-16 名字指针和落在可执行代码里
+的函数指针，相邻记录必须保持排序。满足三个条件的最长连续区就是目标表。
+这样就不依赖具体版本的地址。
+
+[b]4. 为什么用机器码[/b]
+
+AHK 循环可以解析 PE 头，但慢且明显。我想让同一套逻辑在进程内以 C 的速度
+运行。于是用 clang 把扫描器编译成无 CRT 的 x64 代码，检查没有重定位逃出
+代码块，再把十六进制字符串嵌入 AHK 文件。
+
+构建脚本拒绝嵌入坏掉的 blob。这条规则救了我很多次。
+
+[b]5. Eval 兔子洞[/b]
+
+表达式求值是下一堵墙。AutoHotkey 不会直接求值表达式字符串，而是先编译成
+后缀 token 数组，之后再执行。
+
+突破口是意识到 [c]EvalNative()[/c] 不需要新解释器。它只需要一个临时
+[c]Line[/c] 和 [c]ArgStruct[/c]，也就是解析器本来会创建的对象，再加上解释器
+自己的 [c]ExpressionToPostfix[/c] 与 [c]ExpandExpression[/c] 指针。
+
+[codebox=autohotkey file=evalnative]
+#Include ahk_hack_single.ahk
+AhkMagic.Init()
+
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
+MsgBox AhkMagic.EvalNative("Abs(-5)")             ; 5
+MsgBox AhkMagic.EvalNative("Point(1, 2).y")       ; 2，类已加载
+[/codebox]
+
+[b]6. 从内存加载脚本[/b]
+
+表达式求值无法定义函数或类。下一个实验把多行文本通过内存 [c]TextStream[/c]
+喂给解释器的 include 加载器，不写临时文件。解析器无法区分来源。
+
+这解锁了函数定义、class 定义和进程内脚本加载。
+
+[b]7. 远程化[/b]
+
+同一套原语可以作用在另一个 AutoHotkey 进程上。[c]AttachRemote(pid)[/c]
+打开进程、读取表并返回 hook。[c]RemoteEval()[/c] 在目标里执行表达式。
+[c]RemoteEvalScript()[/c] 通过目标自己的解析器加载整个脚本。
+
+热键验证是最有意思的部分：
+
+[codebox=autohotkey file=remote-hotkey]
+hook := AhkMagic.AttachRemote(pid)
+AhkMagic.RemoteEvalScript(hook, "
+(
+NewA() {
+    return 42
+}
+NewA()
+)")
+AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
+Send("{F9}")
+[/codebox]
+
+目标开始输出 [c]A()=42[/c]，而不是 [c]A()=1[/c]。
+
+[b]8. 一直不肯消失的 Trace bug[/b]
+
+最难的 bug 是 [c]TraceFunction[/c]。第一版重命名原函数并注入 wrapper，
+有时能用，然后坏掉。
+
+根因不是简单偏移：
+
+- 函数名同时存在于 [c]Func.mName[/c] 和全局 [c]Var.mName[/c]；
+- [c]mFuncs[/c] 与 [c]VarList[/c] 是排序数组；
+- 只改一边会破坏二分查找；
+- 仅替换函数体不会重新绑定参数 [c]Var[/c] 对象。
+
+我试过同时重排两个列表，也试过摘除旧函数并创建别名。第二次脚本注入后都
+不稳定。
+
+稳定修复来自读 [c]UserFunc::Call[/c]：
+
+[codebox=cpp file=usercall]
+for (j = 0; j < mParamCount; ++j)
+{
+    FuncParam &this_formal_param = mParam[j];
+    ...
+}
+[/codebox]
+
+调用路径通过 [c]mParam[i].var[/c] 写入参数。也就是说，两个函数对象可以共享
+同一组参数 [c]Var[/c]，两个函数体都会看到相同的值。
+
+最终设计：
+
+- 克隆 [c]UserFunc[/c] 对象；
+- 为克隆体创建 [c]VAR_CONSTANT[/c] 别名；
+- 注入调用克隆体的 wrapper；
+- 把 wrapper 的参数 [c]Var[/c] 别名回原函数参数；
+- 替换原函数体指针。
+
+这个版本通过了本机全部 19 个运行时。
+
+[b]9. 验证文化[/b]
+
+这台机器上有许多 AutoHotkey 构建。矩阵脚本
+[c]tools/verify_all_runtimes.ps1[/c] 对每个运行时执行九项测试：
+
+- 实时快照与清单；
+- 完整 Trace/替换路径；
+- 产品会话；
+- 观测与故障注入；
+- 基准；
+- 远程 Hook 与 class 加载；
+- 进程内 EvalScript 变体。
+
+当前结果是 19 个运行时，每个 9/9。
+
+[b]10. 单文件里有什么[/b]
+
+整个核心只有一个文件：[c]ahk_hack_single.ahk[/c]。它包含 [c]MCode()[/c]、
+[c]AhkMagic[/c]、全部嵌入机器码、动态布局扫描器和远程原语。
+
+把它复制到脚本旁边并 include：
+
+[codebox=autohotkey file=single-usage]
+#Include ahk_hack_single.ahk
+
+AhkMagic.Init()
+MsgBox AhkMagic.Summary()
+
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
+[/codebox]
+
+完整源码嵌入在下面。
+
+[codebox=autohotkey file=ahk_hack_single]
+<!--AHK_SINGLE_FILE-->
+[/codebox]
+
+[b]11. 链接[/b]
+
+- [url=https://github.com/MonoEven/ahk-hack-library]仓库[/url]
+- [url=https://monoeven.github.io/ahk-hack-library/]技术 Pages[/url]
+- [url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode]机器码 C 源码[/url]
+- [url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/ahk_live]AhkLive 层[/url]
+- [url=https://github.com/MonoEven/ahk-hack-library/tree/master/tests]测试[/url]

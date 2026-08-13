@@ -1,0 +1,180 @@
+[b]1. Goal and scope[/b]
+
+This article documents the full analysis and extraction workflow used by
+[c]ahk-hack[/c]. The goal is to take a running [c]AutoHotkey64.exe[/c], discover
+its internal interpreter structures at runtime, and build higher-level
+features such as expression evaluation, script loading from memory, remote
+hooking, and live function tracing.
+
+The process is not a single script. It is a loop:
+
+- read the AutoHotkey source tree to form hypotheses;
+- inspect the live process memory to confirm offsets;
+- encode the stable parts as position-independent machine code;
+- validate every discovered pointer against structural invariants;
+- run the same checks across many interpreter versions.
+
+[b]2. PE parsing and section mapping[/b]
+
+The first step is to map the loaded image. AutoHotkey v2 x64 executables use
+the standard PE32+ layout:
+
+[codebox=autohotkey file=pe-map]
+peOff := NumGet(base, 0x3C, "UInt")
+numSections := NumGet(base + peOff + 6, "UShort")
+optSize := NumGet(base + peOff + 20, "UShort")
+secTable := base + peOff + 24 + optSize
+[/codebox]
+
+The scanner keeps [c]{rva, size, ptr}[/c] for each section and classifies them
+by name. [c].text[/c] is executable code, [c].rdata[/c] holds read-only strings,
+and [c].data[/c] holds writable interpreter globals.
+
+[b]3. Interpreter table discovery[/b]
+
+The interpreter keeps three tables in the image:
+
+- [c]g_BIF[/c]: script-visible built-ins such as [c]Abs[/c] and [c]Sin[/c];
+- [c]sMdFunc[/c]: typed native functions such as [c]MsgBox[/c];
+- [c]g_BIV_A[/c]: built-in variables starting with [c]A_[/c].
+
+The scanner does not trust an RVA table. It walks pointer-aligned slots and
+accepts a record only when:
+
+- the name pointer resolves to printable UTF-16 text;
+- the function pointer lands in [c].text[/c];
+- neighboring records remain sorted by name;
+- a known anchor such as [c]Abs[/c], [c]BlockInput[/c], or [c]AhkPath[/c] is
+  present.
+
+The longest valid run is the table. This works across 2.0-beta through
+2.1-alpha without a per-version offset table.
+
+[b]4. Source archaeology[/b]
+
+The source tree is the ground truth for names, but not for final offsets.
+Compiler layout, debugger fields, and build flags move members. The workflow
+therefore reads source to learn what to look for, then verifies in memory.
+
+For example, [c]UserFunc[/c] in [c]script.h[/c] owns:
+
+- [c]mJumpToLine[/c]: the first body line;
+- [c]mParam[/c]: the formal parameter array;
+- [c]mVars[/c]: the sorted local variable list.
+
+The memory probe confirms the actual x64 offsets:
+
+[codebox=text file=func-layout]
+2.1-alpha.30: mName=0x28, mJumpToLine=0x48, mParam=0x50
+2.0.26:       mName=0x20, mJumpToLine=0x40, mParam=0x48
+[/codebox]
+
+The offsets differ between versions, so the library discovers them at runtime
+instead of embedding a table.
+
+[b]5. Machine-code extraction[/b]
+
+The stable scanning logic is written in C under [c]lib/mcode/[/c]. The build
+uses clang to produce a freestanding COFF object:
+
+[codebox=text file=clang-build]
+clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
+  -fno-builtin -fno-stack-protector -fno-unwind-tables \
+  -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
+[/codebox]
+
+[c]tools/build_mcode.py[/c] extracts [c].text[/c], walks relocation records, and
+rejects any blob with a relocation that escapes the blob. The final hex string
+is embedded into [c]ahk_hack_single.ahk[/c].
+
+[b]6. In-process expression evaluation[/b]
+
+AutoHotkey compiles expressions into postfix [c]ExprTokenType[/c] arrays.
+[c]EvalNative()[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c], calls the
+interpreter's [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c], and reads
+the result. The evaluator discovers [c]gScript[/c], [c]FindOrAddVar[/c],
+[c]FinalizeExpression[/c], and [c]SYM_INVALID[/c] from machine-code references.
+
+[codebox=autohotkey file=evalnative]
+#Include ahk_hack_single.ahk
+AhkMagic.Init()
+
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
+MsgBox AhkMagic.EvalNative("Abs(-5)")             ; 5
+MsgBox AhkMagic.EvalNative("Point(1, 2).y")       ; 2, class loaded in-process
+[/codebox]
+
+[b]7. Script loading from memory[/b]
+
+Expression eval cannot define functions or classes. [c]EvalScript()[/c] feeds
+multi-line text through [c]LoadIncludedFile(TextStream*)[/c] from an in-memory
+[c]TextStream[/c]. The parser entry points, [c]g[/c], [c]gScript[/c], and
+parser-state offsets are discovered at runtime.
+
+The script state is saved before loading and restored in a [c]finally[/c] block:
+
+- pending parent/related lines;
+- pending parameter initializers;
+- current module;
+- expression-function index;
+- class object count.
+
+[b]8. Remote introspection[/b]
+
+[c]AttachRemote(pid)[/c] opens a target process, reads its PE image and tables,
+and returns a hook. [c]RemoteEval()[/c] injects a locator/evaluator thread;
+[c]RemoteEvalScript()[/c] loads script text through the target's own parser.
+[c]RemoteReplaceFuncBody()[/c] swaps [c]mJumpToLine[/c] so existing callers
+execute a new body.
+
+[b]9. Dynamic offset discovery[/b]
+
+The remote layout scanner validates [c]mFuncs[/c], [c]mFuncsCount[/c],
+[c]mJumpToLine[/c], the function name field, parser anchors, [c]Line[/c],
+[c]ArgStruct[/c], token, and [c]DerefType[/c] offsets from live memory. It
+prefers structural invariants:
+
+- a [c]Line[/c] contains a back-reference to its owning [c]Func[/c];
+- an [c]ArgStruct[/c] contains a postfix token array;
+- token arrays terminate with the discovered [c]SYM_INVALID[/c];
+- [c]DerefType[/c] has two pointer-sized fields before the type byte.
+
+[b]10. TraceFunction cloning[/b]
+
+The trace feature exposed a subtle problem: renaming a function breaks
+[c]mFuncs[/c] and [c]VarList[/c] ordering. The stable fix clones the
+[c]UserFunc[/c], creates a [c]VAR_CONSTANT[/c] alias, injects a wrapper, and
+aliases the wrapper's parameter [c]Var[/c] objects back to the original
+function's parameters. [c]UserFunc::Call[/c] writes through
+[c]mParam[i].var[/c], so sharing the same [c]Var[/c] objects makes both the
+original body and the wrapper agree on argument values.
+
+[b]11. Verification[/b]
+
+[c]tools/verify_all_runtimes.ps1[/c] runs a nine-test matrix against every
+AutoHotkey runtime found on this machine. The current matrix covers:
+
+- [c]2.0-beta.9[/c], [c]beta.10[/c], [c]beta.12[/c], [c]beta.13[/c],
+  [c]beta.15[/c];
+- [c]2.0-rc.1[/c], [c]rc.3[/c];
+- [c]2.0.0[/c], [c]2.0.2[/c], [c]2.0.3[/c], [c]2.0.4[/c], [c]2.0.26[/c];
+- [c]2.1-alpha.1[/c], [c]alpha.4[/c], [c]alpha.13[/c], [c]alpha.16[/c],
+  [c]alpha.30[/c];
+- two local [c]2.0-beta[/c] development builds.
+
+All 19 runtimes pass all 9 tests.
+
+[b]12. Security and boundaries[/b]
+
+This library executes machine code, fabricates interpreter objects, and
+writes target process memory. It is not a sandbox. Use disposable targets,
+restore patches, and never eval untrusted input. Packed or hostile builds may
+break string-based discovery; the scanner fails loudly instead of guessing.
+
+[b]13. Further reading[/b]
+
+- Repository: [url=https://github.com/MonoEven/ahk-hack-library]MonoEven/ahk-hack-library[/url]
+- Single-file core: [url=https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk]ahk_hack_single.ahk[/url]
+- Machine-code sources: [url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode]lib/mcode[/url]
+- AhkLive layer: [url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/ahk_live]lib/ahk_live[/url]
+- Full matrix report: [url=https://github.com/MonoEven/ahk-hack-library/tree/master/reports]reports[/url]

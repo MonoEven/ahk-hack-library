@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Inside AutoHotkey64.exe - ahk-hack field notes</title>
-  <meta name="description" content="A technical walkthrough of runtime PE scanning, machine-code rebuilding, and in-process expression evaluation inside AutoHotkey v2.">
-  <link rel="stylesheet" href="style.css?v=3">
+  <title>Inside AutoHotkey64.exe - ahk-hack</title>
+  <meta name="description" content="How an AutoHotkey v2 script reads the interpreter that is running it, rebuilds embedded x64 machine code, evaluates expressions in-process, loads script text fr">
+  <link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
   <div class="progress" aria-hidden="true"></div>
@@ -13,7 +13,7 @@
     <div class="wrap">
       <div class="brand">
         <strong>ahk-hack</strong>
-        <span>runtime field notes for AutoHotkey v2</span>
+        <span>runtime introspection notes for AutoHotkey v2</span>
       </div>
       <nav class="lang-switch" aria-label="Language">
         <a class="active" href="index.html" lang="en">EN</a>
@@ -30,581 +30,162 @@
       </div>
       <nav id="toc" aria-label="Table of contents">
         <ol>
-          <li><a href="#why">Why scan at runtime</a></li>
-          <li><a href="#pe">The PE map</a></li>
-          <li><a href="#tables">The three interpreter tables</a></li>
-          <li><a href="#rebuild">Rebuilding the machine code</a></li>
-          <li><a href="#evalnative">EvalNative: in-process expression evaluation</a></li>
-          <li><a href="#evalscript">EvalScript: long text, functions, and classes</a></li>
-          <li><a href="#remote">Remote Hook</a></li>
-          <li><a href="#boundary">Runtime discovery versus layout constants</a></li>
-          <li><a href="#examples">Complete examples</a></li>
-          <li><a href="#verification">Verification matrix</a></li>
-          <li><a href="#debugging">Debugging and failure modes</a></li>
-          <li><a href="#security">Security and usage rules</a></li>
-          <li><a href="#learning">Learning path</a></li>
-          <li><a href="#appendix">Appendix: single-file source</a></li>
+<li><a href="#sec-1">Goal and scope</a></li>
+<li><a href="#sec-2">PE parsing and section mapping</a></li>
+<li><a href="#sec-3">Interpreter table discovery</a></li>
+<li><a href="#sec-4">Source archaeology</a></li>
+<li><a href="#sec-5">Machine-code extraction</a></li>
+<li><a href="#sec-6">In-process expression evaluation</a></li>
+<li><a href="#sec-7">Script loading from memory</a></li>
+<li><a href="#sec-8">Remote introspection</a></li>
+<li><a href="#sec-9">Dynamic offset discovery</a></li>
+<li><a href="#sec-10">TraceFunction cloning</a></li>
+<li><a href="#sec-11">Verification</a></li>
+<li><a href="#sec-12">Security and boundaries</a></li>
+<li><a href="#sec-13">Further reading</a></li><li><a href="#appendix">Appendix: single-file core</a></li>
         </ol>
       </nav>
     </aside>
     <div class="content">
     <section class="hero">
-      <div class="kicker">Field notes · 2026-08-12</div>
-      <h1>Inside AutoHotkey64.exe: Runtime Scanning, Machine Code, and In-Process Eval</h1>
-      <p class="lede">How an AutoHotkey v2 script reads the interpreter that is running it, rebuilds its embedded x64 machine code, and evaluates expressions without spawning a child process.</p>
-      <p class="meta">Repository: <a href="https://github.com/MonoEven/ahk-hack-library">MonoEven/ahk-hack-library</a> · Practice integration: <a href="https://github.com/MonoEven/cnumpy">cnumpy</a></p>
-      <div class="key-points">
-        <h2>What this covers</h2>
-        <ul>
-          <li>Runtime PE parsing and interpreter table scanning.</li>
-          <li>Rebuilding position-independent machine code from C sources.</li>
-          <li>In-process expression evaluation and script loading from memory.</li>
-        </ul>
-      </div>
+      <div class="kicker">Field notes · 2026-08-13</div>
+      <h1>Inside AutoHotkey64.exe: Runtime Scanning, In-Process Eval, and Remote Introspection</h1>
+      <p class="lede">How an AutoHotkey v2 script reads the interpreter that is running it, rebuilds embedded x64 machine code, evaluates expressions in-process, loads script text from memory, and inspects remote AHK processes.</p>
+      <p class="meta">Repository: <a href="https://github.com/MonoEven/ahk-hack-library">MonoEven/ahk-hack-library</a></p>
       <div class="links">
         <a href="https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk">Single-file core</a>
         <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode">Machine-code sources</a>
+        <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/ahk_live">AhkLive</a>
         <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/tests">Tests</a>
       </div>
     </section>
 
     <article>
-      <section id="why">
-        <h2>1. Why scan at runtime</h2>
-        <p>AutoHotkey v2 exposes the script-facing surface through built-ins and system variables such as <code>A_AhkPath</code>, but it does not provide a stable C API for interpreter internals. The tables used by this library, <code>g_BIF</code>, <code>sMdFunc</code>, and <code>g_BIV_A</code>, live inside <code>AutoHotkey64.exe</code> itself.</p>
-        <p>A script running inside the interpreter can call <code>GetModuleHandle</code> with <code>A_AhkPath</code>, parse the PE headers, and inspect <code>.text</code>, <code>.rdata</code>, and <code>.data</code> directly. The library reads the image first, mutates only through explicit operations, and lets locator failures surface as errors.</p>
-      </section>
-
-      <section id="pe">
-        <h2>2. The PE map</h2>
-        <p>Every x64 AutoHotkey v2 executable starts with the same fixed layout: an <code>MZ</code> DOS header, the PE signature <code>PE\0\0</code> at the offset stored in <code>e_lfanew</code>, and a PE32+ optional header with magic <code>0x20B</code>. The section table follows the optional header; each entry records a name, virtual size, virtual address, raw size, and characteristics.</p>
-        <pre><code>peOff := NumGet(base, 0x3C, "UInt")
-numSections := NumGet(base + peOff + 6, "UShort")
-optSize := NumGet(base + peOff + 20, "UShort")
+<section id="sec-1"><h2>Goal and scope</h2>
+<p>This article documents the full analysis and extraction workflow used by<br><code>ahk-hack</code>. The goal is to take a running <code>AutoHotkey64.exe</code>, discover<br>its internal interpreter structures at runtime, and build higher-level<br>features such as expression evaluation, script loading from memory, remote<br>hooking, and live function tracing.</p>
+<p>The process is not a single script. It is a loop:</p>
+<ul>
+<li>read the AutoHotkey source tree to form hypotheses;</li>
+<li>inspect the live process memory to confirm offsets;</li>
+<li>encode the stable parts as position-independent machine code;</li>
+<li>validate every discovered pointer against structural invariants;</li>
+<li>run the same checks across many interpreter versions.</li>
+</ul>
+</section>
+<section id="sec-2"><h2>PE parsing and section mapping</h2>
+<p>The first step is to map the loaded image. AutoHotkey v2 x64 executables use<br>the standard PE32+ layout:</p>
+<pre class="lang-autohotkey"><code>peOff := NumGet(base, 0x3C, &quot;UInt&quot;)
+numSections := NumGet(base + peOff + 6, &quot;UShort&quot;)
+optSize := NumGet(base + peOff + 20, &quot;UShort&quot;)
 secTable := base + peOff + 24 + optSize</code></pre>
-        <p><code>AhkMagic._ModuleSections()</code> wraps this into a <code>Map</code> keyed by section name, with <code>{rva, size, ptr}</code> per section. Three sections are used by the scanner:</p>
-        <ul>
-          <li><code>.text</code> contains executable code, so it is the only valid target for function pointers.</li>
-          <li><code>.rdata</code> holds read-only data, where UTF-16 names usually live.</li>
-          <li><code>.data</code> holds writable globals, where the interpreter tables are built.</li>
-        </ul>
-      </section>
-
-      <section id="tables">
-        <h2>3. The three interpreter tables</h2>
-        <p>The scanner looks for three tables whose record layout is stable on x64:</p>
-        <table>
-          <thead>
-            <tr>
-              <th>Table</th>
-              <th>Contents</th>
-              <th>Record stride</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><code>g_BIF</code></td>
-              <td>script-visible built-ins such as <code>Abs</code> and <code>Sin</code></td>
-              <td><code>0x20</code> bytes</td>
-            </tr>
-            <tr>
-              <td><code>sMdFunc</code></td>
-              <td>typed native functions such as <code>MsgBox</code> and <code>WinActivate</code></td>
-              <td><code>0x28</code> bytes</td>
-            </tr>
-            <tr>
-              <td><code>g_BIV_A</code></td>
-              <td>built-in variables beginning with <code>A_</code></td>
-              <td><code>0x18</code> bytes</td>
-            </tr>
-          </tbody>
-        </table>
-        <p>Every candidate record has to pass three checks. The name pointer must resolve to a printable UTF-16 string in <code>.rdata</code> or <code>.data</code>. The function pointer must resolve into <code>.text</code>. Neighboring records must remain sorted by name. The scanner walks pointer-aligned slots, anchors on <code>Abs</code>, <code>BlockInput</code>, and <code>AhkPath</code>, and keeps the longest run that satisfies all three checks. It then reads each record's RVA, parameter counts, and ID.</p>
-        <p>Signature scanning was chosen over an RVA table so that the same blob can run on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30.</p>
-      </section>
-
-      <section id="rebuild">
-        <h2>4. Rebuilding the machine code</h2>
-        <p>"Rebuilding the machine code" means regenerating the hex constants embedded in <code>ahk_hack_single.ahk</code> from the C sources in <code>lib/mcode/</code>. The blobs are compiled and checked by <code>tools/build_mcode.py</code>, not transcribed by hand.</p>
-        <p>The sources are:</p>
-        <table>
-          <thead>
-            <tr>
-              <th>Source</th>
-              <th>Purpose</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><code>scanner.c</code></td>
-              <td>locates <code>g_BIF</code>, <code>sMdFunc</code>, and <code>g_BIV_A</code></td>
-            </tr>
-            <tr>
-              <td><code>export_scanner.c</code></td>
-              <td>generic PE export-table scan for any loaded module</td>
-            </tr>
-            <tr>
-              <td><code>inproc_eval.c</code></td>
-              <td>in-process expression evaluator over a temporary <code>Line</code></td>
-            </tr>
-            <tr>
-              <td><code>internal_locator.c</code></td>
-              <td>runtime discovery of EvalNative internals</td>
-            </tr>
-            <tr>
-              <td><code>mem_script.c</code></td>
-              <td>in-memory <code>TextStream</code> for EvalScript</td>
-            </tr>
-          </tbody>
-        </table>
-        <h3>4.1 Compile to a freestanding COFF object</h3>
-        <pre><code>clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
+<p>The scanner keeps <code>{rva, size, ptr}</code> for each section and classifies them<br>by name. <code>.text</code> is executable code, <code>.rdata</code> holds read-only strings,<br>and <code>.data</code> holds writable interpreter globals.</p>
+</section>
+<section id="sec-3"><h2>Interpreter table discovery</h2>
+<p>The interpreter keeps three tables in the image:</p>
+<ul>
+<li><code>g_BIF</code>: script-visible built-ins such as <code>Abs</code> and <code>Sin</code>;</li>
+<li><code>sMdFunc</code>: typed native functions such as <code>MsgBox</code>;</li>
+<li><code>g_BIV_A</code>: built-in variables starting with <code>A_</code>.</li>
+</ul>
+<p>The scanner does not trust an RVA table. It walks pointer-aligned slots and<br>accepts a record only when:</p>
+<ul>
+<li>the name pointer resolves to printable UTF-16 text;</li>
+<li>the function pointer lands in <code>.text</code>;</li>
+<li>neighboring records remain sorted by name;</li>
+<li>a known anchor such as <code>Abs</code>, <code>BlockInput</code>, or <code>AhkPath</code> is</li>
+</ul>
+<p>  present.</p>
+<p>The longest valid run is the table. This works across 2.0-beta through<br>2.1-alpha without a per-version offset table.</p>
+</section>
+<section id="sec-4"><h2>Source archaeology</h2>
+<p>The source tree is the ground truth for names, but not for final offsets.<br>Compiler layout, debugger fields, and build flags move members. The workflow<br>therefore reads source to learn what to look for, then verifies in memory.</p>
+<p>For example, <code>UserFunc</code> in <code>script.h</code> owns:</p>
+<ul>
+<li><code>mJumpToLine</code>: the first body line;</li>
+<li><code>mParam</code>: the formal parameter array;</li>
+<li><code>mVars</code>: the sorted local variable list.</li>
+</ul>
+<p>The memory probe confirms the actual x64 offsets:</p>
+<pre class="lang-text"><code>2.1-alpha.30: mName=0x28, mJumpToLine=0x48, mParam=0x50
+2.0.26:       mName=0x20, mJumpToLine=0x40, mParam=0x48</code></pre>
+<p>The offsets differ between versions, so the library discovers them at runtime<br>instead of embedding a table.</p>
+</section>
+<section id="sec-5"><h2>Machine-code extraction</h2>
+<p>The stable scanning logic is written in C under <code>lib/mcode/</code>. The build<br>uses clang to produce a freestanding COFF object:</p>
+<pre class="lang-text"><code>clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
   -fno-builtin -fno-stack-protector -fno-unwind-tables \
   -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c</code></pre>
-        <p><code>-ffreestanding</code> removes CRT startup and standard-library assumptions. The <code>-fno-*</code> flags disable stack protectors, unwind tables, and compiler-generated jump tables, which keeps the output small and deterministic.</p>
-        <h3>4.2 Extract <code>.text</code> and resolve relocations</h3>
-        <p>The build script parses the COFF object, extracts the <code>.text</code> bytes, and walks every relocation record. It accepts <code>IMAGE_REL_AMD64_REL32</code> (type 4) only when the target symbol stays inside <code>.text</code>. Any other relocation aborts the build.</p>
-        <p>The reason is runtime placement. <code>MCode()</code> decodes the hex string into an AHK <code>Buffer</code>, changes its protection to executable, and returns it for <code>DllCall</code>. The blob has no absolute addresses, imports, or <code>.rdata</code> references, so it can run at any address. A relocation that escapes <code>.text</code> would make the copied bytes point back into the original object file instead of the current process.</p>
-        <h3>4.3 Embed and verify</h3>
-        <pre><code>python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk</code></pre>
-        <p>The script replaces the five <code>MC_*_X64</code> constants and prints the blob sizes. Regenerating from <code>lib/mcode/</code> currently reproduces the checked-in constants exactly. The sizes are <code>2559</code> bytes for the interpreter scanner, <code>297</code> for the export scanner, <code>1784</code> for the in-process evaluator, <code>1537</code> for the internal locator, and <code>1016</code> for the memory-script loader.</p>
-        <p>After a rebuild, run the test suite across the four interpreters. That is the actual verification; the hex strings themselves are not meant to be reviewed by eye.</p>
-      </section>
-
-      <section id="evalnative">
-        <h2>5. EvalNative: in-process expression evaluation</h2>
-        <p><code>EvalNative()</code> allocates a scratch buffer, builds a temporary <code>Line</code> and <code>ArgStruct</code>, and calls the interpreter's expression pipeline in place. No child process is involved, so the expression resolves against the caller's global variable table and module state.</p>
-        <h3>5.1 Why this enables Eval</h3>
-        <p>AutoHotkey does not evaluate an expression string directly. During script load, each expression line is compiled by <code>Line::ExpressionToPostfix</code> into a postfix <code>ExprTokenType</code> array, variables and functions are resolved, and <code>Line::ExpandExpression</code> later evaluates that postfix. <code>EvalNative()</code> constructs the same temporary <code>Line</code>/<code>ArgStruct</code> the parser would have produced, then calls those same functions. The result is not a reimplementation of AHK semantics; it is the interpreter's own expression pipeline running on a synthetic line. Operator precedence, string escapes, built-in calls, and global variable resolution are identical to a compiled script line.</p>
-        <pre><code>// source/script.h (AutoHotkey v2.1-alpha.30)
-ResultType ExpressionToPostfix(ArgStruct &aArg);
-ResultType ExpressionToPostfix(ArgStruct &aArg, ExprTokenType *&aInfix);
-ResultType FinalizeExpression(ArgStruct &aArg);
-LPTSTR ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *aResultToken,
-    LPTSTR &aTarget, LPTSTR &aDerefBuf, size_t &aDerefBufSize,
-    LPTSTR aArgDeref[], size_t aExtraSize);</code></pre>
-        <p>The first step is locating the functions. The library scans <code>.text</code> for RIP-relative references to two stable error strings, <code>"Missing operand."</code> and <code>"Error evaluating expression."</code>, then walks backward to the enclosing function starts. Those functions are <code>ExpressionToPostfix</code> and <code>ExpandExpression</code>.</p>
-        <p>Supporting addresses come from a second machine-code locator:</p>
-        <ul>
-          <li><code>gScript</code>: the most frequent <code>lea rcx,[rip+disp]</code> target inside <code>ExpressionToPostfix</code>.</li>
-          <li><code>FindVar</code>/<code>FindOrAddVar</code>: a six-argument prologue plus a null-name comparison pattern.</li>
-          <li><code>FinalizeExpression</code>: the standard <code>ArgStruct</code> prologue between the two main functions.</li>
-          <li>CRT <code>free</code>: the call reached immediately after the direct caller of <code>ExpressionToPostfix</code>.</li>
-          <li><code>SYM_INVALID</code>: the postfix terminator immediate found inside <code>ExpandExpression</code>.</li>
-        </ul>
-        <p>Before calling <code>ExpressionToPostfix</code>, the evaluator scans the UTF-16 expression and marks identifiers for variable resolution. It skips quoted strings and identifiers that follow a <code>.</code>, so member expressions such as <code>Point(1,2).x</code> are left alone. After postfix generation, <code>FindOrAddVar</code> resolves variables and function references, <code>FinalizeExpression</code> runs when the build has a separate function, and <code>ExpandExpression</code> evaluates the result.</p>
-        <pre><code>#Include ahk_hack_single.ahk
+<p><code>tools/build_mcode.py</code> extracts <code>.text</code>, walks relocation records, and<br>rejects any blob with a relocation that escapes the blob. The final hex string<br>is embedded into <code>ahk_hack_single.ahk</code>.</p>
+</section>
+<section id="sec-6"><h2>In-process expression evaluation</h2>
+<p>AutoHotkey compiles expressions into postfix <code>ExprTokenType</code> arrays.<br><code>EvalNative()</code> builds a temporary <code>Line</code>/<code>ArgStruct</code>, calls the<br>interpreter's <code>ExpressionToPostfix</code> and <code>ExpandExpression</code>, and reads<br>the result. The evaluator discovers <code>gScript</code>, <code>FindOrAddVar</code>,<br><code>FinalizeExpression</code>, and <code>SYM_INVALID</code> from machine-code references.</p>
+<pre class="lang-autohotkey"><code>#Include ahk_hack_single.ahk
 AhkMagic.Init()
 
-MsgBox AhkMagic.EvalNative("1 + 2 * 3")          ; 7
-MsgBox AhkMagic.EvalNative("2 * 3.5")            ; 7.0
-MsgBox AhkMagic.EvalNative("Abs(-5)")            ; 5
-MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)") ; "bc"
-
-myVar := 42
-MsgBox AhkMagic.EvalNative("myVar + 1")          ; 43</code></pre>
-        <p>The verified builds support literals, operators, globals, and function calls. Unsupported input raises an error with the pipeline status.</p>
-      </section>
-
-      <section id="evalscript">
-        <h2>6. EvalScript: the parser framework and in-memory loading</h2>
-        <h3>6.1 How AutoHotkey parses scripts</h3>
-        <p>Script loading is a pipeline. <code>Script::LoadFromFile</code> opens the main file; <code>OpenIncludedFile</code> creates a <code>TextStream</code>; <code>LoadIncludedFile(TextStream*, int)</code> reads lines through <code>GetLine</code>/<code>GetLineContinuation</code>, classifies each line (directive, hotkey, label, class, expression), and creates <code>Line</code> objects through <code>AddLine</code>/<code>ParseAndAddLine</code>. Expression lines are compiled by <code>ExpressionToPostfix</code> into <code>ExprTokenType</code> arrays; <code>PreparseExpressions</code> pre-compiles expression lines at load time; <code>PreprocessLocalVars</code> binds local variables inside function bodies. Function definitions are registered in <code>Script::mFuncs</code>, and each <code>UserFunc</code> keeps a <code>mJumpToLine</code> pointer to its body.</p>
-        <pre><code>// source/script.h (AutoHotkey v2.1-alpha.30), Script fields used by EvalScript
-Line *mLastLine;
-FuncList mFuncs;
-ScriptModule *mCurrentModule = &mBuiltinModule;
-ScriptModule *mLastModule = &mDefaultModule;
-Line *mLineParent = nullptr;
-Line *mPendingRelatedLine;
-Line *mLastParamInitializer;
-LPCTSTR mPendingHotkey = nullptr;
-int mExprFuncIndex = INT_MAX;
-bool mNextLineIsFunctionBody;
-bool mIgnoreNextBlockBegin;
-bool mBackCompatMode = true;
-int mClassObjectCount;</code></pre>
-        <p>This framework is why <code>EvalScript()</code> can define functions and classes in-process: it feeds the same <code>LoadIncludedFile</code> pipeline, from a memory <code>TextStream</code> instead of a file. The parser does not know whether the text came from disk or from a synthetic stream.</p>
-        <pre><code>// source/script.cpp (AutoHotkey v2.1-alpha.30), trimmed
-ResultType Script::LoadIncludedFile(TextStream *fp)
-{
-    int source_file_index = mCurrFileIndex;
-    bool blocks_previously_open = mLineParent || mClassObjectCount;
-    auto module_previously_open = mCurrentModule;
-    bool caller_backcompatmode = mBackCompatMode;
-    LineBuffer buf, next_buf;
-    ...
-    while (buf_length != -1)
-    {
-        if (!GetLineContinuation(fp, buf, next_buf, phys_line_number, has_continuation_section))
-            return FAIL;
-        ...
-    }
-}</code></pre>
-        <p>Expression evaluation cannot define functions or classes. <code>EvalScript()</code> uses the interpreter's include machinery directly from memory: the text is encoded as UTF-16, a minimal <code>TextMem</code>-compatible <code>TextStream</code> is built in a scratch buffer, and it is passed straight to <code>LoadIncludedFile(TextStream*)</code>. No temporary <code>.ahk</code> file is created. New lines run through <code>PreparseExpressions</code>, new functions through <code>PreprocessLocalVars</code>, and the last non-declaration line is evaluated with <code>EvalNative()</code>.</p>
-        <p>Each entry point is located at runtime:</p>
-        <ul>
-          <li><code>PreparseExpressions</code> is found through callers of <code>ExpressionToPostfix</code> combined with <code>cmp byte ptr [rbx], 3/4</code> patterns.</li>
-          <li><code>PreprocessLocalVars</code> uses its <code>movzx</code> plus <code>cmp byte ptr [rax+0x23], 2</code> signature.</li>
-          <li><code>OpenIncludedFile</code> is located as a fingerprint for <code>LoadIncludedFile(TextStream*)</code>, using two prologue needles covering the 2.0 line and 2.1.</li>
-          <li><code>LoadIncludedFile(TextStream*)</code> is found through a <code>cmp eax,3</code> site in the callers of <code>OpenIncludedFile</code>.</li>
-          <li><code>Line::sSourceFileCount</code> is discovered from a backward RIP-relative load with a plausible small count.</li>
-          <li>The <code>g</code> global is discovered inside callers of <code>PreparseExpressions</code> via a <code>mov rax,[rip+disp]</code> followed by a store into offset <code>0x28</code>.</li>
-        </ul>
-        <p>The in-memory <code>TextStream</code> is built with both possible <code>mData</code> regions populated, so the loader does not need to choose a layout for 2.0 versus 2.1. The script state is saved before loading and restored in a <code>finally</code> block: pending parent/related lines, pending parameter initializers, current module, expression-function state, and class count. This keeps temporary parser state out of the caller.</p>
-        <pre><code>script := "
-(
-add(a, b) {
-    return a + b
-}
-add(1, 2)
-)"
-MsgBox AhkMagic.EvalScript(script)               ; 3
-
-classScript := "
-(
-class Point {
-    x := 0
-    y := 0
-    __New(x, y) {
-        this.x := x
-        this.y := y
-    }
-}
-Point(1, 2).x
-)"
-MsgBox AhkMagic.EvalScript(classScript)          ; 1
-MsgBox AhkMagic.EvalNative("Point(1, 2).y")      ; 2, class loaded and used in-process</code></pre>
-      </section>
-
-      <section id="remote">
-        <h2>7. Remote Hook</h2>
-        <p>Think of the target as a running machine. We do not install anything into it and it does not have to cooperate: no <code>#Include</code>, no exported pointer, no callback. We read its memory map, find the labels on its internal shelves, then insert a small worker thread through the OS remote-thread door.</p>
-        <p><code>AttachRemoteByName("AutoHotkey64.exe")</code> finds the running process by image name, opens it with <code>OpenProcess</code>, reads PE headers and data sections through <code>ReadProcessMemory</code>, scans anchor names and sorted runs to locate the three tables, and returns a map with <code>image_base</code>, <code>table_rva</code>, and entries. <code>RemoteRedirect(hook, "Abs", "Sin")</code> reopens with write access and writes the destination function pointer into the source entry's <code>fn_ptr</code> slot.</p>
-        <p><code>AttachRemote(pid)</code> is the PID-based form of the same scan: <code>OpenProcess</code> plus <code>ReadProcessMemory</code>, PE section parsing, and the anchor/run table scan. <code>tools/ahk_remote_attach.py</code> does the same scan from outside without injection and can redirect builtins in the live table.</p>
-        <p><code>RemoteDeepRedirect(hook, "Abs", "Sin")</code> goes deeper: it scans the target heap for the already-resolved <code>Func</code> object and patches its <code>mBIF</code>, so a function <code>B()</code> that directly calls <code>A()</code> changes too.</p>
-        <pre><code>F1:: {
-    global hook
-    hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
-}
-F2:: {
-    global hook
-    AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
-    Send "{F7}"          ; activate target hotkey to verify
-    Sleep 400
-}
-F3:: {
-    global hook
-    AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
-    Send "{F8}"          ; activate target hotkey to verify
-    Sleep 400
-}</code></pre>
-        <p>Resident target behind <code>F7/F8</code> (<code>tests/remote_hook_resident_target.ahk</code>):</p>
-        <pre><code>#NoTrayIcon
-Persistent
-
-pidFile := A_Temp "\ahk_remote_attach_target.pid"
-outFile := A_Temp "\ahk_remote_resident.out"
-errFile := A_Temp "\ahk_remote_resident.err"
-try FileDelete(outFile)
-try FileDelete(errFile)
-FileAppend(DllCall("GetCurrentProcessId") "`n", pidFile)
-
-x := 0
-name := "Abs"
-
-F7:: {
-    global name
-    global outFile
-    try {
-        FileAppend("f7=" %name%(1) "`n", outFile)
-    } catch as e {
-        FileAppend("f7err=" e.Message "`n", outFile)
-    }
-}
-
-F8:: {
-    global x
-    global outFile
-    FileAppend("f8=" x "`n", outFile)
-}</code></pre>
-        <p><code>RemoteEval(hook, expr)</code> injects a thread stub plus the internal locator and evaluator blobs, runs them with <code>CreateRemoteThread</code>, and reads the result back.</p>
-        <p><code>RemoteEvalScript(hook, text)</code> loads multi-line scripts inside the target through its script-loading pipeline, including function and class definitions. The injected thread sets <code>g-&gt;CurrentFunc</code> before <code>PreparseExpressions</code>, so class methods using <code>Super</code> parse correctly.</p>
-        <pre><code>hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
-script := "
-(
-add(a, b) {
-    return a + b
-}
-add(1, 2)
-)"
-MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3</code></pre>
-        <p><code>RemoteReplaceFuncBody(hook, "A", "NewA")</code> replaces the function body pointer like <code>Abs -&gt; Sin</code>. The hotkey demo loads <code>NewA</code> on <code>F2</code>, replaces <code>A</code>, and <code>F9</code> verifies <code>42</code>; <code>F3</code> loads <code>PointNew</code> and <code>RemoteEval</code> verifies <code>2</code>.</p>
-        <p>Class verification chain: <code>RemoteEvalScript</code> loads <code>PointNew</code> into the target, then <code>RemoteEval</code> reads <code>PointNew(1, 2).y</code> in the same target. The hotkey path verifies function body replacement: <code>F2</code> loads <code>NewA</code>, replaces <code>A</code>, and <code>F9</code> returns <code>42</code>.</p>
-        <p>Live verification: start <code>tests/remote_hook_resident_target.ahk</code>, redirect <code>Abs</code> to <code>Sin</code>, then send <code>F7</code> to the target. It writes <code>0.8414709848078965</code> (<code>Sin(1)</code>) instead of <code>1</code> (<code>Abs(1)</code>). Remote eval <code>x := 1 + 2 * 3</code> is verified by sending <code>F8</code>, which writes <code>7</code>.</p>
-        <p>Function-to-function verification: <code>tests/remote_hook_function_target.ahk</code> defines <code>B_direct()</code> and <code>B_dynamic()</code>; <code>tests/remote_hook_function_demo.ahk</code> deep redirects <code>Abs -&gt; Sin</code> and both outputs become <code>0.8414709848078965</code>.</p>
-        <p>Remote compatibility matrix: 16/16 interpreter x interpreter combinations passed, and 16/16 Ahk2Exe-compiled UPX target x interpreter combinations passed.</p>
-        <pre><code>powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1</code></pre>
-      </section>
-
-      <section id="boundary">
-        <h2>8. Runtime discovery versus layout constants</h2>
-        <p>"Hardcoded" needs a precise definition here. The library has no per-version table at all. Tables, function entry points, globals, and enum values are discovered at runtime. The Script field offsets used by EvalScript are discovered the same way: a one-time probe loads a function from memory, diffs the live Script object to find <code>mFuncs</code>, <code>mFuncsCount</code>, and <code>mLastLine</code>, walks the new function's line chain to find <code>mJumpLine</code>, and reads parser-state anchors from the <code>LoadIncludedFile</code> prologue. Stable offsets such as <code>Line</code>/<code>ArgStruct</code>/token layout are fixed constants that have not changed across the verified builds.</p>
-        <table>
-          <thead>
-            <tr>
-              <th>Axis</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Table addresses (<code>g_BIF</code>, <code>sMdFunc</code>, <code>g_BIV_A</code>)</td>
-              <td>Runtime-discovered by PE and signature scan</td>
-            </tr>
-            <tr>
-              <td>Function entry points (EvalNative and EvalScript pipelines)</td>
-              <td>Runtime-discovered, no RVA table</td>
-            </tr>
-            <tr>
-              <td>Globals (<code>g</code>, <code>gScript</code>, current-line slot, <code>sSourceFileCount</code>)</td>
-              <td>Runtime-discovered</td>
-            </tr>
-            <tr>
-              <td>Enum values such as <code>SYM_INVALID</code></td>
-              <td>Runtime-discovered by the internal locator</td>
-            </tr>
-            <tr>
-              <td>Script/UserFunc/TextStream layout offsets</td>
-              <td>Runtime-discovered by probe diffing and machine-code anchors</td>
-            </tr>
-          </tbody>
-        </table>
-        <p>The probe runs once per process and restores the Script object afterwards, so it does not leave a hidden test function behind. A build whose layout differs will make the probe fail explicitly instead of falling back to a guessed offset.</p>
-        <h3>8.1 Why these methods can read version parameters</h3>
-        <p>Addresses are discoverable because stable strings create stable cross-references. The interpreter references error strings such as <code>"Missing operand."</code> with RIP-relative <code>lea</code> instructions in every build; the function that owns that reference can be found by walking back to the prologue. Global variables are similar: the compiler materializes their addresses with <code>lea reg,[rip+disp]</code>, so counting and filtering those references yields <code>g</code>, <code>gScript</code>, and the current-line slot.</p>
-        <pre><code>// source/script.h (AutoHotkey v2.1-alpha.30)
-class UserFunc : public Func {
-public:
-    Line *mJumpToLine = nullptr;
-    ...
-};
-
-// source/TextIO.h
-class TextMem : public TextStream {
-public:
-    struct Buffer {
-        LPVOID mBuffer;
-        DWORD mLength;
-        bool mOwned;
-    };
-private:
-    Buffer mData;
-    LPBYTE mDataPos;
-};</code></pre>
-        <p>Layout offsets are a different problem. Instead of hardcoding them, the probe makes the running interpreter reveal them: load a throwaway function, diff the live <code>Script</code> object to find <code>mFuncs</code>, <code>mFuncsCount</code>, and <code>mLastLine</code>, then walk the new function's line chain to find <code>mJumpLine</code>. Parser-state anchors are read from the <code>cmp</code> instructions in the <code>LoadIncludedFile</code> prologue. The <code>TextStream</code> layout is handled without choosing at all: both <code>mData</code> regions are populated, so the same object works for either layout. These techniques rely on structural invariants of the interpreter, not on per-version magic numbers.</p>
-        <h3>8.2 Multi-version compatibility</h3>
-        <p>Compatibility is a testable claim, not an assumption. The four-version matrix runs the same blob on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30. Stable offsets such as <code>Line</code>/<code>ArgStruct</code>/token layout have not changed in those builds; everything that did change is discovered at runtime. If a future build changes a layout in an unrecognized way, the probe or locator throws instead of proceeding with a guessed offset. That is the intended failure mode: explicit, isolated, and easy to debug.</p>
-        <p>The optional cnumpy bridge applies the same idea to AHK <code>Array</code> objects. <code>AhkLayout</code> discovers <code>mItem</code>, <code>mLength</code>, <code>mCapacity</code>, and the <code>Variant</code> layout by diffing live objects, then cross-validates with a second independent probe set.</p>
-      </section>
-
-      <section id="examples">
-        <h2>9. Complete examples</h2>
-        <h3>9.1 Table inventory</h3>
-        <pre><code>#Include ahk_hack_single.ahk
-AhkMagic.Init()
-
-MsgBox AhkMagic.Summary()
-for name, info in AhkMagic.bif {
-    if name = "Abs" or InStr(name, "Str")
-        MsgBox name " rva=0x" Format("{:X}", info["rva"])
-}</code></pre>
-        <h3>9.2 Generic export scan</h3>
-        <pre><code>hmod := DllCall("GetModuleHandle", "Str", "kernel32.dll", "Ptr")
-exports := AhkMagic.ScanExports(hmod)
-for name in ["VirtualAlloc", "CreateFileW", "ReadProcessMemory"] {
-    if exports.Has(name)
-        MsgBox name " rva=0x" Format("{:X}", exports[name]["rva"])
-}</code></pre>
-        <h3>9.3 Built-in redirection, table and object</h3>
-        <pre><code>old := AhkMagic.PatchBif("Abs", "Sin")
-name := "Abs"
-MsgBox %name%(1)              ; dynamic lookup now returns sin(1)
-AhkMagic.RestoreBif("Abs", old)
-
-state := AhkMagic.PatchBifObject(Abs, "Sin")
-MsgBox Abs(1)                 ; direct call now returns sin(1)
-AhkMagic.RestoreBifObject(Abs, state)</code></pre>
-        <p><code>PatchBif</code> changes the table slot used by future dynamic lookups. <code>PatchBifObject</code> additionally rewrites the already-resolved function object's C function pointer, so a direct <code>Abs(1)</code> in source is redirected too. Both are restored in the example.</p>
-        <h3>9.4 Expression eval</h3>
-        <pre><code>MsgBox AhkMagic.Eval("1 + 2 * 3")                  ; 7
-MsgBox AhkMagic.Eval("StrLen(`"hello`")")            ; 5
-MsgBox AhkMagic.EvalNative("Abs(-5)")                ; 5, in-process
-MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))")</code></pre>
-        <h3>9.5 Script text with functions and classes</h3>
-        <pre><code>text := "
-(
-add(a, b) {
-    return a + b
-}
-add(1, 2)
-)"
-MsgBox AhkMagic.EvalScript(text)                     ; 3
-
-cls := "
-(
-class Point {
-    x := 0
-    y := 0
-    __New(x, y) {
-        this.x := x
-        this.y := y
-    }
-}
-Point(1, 2).x + Point(1, 2).y
-)"
-MsgBox AhkMagic.EvalScript(cls)                      ; 3</code></pre>
-        <h3>9.6 Custom version probe</h3>
-        <pre><code>#Include ahk_hack_single.ahk
-try {
-    AhkMagic.Init()
-    AhkMagic._LocateInternalFunctions()
-    MsgBox "version=" A_AhkVersion "`n"
-        . "postfix=0x" Format("{:X}", AhkMagic.exprToPostfix) "`n"
-        . "expand=0x" Format("{:X}", AhkMagic.expandSingleArg) "`n"
-        . "gscript=0x" Format("{:X}", AhkMagic.gScript)
-} catch as e {
-    MsgBox "FAIL " e.Message
-}</code></pre>
-        <p>The probe reports addresses like these on the current machine. They are build-specific and shown only as a shape check:</p>
-        <table>
-          <thead>
-            <tr>
-              <th>Version</th>
-              <th><code>ExpressionToPostfix</code></th>
-              <th><code>ExpandExpression</code></th>
-              <th><code>gScript</code></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>2.1-alpha.30</td>
-              <td><code>0x14005A470</code></td>
-              <td><code>0x1400761C0</code></td>
-              <td><code>0x140136530</code></td>
-            </tr>
-            <tr>
-              <td>2.0.26</td>
-              <td><code>0x1400593A0</code></td>
-              <td><code>0x140074C60</code></td>
-              <td><code>0x140129FE0</code></td>
-            </tr>
-            <tr>
-              <td>2.0.0</td>
-              <td><code>0x140058A40</code></td>
-              <td><code>0x140073DA0</code></td>
-              <td><code>0x140127530</code></td>
-            </tr>
-            <tr>
-              <td>2.0-beta.10</td>
-              <td><code>0x140057910</code></td>
-              <td><code>0x140073950</code></td>
-              <td><code>0x1401294F0</code></td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-
-      <section id="verification">
-        <h2>10. Verification matrix</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Version</th>
-              <th>Table scan</th>
-              <th>Export scan</th>
-              <th>EvalNative</th>
-              <th>EvalScript functions</th>
-              <th>EvalScript classes</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr><td>2.1-alpha.30 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
-            <tr><td>2.0.26 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
-            <tr><td>2.0.0 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
-            <tr><td>2.0-beta.10 x64</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td><td>OK</td></tr>
-          </tbody>
-        </table>
-        <p>Ahk2Exe packaging keeps the in-process Eval pipeline intact. The compiled exe embeds the same AutoHotkey runtime, so <code>Init</code>, <code>EvalNative</code>, and <code>EvalScript</code> still work. Verified on all four versions with <code>AutoHotkey64.exe</code> as the Ahk2Exe base. <code>EvalSubprocess</code> also works: the compiled exe is relaunched with <code>/script</code> to interpret the temporary script. UPX and MPRESS compression are also verified; the scanner falls back to content-based section classification when packers rename interpreter sections.</p>
-        <pre><code>python -m unittest discover -s tests -p 'test_*.py' -v
-& D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
-& D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
-& D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
-& D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
-& D:\...\AutoHotkey64.exe tests\version_probe.ahk
-& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
-& build\compiled_eval_probe.exe
-& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_upx.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 2 /silent verbose
-& build\compiled_eval_probe_upx.exe
-& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_mpress.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 1 /silent verbose
-& build\compiled_eval_probe_mpress.exe</code></pre>
-      </section>
-
-      <section id="debugging">
-        <h2>11. Debugging and failure modes</h2>
-        <ul>
-          <li><code>0xC0000005</code> usually means a wrong pointer or struct offset. Isolate the probe, record the version, and verify every located address before dereferencing it.</li>
-          <li><code>0xC0000374</code> can happen when parser state is saved or restored in the wrong order. The project hit it during development; the fix was to restore every touched <code>Script</code> field in a <code>finally</code> block.</li>
-          <li>A <code>"X not found"</code> error means a locator signature did not match. That is intentional: unsupported builds fail instead of continuing with a guessed address.</li>
-          <li>Executable allocation and internal calls can be flagged by antivirus or EDR. Test in a VM, use a disposable interpreter, and keep a backup of the analyzed exe.</li>
-        </ul>
-      </section>
-
-      <section id="security">
-        <h2>12. Security and usage rules</h2>
-        <h3>12.1 Is Eval safe?</h3>
-        <p>No. <code>Eval</code>, <code>EvalNative</code>, and <code>EvalScript</code> execute arbitrary code in the current process with the same privileges as the host script. They are not sandboxes. The in-process path also fabricates interpreter objects, so a wrong layout or a state-save mistake can corrupt memory instead of raising a clean exception. Treat every evaluated string as a script with full access to the host process.</p>
-        <blockquote class="warn">This library allocates executable memory, executes machine code, and reads or writes interpreter internals directly. Treat it as a reverse-engineering research tool.</blockquote>
-        <p>Operations fall into three categories:</p>
-        <ul>
-          <li><strong>Read-only</strong>: <code>Init</code>, <code>Summary</code>, <code>BifRva</code>, <code>BifAddr</code>, <code>ScanExports</code>. These do not modify process state.</li>
-          <li><strong>Mutating</strong>: <code>PatchBif</code> and <code>RestoreBif</code>. Wrong usage can crash the interpreter.</li>
-          <li><strong>Executing</strong>: <code>Eval</code>, <code>EvalNative</code>, and <code>EvalScript</code>. This is arbitrary code execution in the current process.</li>
-        </ul>
-        <p>Rules that apply to every experiment:</p>
-        <ul>
-          <li>Never evaluate untrusted input.</li>
-          <li>Restore every <code>PatchBif</code>; do not leave redirection enabled.</li>
-          <li>Run the full test suite against the exact target exe before relying on a new build.</li>
-          <li>32-bit AutoHotkey is not supported and raises an explicit error.</li>
-          <li>Only analyze software you are authorized to research. This is not a tool for bypassing licensing, DRM, or access controls.</li>
-        </ul>
-      </section>
-
-      <section id="learning">
-        <h2>13. Learning path</h2>
-        <ol>
-          <li>Read a PE primer and inspect a real exe with <code>ahk_inspect.py</code> before touching the AHK side.</li>
-          <li>Trace <code>scanner.c</code>: sections, pointer invariants, sorted runs, anchor names.</li>
-          <li>Rebuild the machine code and verify the diff is empty.</li>
-          <li>Study <code>inproc_eval.c</code> and the temporary <code>Line</code>/<code>ArgStruct</code>/<code>ResultToken</code> layout.</li>
-          <li>Study <code>EvalScript</code>: save, load, preparse, preprocess, evaluate, restore.</li>
-          <li>Read the AHK v2 source structures in the layout table (<code>Script</code>, <code>ScriptModule</code>, <code>UserFunc</code>) and correlate them with the test matrix.</li>
-        </ol>
-        <div class="links">
-          <a href="https://github.com/MonoEven/ahk-hack-library">Repository</a>
-          <a href="https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk">Single-file core</a>
-          <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode">C sources</a>
-          <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/tools">Tools</a>
-          <a href="https://monoeven.github.io/cnumpy/">cnumpy tutorial</a>
-        </div>
-      </section>
-
+MsgBox AhkMagic.EvalNative(&quot;1 + 2 * 3&quot;)           ; 7
+MsgBox AhkMagic.EvalNative(&quot;Abs(-5)&quot;)             ; 5
+MsgBox AhkMagic.EvalNative(&quot;Point(1, 2).y&quot;)       ; 2, class loaded in-process</code></pre>
+</section>
+<section id="sec-7"><h2>Script loading from memory</h2>
+<p>Expression eval cannot define functions or classes. <code>EvalScript()</code> feeds<br>multi-line text through <code>LoadIncludedFile(TextStream*)</code> from an in-memory<br><code>TextStream</code>. The parser entry points, <code>g</code>, <code>gScript</code>, and<br>parser-state offsets are discovered at runtime.</p>
+<p>The script state is saved before loading and restored in a <code>finally</code> block:</p>
+<ul>
+<li>pending parent/related lines;</li>
+<li>pending parameter initializers;</li>
+<li>current module;</li>
+<li>expression-function index;</li>
+<li>class object count.</li>
+</ul>
+</section>
+<section id="sec-8"><h2>Remote introspection</h2>
+<p><code>AttachRemote(pid)</code> opens a target process, reads its PE image and tables,<br>and returns a hook. <code>RemoteEval()</code> injects a locator/evaluator thread;<br><code>RemoteEvalScript()</code> loads script text through the target's own parser.<br><code>RemoteReplaceFuncBody()</code> swaps <code>mJumpToLine</code> so existing callers<br>execute a new body.</p>
+</section>
+<section id="sec-9"><h2>Dynamic offset discovery</h2>
+<p>The remote layout scanner validates <code>mFuncs</code>, <code>mFuncsCount</code>,<br><code>mJumpToLine</code>, the function name field, parser anchors, <code>Line</code>,<br><code>ArgStruct</code>, token, and <code>DerefType</code> offsets from live memory. It<br>prefers structural invariants:</p>
+<ul>
+<li>a <code>Line</code> contains a back-reference to its owning <code>Func</code>;</li>
+<li>an <code>ArgStruct</code> contains a postfix token array;</li>
+<li>token arrays terminate with the discovered <code>SYM_INVALID</code>;</li>
+<li><code>DerefType</code> has two pointer-sized fields before the type byte.</li>
+</ul>
+</section>
+<section id="sec-10"><h2>TraceFunction cloning</h2>
+<p>The trace feature exposed a subtle problem: renaming a function breaks<br><code>mFuncs</code> and <code>VarList</code> ordering. The stable fix clones the<br><code>UserFunc</code>, creates a <code>VAR_CONSTANT</code> alias, injects a wrapper, and<br>aliases the wrapper's parameter <code>Var</code> objects back to the original<br>function's parameters. <code>UserFunc::Call</code> writes through<br><code>mParam[i].var</code>, so sharing the same <code>Var</code> objects makes both the<br>original body and the wrapper agree on argument values.</p>
+</section>
+<section id="sec-11"><h2>Verification</h2>
+<p><code>tools/verify_all_runtimes.ps1</code> runs a nine-test matrix against every<br>AutoHotkey runtime found on this machine. The current matrix covers:</p>
+<ul>
+<li><code>2.0-beta.9</code>, <code>beta.10</code>, <code>beta.12</code>, <code>beta.13</code>,</li>
+</ul>
+<p>  <code>beta.15</code>;</p>
+<ul>
+<li><code>2.0-rc.1</code>, <code>rc.3</code>;</li>
+<li><code>2.0.0</code>, <code>2.0.2</code>, <code>2.0.3</code>, <code>2.0.4</code>, <code>2.0.26</code>;</li>
+<li><code>2.1-alpha.1</code>, <code>alpha.4</code>, <code>alpha.13</code>, <code>alpha.16</code>,</li>
+</ul>
+<p>  <code>alpha.30</code>;</p>
+<ul>
+<li>two local <code>2.0-beta</code> development builds.</li>
+</ul>
+<p>All 19 runtimes pass all 9 tests.</p>
+</section>
+<section id="sec-12"><h2>Security and boundaries</h2>
+<p>This library executes machine code, fabricates interpreter objects, and<br>writes target process memory. It is not a sandbox. Use disposable targets,<br>restore patches, and never eval untrusted input. Packed or hostile builds may<br>break string-based discovery; the scanner fails loudly instead of guessing.</p>
+</section>
+<section id="sec-13"><h2>Further reading</h2>
+<ul>
+<li>Repository: <a href="https://github.com/MonoEven/ahk-hack-library">MonoEven/ahk-hack-library</a></li>
+<li>Single-file core: <a href="https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk">ahk_hack_single.ahk</a></li>
+<li>Machine-code sources: <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode">lib/mcode</a></li>
+<li>AhkLive layer: <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/lib/ahk_live">lib/ahk_live</a></li>
+<li>Full matrix report: <a href="https://github.com/MonoEven/ahk-hack-library/tree/master/reports">reports</a></li>
+</ul>
+</section>
       <section id="appendix">
-        <h2>Appendix: single-file source</h2>
-        <p>The complete core is one file: <code>ahk_hack_single.ahk</code>. Copy it next to any script and <code>#Include</code> it, or download it from the repository. The embedded copy below is generated from the checked-in file at build time.</p>
+        <h2>Appendix: single-file core</h2>
+        <p>The copy below is generated from the repository file by the build script.</p>
         <details>
-          <summary>ahk_hack_single.ahk (full source)</summary>
+          <summary>ahk_hack_single.ahk</summary>
           <pre><code>; ahk-hack standalone core.
 ;
 ; One-file AutoHotkey v2 scanner for AutoHotkey executables.  Copy this file
@@ -647,6 +228,7 @@ class AhkMagic {
     static evalMLastLineOff := 0
     static evalMJumpLineOff := 0
     static evalCurrOff := 0
+    static evalStructOffsets := 0
     static evalParserLocated := false
     static evalParser := Map()
     static evalPreparse := 0
@@ -901,6 +483,9 @@ class AhkMagic {
                 &quot;ptr&quot;, base + va
             )
         }
+        pdata := result.Has(&quot;.pdata&quot;) ? result[&quot;.pdata&quot;] : 0
+        for _, sec in result
+            sec[&quot;pdata&quot;] := pdata
         return result
     }
 
@@ -971,17 +556,99 @@ class AhkMagic {
         return refs
     }
 
-    static _FnStart(sec, refRva) {
-        p := sec[&quot;ptr&quot;]
-        off := refRva - sec[&quot;rva&quot;]
-        i := off
-        while i &gt; 0 {
-            if NumGet(p + i - 1, &quot;UChar&quot;) = 0xCC
-                and i &gt;= 2 and NumGet(p + i - 2, &quot;UChar&quot;) = 0xCC
-                break
-            i -= 1
+    static _PdataFunctionStart(pdata, rva, sec) {
+        if !pdata or pdata[&quot;size&quot;] &lt; 12
+            throw Error(&quot;PE .pdata section is missing&quot;, -1)
+        p := pdata[&quot;ptr&quot;]
+        count := pdata[&quot;size&quot;] // 12
+        lo := 1
+        hi := count
+        idx := 0
+        while lo &lt;= hi {
+            mid := (lo + hi) // 2
+            off := (mid - 1) * 12
+            begin := NumGet(p + off, &quot;UInt&quot;)
+            end := NumGet(p + off + 4, &quot;UInt&quot;)
+            if rva &lt; begin {
+                hi := mid - 1
+                continue
+            }
+            if rva &gt;= end {
+                lo := mid + 1
+                continue
+            }
+            idx := mid
+            break
         }
-        return sec[&quot;rva&quot;] + i
+        if !idx
+            throw Error(&quot;function start not found for RVA &quot;
+            . Format(&quot;0x{:X}&quot;, rva), -1)
+        loop idx {
+            current := idx - A_Index + 1
+            off := (current - 1) * 12
+            begin := NumGet(p + off, &quot;UInt&quot;)
+            if AhkMagic._IsFunctionEntryCode(sec, begin)
+                return begin
+        }
+        throw Error(&quot;logical function entry not found for RVA &quot;
+            . Format(&quot;0x{:X}&quot;, rva), -1)
+    }
+
+    static _PdataEntryStart(pdata, rva) {
+        if !pdata or pdata[&quot;size&quot;] &lt; 12
+            return 0
+        p := pdata[&quot;ptr&quot;]
+        count := pdata[&quot;size&quot;] // 12
+        lo := 1
+        hi := count
+        while lo &lt;= hi {
+            mid := (lo + hi) // 2
+            off := (mid - 1) * 12
+            begin := NumGet(p + off, &quot;UInt&quot;)
+            end := NumGet(p + off + 4, &quot;UInt&quot;)
+            if rva &lt; begin {
+                hi := mid - 1
+                continue
+            }
+            if rva &gt;= end {
+                lo := mid + 1
+                continue
+            }
+            return begin
+        }
+        return 0
+    }
+
+    static _IsFunctionEntryCode(sec, rva) {
+        off := rva - sec[&quot;rva&quot;]
+        if off &lt; 0 or off + 4 &gt; sec[&quot;size&quot;]
+            return false
+        p := sec[&quot;ptr&quot;]
+        b0 := NumGet(p + off, &quot;UChar&quot;)
+        b1 := NumGet(p + off + 1, &quot;UChar&quot;)
+        b2 := NumGet(p + off + 2, &quot;UChar&quot;)
+        b3 := NumGet(p + off + 3, &quot;UChar&quot;)
+        if b0 = 0x48 and b1 = 0x89
+            and ((b2 = 0x5C and b3 = 0x24)
+                or (b2 = 0x54 and b3 = 0x24)
+                or (b2 = 0x4C and b3 = 0x24))
+            return true
+        if b0 = 0x4C and b1 = 0x89
+            and ((b2 = 0x44 and b3 = 0x24)
+                or (b2 = 0x4C and b3 = 0x24))
+            return true
+        if b0 = 0x40 and b1 &gt;= 0x50 and b1 &lt;= 0x57
+            return true
+        if b0 = 0x55 or b0 = 0x53 or b0 = 0x56 or b0 = 0x57
+            or b0 = 0x41
+            return true
+        return false
+    }
+
+    static _FnStart(sec, refRva) {
+        if !sec.Has(&quot;pdata&quot;)
+            throw Error(&quot;section has no PE .pdata context&quot;, -1)
+        return AhkMagic._PdataFunctionStart(sec[&quot;pdata&quot;], refRva, sec)
     }
 
     static _FindCallers(sec, targetRva) {
@@ -1093,65 +760,6 @@ class AhkMagic {
         throw Error(&quot;CRT free not found&quot;)
     }
 
-    static _FindBytePattern(sec, hexPattern, startRva := 0) {
-        p := sec[&quot;ptr&quot;]
-        size := sec[&quot;size&quot;]
-        start := sec[&quot;rva&quot;] + startRva
-        needle := Buffer(StrLen(hexPattern) // 2)
-        loop needle.Size {
-            byte := Integer(&quot;0x&quot; SubStr(hexPattern, 2 * A_Index - 1, 2))
-            NumPut(&quot;UChar&quot;, byte, needle, A_Index - 1)
-        }
-        max := size - needle.Size + 1
-        loop max {
-            i := A_Index - 1
-            if NumGet(p + i, &quot;UChar&quot;) != NumGet(needle, 0, &quot;UChar&quot;)
-                continue
-            ok := true
-            loop needle.Size {
-                if NumGet(p + i + A_Index - 1, &quot;UChar&quot;)
-                    != NumGet(needle, A_Index - 1, &quot;UChar&quot;) {
-                    ok := false
-                    break
-                }
-            }
-            if ok
-                return sec[&quot;rva&quot;] + i
-        }
-        return 0
-    }
-
-    static _FindBytePatternInFunc(sec, startRva, hexPattern) {
-        p := sec[&quot;ptr&quot;]
-        off := startRva - sec[&quot;rva&quot;]
-        limit := Min(sec[&quot;size&quot;] - 4, off + 0x4000)
-        needle := Buffer(StrLen(hexPattern) // 2)
-        loop needle.Size {
-            byte := Integer(&quot;0x&quot; SubStr(hexPattern, 2 * A_Index - 1, 2))
-            NumPut(&quot;UChar&quot;, byte, needle, A_Index - 1)
-        }
-        i := off
-        while i &lt; limit {
-            if NumGet(p + i, &quot;UChar&quot;) = 0xCC
-                and NumGet(p + i + 1, &quot;UChar&quot;) = 0xCC
-                break
-            if NumGet(p + i, &quot;UChar&quot;) = NumGet(needle, 0, &quot;UChar&quot;) {
-                ok := true
-                loop needle.Size {
-                    if NumGet(p + i + A_Index - 1, &quot;UChar&quot;)
-                        != NumGet(needle, A_Index - 1, &quot;UChar&quot;) {
-                        ok := false
-                        break
-                    }
-                }
-                if ok
-                    return true
-            }
-            i += 1
-        }
-        return false
-    }
-
     static _LocatePreprocessFunc(sec) {
         p := sec[&quot;ptr&quot;]
         size := sec[&quot;size&quot;]
@@ -1198,14 +806,14 @@ class AhkMagic {
                     and NumGet(p + i + 2, &quot;UChar&quot;) = 0x05 {
                     j := i + 7
                     while j &lt; Min(i + 24, limit) {
-                        if NumGet(p + j, &quot;UChar&quot;) = 0x48
-                            and NumGet(p + j + 1, &quot;UChar&quot;) = 0x89
-                            and NumGet(p + j + 2, &quot;UChar&quot;) = 0x58
-                            and NumGet(p + j + 3, &quot;UChar&quot;) = 0x28
-                            or NumGet(p + j, &quot;UChar&quot;) = 0x48
-                            and NumGet(p + j + 1, &quot;UChar&quot;) = 0x89
-                            and NumGet(p + j + 2, &quot;UChar&quot;) = 0x50
-                            and NumGet(p + j + 3, &quot;UChar&quot;) = 0x28 {
+                        b0 := NumGet(p + j, &quot;UChar&quot;)
+                        b1 := NumGet(p + j + 1, &quot;UChar&quot;)
+                        b2 := NumGet(p + j + 2, &quot;UChar&quot;)
+                        b3 := NumGet(p + j + 3, &quot;UChar&quot;)
+                        if b0 = 0x48
+                            and b1 = 0x89
+                            and (b2 = 0x58 or b2 = 0x50)
+                            and (b3 = 0x28 or b3 = 0x50) {
                             disp := NumGet(p + i + 3, &quot;Int&quot;)
                             return sec[&quot;rva&quot;] + i + 7 + disp
                         }
@@ -1216,11 +824,6 @@ class AhkMagic {
             }
         }
         return 0
-    }
-
-    static _HasBytesNear(sec, rva, hexPattern, range := 40) {
-        found := AhkMagic._FindBytePattern(sec, hexPattern, rva - sec[&quot;rva&quot;])
-        return found and found - rva &lt; range
     }
 
     static _LocateLoadTs(sec, openRva) {
@@ -1244,8 +847,7 @@ class AhkMagic {
                         if NumGet(p + j, &quot;UChar&quot;) = 0xE8 {
                             disp := NumGet(p + j + 1, &quot;Int&quot;)
                             target := base + j + 5 + disp
-                            if AhkMagic._HasBytesNear(sec, target
-                                , &quot;555356574154415541564157&quot;, 40)
+                            if AhkMagic._PdataEntryStart(sec[&quot;pdata&quot;], target) = target
                                 return target
                         }
                         j += 1
@@ -1254,6 +856,24 @@ class AhkMagic {
                 }
                 i += 1
             }
+        }
+        return 0
+    }
+
+    static _LocateOpenInclude(secs) {
+        text := AhkMagic._TextSection(secs)
+        anchors := [
+            &#x27;%s file &quot;%s&quot; cannot be opened&#x27;,
+            &#x27;#Include&#x27;
+        ]
+        for anchor in anchors {
+            hit := AhkMagic._FindUtf16(secs, anchor)
+            if !hit.Length
+                continue
+            refs := AhkMagic._RipRefs(text, hit[1])
+            start := AhkMagic._BestStart(text, refs)
+            if start
+                return start
         }
         return 0
     }
@@ -1307,27 +927,15 @@ class AhkMagic {
         text := AhkMagic._TextSection(secs)
         postfixRva := AhkMagic.exprToPostfix - AhkMagic.moduleBase
         callers := AhkMagic._FindCallers(text, postfixRva)
-        preparse := 0
-        for caller in callers {
-            start := AhkMagic._FnStart(text, caller)
-            if AhkMagic._FindBytePatternInFunc(text, start, &quot;803B03&quot;)
-                and AhkMagic._FindBytePatternInFunc(text, start, &quot;803B04&quot;) {
-                preparse := start
-                break
-            }
-        }
-        if !preparse
+        if !callers.Length
             throw Error(&quot;PreparseExpressions not found&quot;)
+        preparse := AhkMagic._FnStart(text, callers[1])
 
         preprocess := AhkMagic._LocatePreprocessFunc(text)
         if !preprocess
             throw Error(&quot;PreprocessLocalVars not found&quot;)
 
-        openNeedle := &quot;48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200&quot;
-        openNeedle21 := &quot;40535556574154415541564157B8D8000100&quot;
-        open := AhkMagic._FindBytePattern(text, openNeedle)
-        if !open
-            open := AhkMagic._FindBytePattern(text, openNeedle21)
+        open := AhkMagic._LocateOpenInclude(secs)
         if !open
             throw Error(&quot;OpenIncludedFile not found&quot;)
 
@@ -1352,19 +960,9 @@ class AhkMagic {
     }
 
     static _EvalStructOffsets() {
-        return Map(
-            &quot;line_action&quot;, 0,
-            &quot;line_argc&quot;, 1,
-            &quot;line_arg&quot;, 8,
-            &quot;line_attribute&quot;, 16,
-            &quot;line_next&quot;, 32,
-            &quot;arg_postfix&quot;, 24,
-            &quot;token_symbol&quot;, 16,
-            &quot;token_usage&quot;, 8,
-            &quot;token_value&quot;, 0,
-            &quot;deref_marker&quot;, 0,
-            &quot;deref_len&quot;, 20
-        )
+        if !AhkMagic.evalStructOffsets
+            AhkMagic._DiscoverEvalLayout()
+        return AhkMagic.evalStructOffsets
     }
 
     static _DiscoverCurrOff() {
@@ -1423,7 +1021,7 @@ class AhkMagic {
         probe := &quot;
 (
 ahkHackLayoutProbe() {
-    return 1
+    return A_Args.Length + 1
 }
 )&quot;
         AhkMagic._LoadScriptMemory(probe)
@@ -1487,27 +1085,35 @@ ahkHackLayoutProbe() {
         newFunc := NumGet(arrPtr, oldCount * 8, &quot;Ptr&quot;)
         oldLast := NumGet(snap, lastOff, &quot;Ptr&quot;)
         newLast := NumGet(gScript, lastOff, &quot;Ptr&quot;)
-        lineSet := Map()
-        line := oldLast ? NumGet(oldLast, 32, &quot;Ptr&quot;) : 0
-        loop 10000 {
-            if !line
-                break
-            lineSet[line] := true
-            if line = newLast
-                break
-            line := NumGet(line, 32, &quot;Ptr&quot;)
-        }
         jumpOff := 0
-        loop 0x100 // 8 {
+        loop 0x200 // 8 {
             off := (A_Index - 1) * 8
             p := NumGet(newFunc, off, &quot;Ptr&quot;)
-            if p &gt; 0x10000 and lineSet.Has(p) {
+            if p &lt;= 0x10000 or p &gt;= 0x7fffffffffff
+                continue
+            try {
+                lineData := Buffer(0x100)
+                DllCall(&quot;RtlMoveMemory&quot;, &quot;Ptr&quot;, lineData.Ptr, &quot;Ptr&quot;, p
+                    , &quot;UPtr&quot;, 0x100)
+            } catch
+                continue
+            found := false
+            loop lineData.Size // 8 {
+                if NumGet(lineData, (A_Index - 1) * 8, &quot;Ptr&quot;) = newFunc {
+                    found := true
+                    break
+                }
+            }
+            if found {
                 jumpOff := off
                 break
             }
         }
         if !jumpOff
             throw Error(&quot;mJumpLine offset not found&quot;)
+
+        AhkMagic.evalStructOffsets := AhkMagic._DiscoverInProcStructs(
+            gScript, arrPtr, oldCount, newFunc, jumpOff)
 
         DllCall(&quot;RtlMoveMemory&quot;, &quot;Ptr&quot;, gScript, &quot;Ptr&quot;, snap.Ptr, &quot;UPtr&quot;, 0x200)
         if AhkMagic.evalSrcCount
@@ -1797,7 +1403,8 @@ ahkHackLayoutProbe() {
                         argc := NumGet(line, off[&quot;line_argc&quot;], &quot;UChar&quot;)
                         if argc {
                             arg := NumGet(line, off[&quot;line_arg&quot;], &quot;Ptr&quot;)
-                            if arg and NumGet(arg, 1, &quot;UChar&quot;) {
+                            if arg and NumGet(arg, off[&quot;arg_expression&quot;]
+                                , &quot;UChar&quot;) {
                                 postfix := NumGet(arg, off[&quot;arg_postfix&quot;], &quot;Ptr&quot;)
                                 if postfix {
                                     while NumGet(postfix, off[&quot;token_symbol&quot;], &quot;UInt&quot;) != AhkMagic.symInvalid {
@@ -1805,11 +1412,13 @@ ahkHackLayoutProbe() {
                                             and NumGet(postfix, off[&quot;token_usage&quot;], &quot;UInt&quot;) &lt; 3 {
                                             deref := NumGet(postfix, off[&quot;token_value&quot;], &quot;Ptr&quot;)
                                             if deref {
-                                                derefType := NumGet(deref, 16, &quot;UChar&quot;)
+                                                derefType := NumGet(deref
+                                                    , off[&quot;deref_type&quot;], &quot;UChar&quot;)
                                                 marker := NumGet(deref, off[&quot;deref_marker&quot;], &quot;Ptr&quot;)
                                                 len := NumGet(deref, off[&quot;deref_len&quot;], &quot;UInt&quot;)
                                                 if derefType = 7 {
-                                                    NumPut(&quot;Ptr&quot;, NumGet(deref, 8, &quot;Ptr&quot;)
+                                                    NumPut(&quot;Ptr&quot;, NumGet(deref
+                                                        , off[&quot;deref_var&quot;], &quot;Ptr&quot;)
                                                         , postfix, off[&quot;token_value&quot;])
                                                 } else if derefType = 0 and marker and len &gt; 0 and len &lt;= 64 {
                                                     var := DllCall(AhkMagic.findOrAddVar
@@ -1823,7 +1432,7 @@ ahkHackLayoutProbe() {
                                                 }
                                             }
                                         }
-                                        postfix += 24
+                                        postfix += off[&quot;token_stride&quot;]
                                     }
                                 }
                             }
@@ -1968,6 +1577,7 @@ ahkHackLayoutProbe() {
         secs := Map()
         hasText := false
         hasData := false
+        hasPdata := false
         loop num {
             off := (A_Index - 1) * 40
             name := StrGet(hdrs.Ptr + off, 8, &quot;UTF-8&quot;)
@@ -1979,6 +1589,8 @@ ahkHackLayoutProbe() {
                 hasText := true
             if name = &quot;.rdata&quot; or name = &quot;.data&quot;
                 hasData := true
+            if name = &quot;.pdata&quot;
+                hasPdata := true
             secs[name] := Map(&quot;name&quot;, name, &quot;rva&quot;, va, &quot;size&quot;, size
                 , &quot;start&quot;, base + va, &quot;end&quot;, base + va + size
                 , &quot;data&quot;, Buffer(0), &quot;ptr&quot;, 0)
@@ -1998,6 +1610,21 @@ ahkHackLayoutProbe() {
                 sec[&quot;ptr&quot;] := sec[&quot;data&quot;].Ptr
             }
         }
+        pdata := 0
+        if hasPdata {
+            sec := secs[&quot;.pdata&quot;]
+            if sec[&quot;size&quot;] &gt; 0 and sec[&quot;size&quot;] &lt; 0x800000 {
+                try {
+                    sec[&quot;data&quot;] := AhkMagic._RemoteRead(h, sec[&quot;start&quot;]
+                        , sec[&quot;size&quot;])
+                    sec[&quot;ptr&quot;] := sec[&quot;data&quot;].Ptr
+                    pdata := sec
+                } catch
+                    pdata := 0
+            }
+        }
+        for _, sec in secs
+            sec[&quot;pdata&quot;] := pdata
         return secs
     }
 
@@ -2193,15 +1820,15 @@ ahkHackLayoutProbe() {
             DllCall(&quot;RtlMoveMemory&quot;, &quot;Ptr&quot;, combined.Ptr + out.Size
                 , &quot;Ptr&quot;, part.Ptr, &quot;UPtr&quot;, part.Size)
             out := combined
-            found := 0
-            loop out.Size - 1 {
-                if NumGet(out, A_Index - 1, &quot;UShort&quot;) = 0 {
+            found := -1
+            loop out.Size // 2 {
+                if NumGet(out, (A_Index - 1) * 2, &quot;UShort&quot;) = 0 {
                     found := A_Index - 1
                     break
                 }
             }
-            if found
-                return StrGet(out.Ptr, found // 2, &quot;UTF-16&quot;)
+            if found &gt;= 0
+                return StrGet(out.Ptr, found, &quot;UTF-16&quot;)
         }
         return StrGet(out.Ptr, &quot;UTF-16&quot;)
     }
@@ -2588,7 +2215,7 @@ ahkHackLayoutProbe() {
         return 0
     }
 
-    static _RemoteParserOffsets(text, loadTsRva) {
+    static _RemoteParserAnchors(text, loadTsRva) {
         p := text[&quot;ptr&quot;]
         base := text[&quot;rva&quot;]
         off := loadTsRva - base
@@ -2618,20 +2245,50 @@ ahkHackLayoutProbe() {
         }
         if qCmp &lt; 0 or dCmp &lt; 0
             throw Error(&quot;parser state anchors not found&quot;, -1)
-        if dCmp &gt; 0x100
+        return Map(&quot;q&quot;, qCmp, &quot;d&quot;, dCmp)
+    }
+
+    static _RemoteDiscoverParser(h, gscript, qCmp, dCmp) {
+        buf := AhkMagic._RemoteRead(h, gscript, 0x400)
+        if dCmp &lt;= 0 or dCmp + 4 &gt; buf.Size
+            or NumGet(buf, dCmp, &quot;Int&quot;) &lt; 0
+            or NumGet(buf, dCmp, &quot;Int&quot;) &gt; 100000
+            throw Error(&quot;mClassObjectCount offset invalid&quot;, -1)
+
+        exprIndexOff := 0
+        loop Min(0x40, dCmp) // 4 {
+            off := dCmp - (A_Index - 1) * 4
+            if off + 8 &gt; buf.Size
+                continue
+            if NumGet(buf, off, &quot;Int&quot;) = 0x7fffffff
+                and NumGet(buf, off + 4, &quot;Int&quot;) = 0 {
+                exprIndexOff := off + 4
+                break
+            }
+        }
+
+        if exprIndexOff {
+            ; v2.1 layout: parser fields form a compact run ending at
+            ; mClassObjectCount, anchored by the sentinel mExprFuncIndex.
+            if exprIndexOff + 8 &gt; buf.Size
+                throw Error(&quot;v2.1 parser region invalid&quot;, -1)
             return Map(
                 &quot;mclass_count&quot;, dCmp,
-                &quot;mline_parent&quot;, dCmp - 0x30,
-                &quot;mpending_related&quot;, dCmp - 0x28,
-                &quot;mlast_param_init&quot;, dCmp - 0x20,
-                &quot;mpending_hotkey&quot;, dCmp - 0x18,
-                &quot;mexpr_func&quot;, dCmp - 0x10,
-                &quot;mexpr_func_index&quot;, dCmp - 8,
-                &quot;mnext_func_body&quot;, dCmp - 4,
-                &quot;mignore_block&quot;, dCmp - 3,
-                &quot;mbackcompat&quot;, dCmp - 2,
-                &quot;mcurrent_module&quot;, dCmp - 0x50,
-                &quot;mlast_module&quot;, dCmp - 0x48)
+                &quot;mline_parent&quot;, exprIndexOff - 0x28,
+                &quot;mpending_related&quot;, exprIndexOff - 0x20,
+                &quot;mlast_param_init&quot;, exprIndexOff - 0x18,
+                &quot;mpending_hotkey&quot;, exprIndexOff - 0x10,
+                &quot;mexpr_func&quot;, exprIndexOff - 8,
+                &quot;mexpr_func_index&quot;, exprIndexOff,
+                &quot;mnext_func_body&quot;, exprIndexOff + 4,
+                &quot;mignore_block&quot;, exprIndexOff + 5,
+                &quot;mbackcompat&quot;, exprIndexOff + 6,
+                &quot;mcurrent_module&quot;, exprIndexOff - 0x48,
+                &quot;mlast_module&quot;, exprIndexOff - 0x40)
+        }
+
+        if qCmp &lt;= 0 or qCmp + 0x28 &gt; buf.Size
+            throw Error(&quot;v2.0 parser region invalid&quot;, -1)
         return Map(
             &quot;mopen&quot;, qCmp,
             &quot;mpending_parent&quot;, qCmp + 8,
@@ -2651,25 +2308,14 @@ ahkHackLayoutProbe() {
         expandRva := AhkMagic._BestStart(text, expandRefs)
         if !postfixRva or !expandRva
             throw Error(&quot;remote expression functions not found&quot;, -1)
-        preparse := 0
-        for caller in AhkMagic._FindCallers(text, postfixRva) {
-            start := AhkMagic._FnStart(text, caller)
-            if AhkMagic._FindBytePatternInFunc(text, start, &quot;803B03&quot;)
-                and AhkMagic._FindBytePatternInFunc(text, start, &quot;803B04&quot;) {
-                preparse := start
-                break
-            }
-        }
-        if !preparse
+        callers := AhkMagic._FindCallers(text, postfixRva)
+        if !callers.Length
             throw Error(&quot;PreparseExpressions not found&quot;, -1)
+        preparse := AhkMagic._FnStart(text, callers[1])
         preprocess := AhkMagic._LocatePreprocessFunc(text)
         if !preprocess
             throw Error(&quot;PreprocessLocalVars not found&quot;, -1)
-        open := AhkMagic._FindBytePattern(text
-            , &quot;48895C240848895424105556574154415541564157488DAC243000FEFFB8D0000200&quot;)
-        if !open
-            open := AhkMagic._FindBytePattern(text
-                , &quot;40535556574154415541564157B8D8000100&quot;)
+        open := AhkMagic._LocateOpenInclude(secs)
         if !open
             throw Error(&quot;OpenIncludedFile not found&quot;, -1)
         loadTs := AhkMagic._LocateLoadTs(text, open)
@@ -2681,7 +2327,7 @@ ahkHackLayoutProbe() {
         currOff := AhkMagic._RemoteCurrOff(secs, preparse)
         if !currOff
             throw Error(&quot;g-&gt;curr offset not found&quot;, -1)
-        parser := AhkMagic._RemoteParserOffsets(text, loadTs)
+        anchors := AhkMagic._RemoteParserAnchors(text, loadTs)
         return Map(
             &quot;postfix_rva&quot;, postfixRva,
             &quot;expand_rva&quot;, expandRva,
@@ -2692,7 +2338,634 @@ ahkHackLayoutProbe() {
             &quot;src_count_rva&quot;, 0,
             &quot;gptr_rva&quot;, gptr,
             &quot;curr_off&quot;, currOff,
-            &quot;parser&quot;, parser)
+            &quot;q_cmp&quot;, anchors[&quot;q&quot;],
+            &quot;d_cmp&quot;, anchors[&quot;d&quot;],
+            &quot;parser&quot;, Map())
+    }
+
+    static _RemoteLineRows(h, funcs, funcData, jumpOff, backOff) {
+        rows := []
+        for index, q in funcs {
+            linePtr := NumGet(funcData[index], jumpOff, &quot;Ptr&quot;)
+            if linePtr &lt;= 0x10000 or linePtr &gt;= 0x7fffffffffff
+                continue
+            try
+                lineData := AhkMagic._RemoteRead(h, linePtr, 0x100)
+            catch
+                continue
+            if backOff + 8 &lt;= lineData.Size
+                and NumGet(lineData, backOff, &quot;Ptr&quot;) = q
+                rows.Push(Map(&quot;func&quot;, q, &quot;ptr&quot;, linePtr, &quot;data&quot;, lineData))
+        }
+        return rows
+    }
+
+    static _RemoteLineHasFuncRef(lineData, q) {
+        loop lineData.Size // 8 {
+            if NumGet(lineData, (A_Index - 1) * 8, &quot;Ptr&quot;) = q
+                return true
+        }
+        return false
+    }
+
+    static _RemoteIsArgLike(h, p) {
+        try
+            argData := AhkMagic._RemoteRead(h, p, 40)
+        catch
+            return false
+        if NumGet(argData, 0, &quot;UChar&quot;) &gt; 2
+            or NumGet(argData, 1, &quot;UChar&quot;) &gt; 1
+            return false
+        if NumGet(argData, 4, &quot;UInt&quot;) &gt; 0x10000
+            return false
+        for off in [8, 16, 24] {
+            v := NumGet(argData, off, &quot;Ptr&quot;)
+            if v and (v &lt;= 0x10000 or v &gt;= 0x7fffffffffff)
+                return false
+        }
+        return true
+    }
+
+    static _RemoteTokenValid(data, stride, symOff, sentinel) {
+        if symOff + 4 &gt; stride
+            return 0
+        count := Min(data.Size // stride, 64)
+        seenVar := false
+        loop count {
+            sym := NumGet(data, (A_Index - 1) * stride + symOff, &quot;UInt&quot;)
+            if sym = sentinel
+                return seenVar ? A_Index : 0
+            if sym &gt; 0x1000
+                return 0
+            if sym = 4
+                seenVar := true
+        }
+        return 0
+    }
+
+    static _RemoteCollectPostfixes(h, rows) {
+        postfixes := []
+        seen := Map()
+        for row in rows {
+            lineData := row[&quot;data&quot;]
+            loop lineData.Size // 8 {
+                p := NumGet(lineData, (A_Index - 1) * 8, &quot;Ptr&quot;)
+                if p &lt;= 0x10000 or p &gt;= 0x7fffffffffff
+                    continue
+                if !AhkMagic._RemoteIsArgLike(h, p)
+                    continue
+                try
+                    argData := AhkMagic._RemoteRead(h, p, 40)
+                catch
+                    continue
+                loop argData.Size // 8 {
+                    q := NumGet(argData, (A_Index - 1) * 8, &quot;Ptr&quot;)
+                    if q &lt;= 0x10000 or q &gt;= 0x7fffffffffff
+                        continue
+                    if seen.Has(q)
+                        continue
+                    seen[q] := true
+                    postfixes.Push(q)
+                }
+            }
+        }
+        return postfixes
+    }
+
+    static _RemoteDiscoverTokens(h, postfixes, sentinel) {
+        bestStride := 0
+        bestSym := 0
+        bestScore := -1
+        for stride in [24, 32, 16, 40] {
+            for symOff in [16, 20, 12, 8, 4, 0] {
+                if symOff + 4 &gt; stride
+                    continue
+                ok := 0
+                bestLen := 0
+                for p in postfixes {
+                    try
+                        data := AhkMagic._RemoteRead(h, p, stride * 64)
+                    catch
+                        continue
+                    got := AhkMagic._RemoteTokenValid(data, stride, symOff
+                        , sentinel)
+                    if got {
+                        ok += 1
+                        bestLen := Max(bestLen, got)
+                    }
+                }
+                score := ok * 10000 - bestLen - stride
+                if score &gt; bestScore {
+                    bestScore := score
+                    bestStride := stride
+                    bestSym := symOff
+                }
+            }
+        }
+        if !bestStride
+            throw Error(&quot;dynamic token layout not found&quot;, -1)
+
+        varSym := 4
+        usageOff := 8
+        usageScore := -1
+        for uOff in [8, 12, 4, 20] {
+            if uOff = bestSym
+                continue
+            if uOff + 8 &gt; bestStride
+                continue
+            score := 0
+            for p in postfixes {
+                try
+                    data := AhkMagic._RemoteRead(h, p, bestStride * 64)
+                catch
+                    continue
+                loop data.Size // bestStride {
+                    off := (A_Index - 1) * bestStride
+                    if NumGet(data, off + bestSym, &quot;UInt&quot;) = varSym
+                        and NumGet(data, off + uOff, &quot;UInt64&quot;) &lt; 0x1000
+                        score += 1
+                }
+            }
+            if score &gt; usageScore {
+                usageScore := score
+                usageOff := uOff
+            }
+        }
+
+        valueOff := 0
+        valueScore := -1
+        for vOff in [0, 8, 16] {
+            if vOff = bestSym
+                continue
+            score := 0
+            for p in postfixes {
+                try
+                    data := AhkMagic._RemoteRead(h, p, bestStride * 64)
+                catch
+                    continue
+                loop data.Size // bestStride {
+                    off := (A_Index - 1) * bestStride
+                    if NumGet(data, off + bestSym, &quot;UInt&quot;) = varSym {
+                        v := NumGet(data, off + vOff, &quot;Ptr&quot;)
+                        if v &gt; 0x10000 and v &lt; 0x7fffffffffff
+                            score += 1
+                    }
+                }
+            }
+            if score &gt; valueScore {
+                valueScore := score
+                valueOff := vOff
+            }
+        }
+
+        return Map(
+            &quot;stride&quot;, bestStride,
+            &quot;symbol&quot;, bestSym,
+            &quot;usage&quot;, usageOff,
+            &quot;value&quot;, valueOff,
+            &quot;var_symbol&quot;, varSym)
+    }
+
+    static _RemoteLineHeaderOff(rows) {
+        bestAction := 0
+        bestArgc := 1
+        bestScore := -1
+        loop 4 {
+            ao := A_Index - 1
+            loop 4 {
+                ac := A_Index - 1
+                if ac = ao
+                    continue
+                score := 0
+                for row in rows {
+                    data := row[&quot;data&quot;]
+                    if ao + 1 &gt;= data.Size or ac + 1 &gt;= data.Size
+                        continue
+                    if NumGet(data, ao, &quot;UChar&quot;) &lt;= 0x40
+                        and NumGet(data, ac, &quot;UChar&quot;) &lt;= 0x10
+                        score += 1
+                }
+                if score &gt; bestScore {
+                    bestScore := score
+                    bestAction := ao
+                    bestArgc := ac
+                }
+            }
+        }
+        if !bestScore
+            throw Error(&quot;dynamic Line header layout not found&quot;, -1)
+        return Map(&quot;action&quot;, bestAction, &quot;argc&quot;, bestArgc)
+    }
+
+    static _RemoteLineArgOff(h, rows, tokens, sentinel) {
+        counts := Map()
+        argPostfixCounts := Map()
+        for row in rows {
+            lineData := row[&quot;data&quot;]
+            loop lineData.Size // 8 {
+                lineOff := (A_Index - 1) * 8
+                p := NumGet(lineData, lineOff, &quot;Ptr&quot;)
+                if p &lt;= 0x10000 or p &gt;= 0x7fffffffffff
+                    continue
+                if !AhkMagic._RemoteIsArgLike(h, p)
+                    continue
+                try
+                    argData := AhkMagic._RemoteRead(h, p, 40)
+                catch
+                    continue
+                loop argData.Size // 8 {
+                    argOff := (A_Index - 1) * 8
+                    q := NumGet(argData, argOff, &quot;Ptr&quot;)
+                    if q &lt;= 0x10000 or q &gt;= 0x7fffffffffff
+                        continue
+                    try
+                        tokenData := AhkMagic._RemoteRead(h, q
+                            , tokens[&quot;stride&quot;] * 64)
+                    catch
+                        continue
+                    if AhkMagic._RemoteTokenValid(tokenData
+                        , tokens[&quot;stride&quot;], tokens[&quot;symbol&quot;], sentinel) {
+                        counts[lineOff] := (counts.Has(lineOff)
+                            ? counts[lineOff] : 0) + 1
+                        argPostfixCounts[argOff] := (argPostfixCounts.Has(argOff)
+                            ? argPostfixCounts[argOff] : 0) + 1
+                    }
+                }
+            }
+        }
+        bestOff := 0
+        bestScore := 0
+        for off, score in counts {
+            if score &gt; bestScore or (score = bestScore and bestOff
+                and off &lt; bestOff) {
+                bestScore := score
+                bestOff := off
+            }
+        }
+        bestArgPostfix := 24
+        bestArgScore := 0
+        for off, score in argPostfixCounts {
+            if score &gt; bestArgScore or (score = bestArgScore
+                and bestArgPostfix and off &lt; bestArgPostfix) {
+                bestArgScore := score
+                bestArgPostfix := off
+            }
+        }
+        if !bestOff or !bestArgScore
+            throw Error(&quot;dynamic Line.mArg / ArgStruct.postfix not found&quot;, -1)
+        return Map(&quot;line_arg&quot;, bestOff, &quot;arg_postfix&quot;, bestArgPostfix)
+    }
+
+    static _RemoteArgExpressionOff(h, rows, lineArg, argPostfix, tokens
+        , sentinel) {
+        counts := Map()
+        for row in rows {
+            arg := NumGet(row[&quot;data&quot;], lineArg, &quot;Ptr&quot;)
+            if arg &lt;= 0x10000 or arg &gt;= 0x7fffffffffff
+                continue
+            try
+                argData := AhkMagic._RemoteRead(h, arg, 40)
+            catch
+                continue
+            postfix := NumGet(argData, argPostfix, &quot;Ptr&quot;)
+            if postfix &lt;= 0x10000 or postfix &gt;= 0x7fffffffffff
+                continue
+            try
+                tokenData := AhkMagic._RemoteRead(h, postfix
+                    , tokens[&quot;stride&quot;] * 64)
+            catch
+                continue
+            if !AhkMagic._RemoteTokenValid(tokenData, tokens[&quot;stride&quot;]
+                , tokens[&quot;symbol&quot;], sentinel)
+                continue
+            loop 8 {
+                off := A_Index - 1
+                if NumGet(argData, off, &quot;UChar&quot;) = 1
+                    counts[off] := (counts.Has(off) ? counts[off] : 0) + 1
+            }
+        }
+        bestOff := 1
+        bestScore := 0
+        for off, score in counts {
+            if score &gt; bestScore or (score = bestScore and off &lt; bestOff) {
+                bestScore := score
+                bestOff := off
+            }
+        }
+        if !bestScore
+            throw Error(&quot;dynamic ArgStruct.is_expression not found&quot;, -1)
+        return bestOff
+    }
+
+    static _RemoteLineNextOff(h, rows, lineArg, backOff) {
+        forward := Map()
+        total := Map()
+        loop 0x100 // 8 {
+            off := (A_Index - 1) * 8
+            if off = lineArg
+                continue
+            for row in rows {
+                p := NumGet(row[&quot;data&quot;], off, &quot;Ptr&quot;)
+                if p &lt;= 0x10000 or p &gt;= 0x7fffffffffff
+                    or p = row[&quot;ptr&quot;]
+                    continue
+                try
+                    lineData := AhkMagic._RemoteRead(h, p, 0x100)
+                catch
+                    continue
+                if !AhkMagic._RemoteLineHasFuncRef(lineData, row[&quot;func&quot;])
+                    continue
+                total[off] := (total.Has(off) ? total[off] : 0) + 1
+                if p &gt; row[&quot;ptr&quot;]
+                    forward[off] := (forward.Has(off) ? forward[off] : 0) + 1
+            }
+        }
+        bestOff := 0
+        bestForward := -1
+        bestTotal := -1
+        for off, score in forward {
+            t := total.Has(off) ? total[off] : 0
+            if score &gt; bestForward
+                or (score = bestForward and t &gt; bestTotal)
+                or (score = bestForward and t = bestTotal and bestOff
+                    and off &lt; bestOff) {
+                bestForward := score
+                bestTotal := t
+                bestOff := off
+            }
+        }
+        if !bestOff
+            throw Error(&quot;dynamic Line.mNextLine not found&quot;, -1)
+        return bestOff
+    }
+
+    static _RemoteLineAttributeOff(h, rows, lineArg, lineNext, backOff
+        , funcs) {
+        known := Map()
+        for q in funcs
+            known[q] := true
+        counts := Map()
+        for row in rows {
+            visited := Map()
+            stack := [row[&quot;ptr&quot;]]
+            while stack.Length {
+                line := stack.Pop()
+                if visited.Has(line)
+                    continue
+                visited[line] := true
+                try
+                    lineData := AhkMagic._RemoteRead(h, line, 0x100)
+                catch
+                    continue
+                loop lineData.Size // 8 {
+                    off := (A_Index - 1) * 8
+                    if off = lineArg or off = lineNext
+                        continue
+                    p := NumGet(lineData, off, &quot;Ptr&quot;)
+                    if known.Has(p) {
+                        counts[off] := (counts.Has(off)
+                            ? counts[off] : 0) + 1
+                        continue
+                    }
+                    if p &lt;= 0x10000 or p &gt;= 0x7fffffffffff or p = line
+                        continue
+                    if AhkMagic._RemoteLineHasFuncRef(lineData, row[&quot;func&quot;])
+                        and !visited.Has(p)
+                        stack.Push(p)
+                }
+            }
+        }
+        bestOff := 0
+        bestScore := 0
+        for off, score in counts {
+            if score &gt; bestScore or (score = bestScore and bestOff
+                and off &lt; bestOff) {
+                bestScore := score
+                bestOff := off
+            }
+        }
+        if !bestOff
+            throw Error(&quot;dynamic Line.mAttribute not found&quot;, -1)
+        return bestOff
+    }
+
+    static _RemoteDerefArrayLike(data) {
+        if NumGet(data, 0, &quot;Ptr&quot;) &lt;= 0x10000
+            or NumGet(data, 0, &quot;Ptr&quot;) &gt;= 0x7fffffffffff
+            return false
+        loop 24 {
+            to := A_Index - 1
+            if to &lt; 8 or to + 8 &gt; data.Size
+                continue
+            if NumGet(data, to, &quot;UChar&quot;) &lt;= 7
+                and NumGet(data, to + 4, &quot;UInt&quot;) &lt;= 0x10000
+                return true
+        }
+        return false
+    }
+
+    static _RemoteDerefLayout(h, rows, lineArg) {
+        arrays := []
+        argDerefCounts := Map()
+        for row in rows {
+            arg := NumGet(row[&quot;data&quot;], lineArg, &quot;Ptr&quot;)
+            if arg &lt;= 0x10000 or arg &gt;= 0x7fffffffffff
+                continue
+            try
+                argData := AhkMagic._RemoteRead(h, arg, 40)
+            catch
+                continue
+            loop argData.Size // 8 {
+                off := (A_Index - 1) * 8
+                p := NumGet(argData, off, &quot;Ptr&quot;)
+                if p &lt;= 0x10000 or p &gt;= 0x7fffffffffff
+                    continue
+                try
+                    data := AhkMagic._RemoteRead(h, p, 0x100)
+                catch
+                    continue
+                if AhkMagic._RemoteDerefArrayLike(data) {
+                    arrays.Push(data)
+                    argDerefCounts[off] := (argDerefCounts.Has(off)
+                        ? argDerefCounts[off] : 0) + 1
+                }
+            }
+        }
+        if arrays.Length &lt; 1
+            throw Error(&quot;dynamic ArgStruct.deref not found&quot;, -1)
+
+        argDerefOff := 0
+        argDerefScore := -1
+        for off, score in argDerefCounts {
+            if score &gt; argDerefScore
+                or (score = argDerefScore and off &lt; argDerefOff) {
+                argDerefScore := score
+                argDerefOff := off
+            }
+        }
+        if !argDerefScore
+            throw Error(&quot;dynamic ArgStruct.deref offset not found&quot;, -1)
+
+        bestStride := 24
+        bestType := 16
+        bestScore := -1
+        for stride in [24, 32, 16, 40] {
+            for typeOff in [16, 20, 24] {
+                if typeOff + 8 &gt; stride
+                    continue
+                score := 0
+                for data in arrays {
+                    loop Min(data.Size // stride, 8) {
+                        off := (A_Index - 1) * stride
+                        marker := NumGet(data, off, &quot;Ptr&quot;)
+                        if marker &lt;= 0x10000
+                            or marker &gt;= 0x7fffffffffff
+                            break
+                        if NumGet(data, off + typeOff, &quot;UChar&quot;) &lt;= 7
+                            and NumGet(data, off + typeOff + 1, &quot;UChar&quot;) &lt;= 3
+                            and NumGet(data, off + typeOff + 4, &quot;UInt&quot;)
+                                &lt;= 0x10000
+                            score += 1
+                    }
+                }
+                if score &gt; bestScore
+                    or (score = bestScore and typeOff &lt; bestType)
+                    or (score = bestScore and typeOff = bestType
+                        and stride &lt; bestStride) {
+                    bestScore := score
+                    bestType := typeOff
+                    bestStride := stride
+                }
+            }
+        }
+        if !bestScore
+            throw Error(&quot;dynamic DerefType layout not found&quot;, -1)
+
+        markerOff := bestType - 16
+        varOff := bestType - 8
+        markerScore := 0
+        for data in arrays {
+            if NumGet(data, markerOff, &quot;Ptr&quot;) &gt; 0x10000
+                and NumGet(data, markerOff, &quot;Ptr&quot;) &lt; 0x7fffffffffff
+                markerScore += 1
+        }
+        if !markerScore
+            throw Error(&quot;dynamic DerefType markers not found&quot;, -1)
+
+        return Map(
+            &quot;arg_deref&quot;, argDerefOff,
+            &quot;stride&quot;, bestStride,
+            &quot;marker&quot;, markerOff,
+            &quot;var&quot;, varOff,
+            &quot;type&quot;, bestType,
+            &quot;len&quot;, bestType + 4)
+    }
+
+    static _RemoteDiscoverBackOff(h, funcs, funcData, jumpOff) {
+        counts := Map()
+        for index, q in funcs {
+            linePtr := NumGet(funcData[index], jumpOff, &quot;Ptr&quot;)
+            if linePtr &lt;= 0x10000 or linePtr &gt;= 0x7fffffffffff
+                continue
+            try
+                lineData := AhkMagic._RemoteRead(h, linePtr, 0x80)
+            catch
+                continue
+            loop lineData.Size // 8 {
+                bo := (A_Index - 1) * 8
+                if NumGet(lineData, bo, &quot;Ptr&quot;) = q
+                    counts[bo] := (counts.Has(bo) ? counts[bo] : 0) + 1
+            }
+        }
+        bestOff := 0
+        bestCount := 0
+        for off, count in counts {
+            if count &gt; bestCount or (count = bestCount and off &lt; bestOff) {
+                bestCount := count
+                bestOff := off
+            }
+        }
+        if !bestOff
+            throw Error(&quot;back-reference slot not found&quot;, -1)
+        return bestOff
+    }
+
+    static _DiscoverInProcStructs(gScript, arrPtr, oldCount, newFunc
+        , jumpOff) {
+        h := DllCall(&quot;OpenProcess&quot;, &quot;UInt&quot;, 0x1F0FFF, &quot;Int&quot;, 0
+            , &quot;UInt&quot;, DllCall(&quot;GetCurrentProcessId&quot;), &quot;Ptr&quot;)
+        if !h
+            throw Error(&quot;OpenProcess(self) failed&quot;, -1)
+        try {
+            funcs := []
+            funcData := []
+            loop oldCount {
+                q := NumGet(arrPtr + (A_Index - 1) * 8, &quot;Ptr&quot;)
+                if q &lt;= 0x10000 or q &gt;= 0x7fffffffffff
+                    continue
+                funcs.Push(q)
+                data := Buffer(0x400)
+                DllCall(&quot;RtlMoveMemory&quot;, &quot;Ptr&quot;, data.Ptr, &quot;Ptr&quot;, q
+                    , &quot;UPtr&quot;, 0x400)
+                funcData.Push(data)
+            }
+            funcs.Push(newFunc)
+            data := Buffer(0x400)
+            DllCall(&quot;RtlMoveMemory&quot;, &quot;Ptr&quot;, data.Ptr, &quot;Ptr&quot;, newFunc
+                , &quot;UPtr&quot;, 0x400)
+            funcData.Push(data)
+            backOff := AhkMagic._RemoteDiscoverBackOff(h, funcs, funcData
+                , jumpOff)
+            locOut := Buffer(64, 0)
+            NumPut(&quot;Ptr&quot;, AhkMagic.gScript, locOut, 0)
+            NumPut(&quot;Ptr&quot;, AhkMagic.finalizeExpr, locOut, 8)
+            NumPut(&quot;Ptr&quot;, AhkMagic.findOrAddVar, locOut, 16)
+            NumPut(&quot;Ptr&quot;, AhkMagic.crtFree, locOut, 24)
+            NumPut(&quot;UInt&quot;, AhkMagic.symInvalid, locOut, 32)
+            return AhkMagic._RemoteDiscoverStructs(h, locOut, funcs
+                , funcData, jumpOff, backOff)
+        } finally {
+            DllCall(&quot;CloseHandle&quot;, &quot;Ptr&quot;, h)
+        }
+    }
+
+    static _RemoteDiscoverStructs(h, locOut, funcs, funcData, jumpOff
+        , backOff) {
+        rows := AhkMagic._RemoteLineRows(h, funcs, funcData, jumpOff, backOff)
+        if rows.Length &lt; 1
+            throw Error(&quot;no ordinary functions for struct discovery&quot;
+                , -1)
+        sentinel := NumGet(locOut, 32, &quot;UInt&quot;)
+        postfixes := AhkMagic._RemoteCollectPostfixes(h, rows)
+        tokens := AhkMagic._RemoteDiscoverTokens(h, postfixes, sentinel)
+        header := AhkMagic._RemoteLineHeaderOff(rows)
+        arg := AhkMagic._RemoteLineArgOff(h, rows, tokens, sentinel)
+        argExpr := AhkMagic._RemoteArgExpressionOff(h, rows
+            , arg[&quot;line_arg&quot;], arg[&quot;arg_postfix&quot;], tokens, sentinel)
+        lineNext := AhkMagic._RemoteLineNextOff(h, rows, arg[&quot;line_arg&quot;]
+            , backOff)
+        lineAttr := AhkMagic._RemoteLineAttributeOff(h, rows
+            , arg[&quot;line_arg&quot;], lineNext, backOff, funcs)
+        deref := AhkMagic._RemoteDerefLayout(h, rows, arg[&quot;line_arg&quot;])
+        return Map(
+            &quot;line_action&quot;, header[&quot;action&quot;],
+            &quot;line_argc&quot;, header[&quot;argc&quot;],
+            &quot;line_arg&quot;, arg[&quot;line_arg&quot;],
+            &quot;line_attribute&quot;, lineAttr,
+            &quot;line_next&quot;, lineNext,
+            &quot;arg_expression&quot;, argExpr,
+            &quot;arg_postfix&quot;, arg[&quot;arg_postfix&quot;],
+            &quot;arg_deref&quot;, deref[&quot;arg_deref&quot;],
+            &quot;token_stride&quot;, tokens[&quot;stride&quot;],
+            &quot;token_symbol&quot;, tokens[&quot;symbol&quot;],
+            &quot;token_usage&quot;, tokens[&quot;usage&quot;],
+            &quot;token_value&quot;, tokens[&quot;value&quot;],
+            &quot;token_var_symbol&quot;, tokens[&quot;var_symbol&quot;],
+            &quot;deref_stride&quot;, deref[&quot;stride&quot;],
+            &quot;deref_marker&quot;, deref[&quot;marker&quot;],
+            &quot;deref_var&quot;, deref[&quot;var&quot;],
+            &quot;deref_type&quot;, deref[&quot;type&quot;],
+            &quot;deref_len&quot;, deref[&quot;len&quot;])
     }
 
     static _RemoteDiscoverLayout(h, secs, base, loc) {
@@ -2701,126 +2974,176 @@ ahkHackLayoutProbe() {
         loc[&quot;loc_out&quot;] := locOut
         gscript := NumGet(locOut, 0, &quot;Ptr&quot;)
         gAddr := base + loc[&quot;gptr_rva&quot;]
-        g := NumGet(AhkMagic._RemoteRead(h, gAddr, 8), 0, &quot;Ptr&quot;)
+        g := AhkMagic._RPtr(h, gAddr)
         currOff := loc[&quot;curr_off&quot;]
-        snap := AhkMagic._RemoteRead(h, gscript, 0x200)
-        gsnap := AhkMagic._RemoteRead(h, g, 0x100)
-        savedCur := NumGet(AhkMagic._RemoteRead(h, g + currOff, 8), 0, &quot;Ptr&quot;)
-        zeroBuf := Buffer(0x100, 0)
-        AhkMagic._RemoteWrite(h, g, zeroBuf)
-        curBuf := Buffer(8)
-        NumPut(&quot;Ptr&quot;, 0, curBuf, 0)
-        AhkMagic._RemoteWrite(h, g + currOff, curBuf)
-        parser := loc[&quot;parser&quot;]
-        for key in [&quot;mopen&quot;, &quot;mpending_parent&quot;, &quot;mline_parent&quot;
-            , &quot;mpending_related&quot;, &quot;mlast_param_init&quot;, &quot;mpending_hotkey&quot;
-            , &quot;mexpr_func&quot;]
-            if parser.Has(key)
-                AhkMagic._WPtr(h, gscript + parser[key], 0)
-        if parser.Has(&quot;mexpr_func_index&quot;)
-            AhkMagic._WInt(h, gscript + parser[&quot;mexpr_func_index&quot;], 0x7fffffff)
-        if parser.Has(&quot;mnext_func_body&quot;)
-            AhkMagic._WByte(h, gscript + parser[&quot;mnext_func_body&quot;], 0)
-        if parser.Has(&quot;mignore_block&quot;)
-            AhkMagic._WByte(h, gscript + parser[&quot;mignore_block&quot;], 0)
-        if parser.Has(&quot;mbackcompat&quot;)
-            AhkMagic._WByte(h, gscript + parser[&quot;mbackcompat&quot;], 1)
-        if parser.Has(&quot;mclass_count&quot;)
-            AhkMagic._WInt(h, gscript + parser[&quot;mclass_count&quot;], 0)
-        probe := &quot;
-        (
-        ahkHackLayoutProbe() {
-            return 1
-        }
-        )&quot;
-        rc := AhkMagic._RemoteLoadScript(h, base, loc, probe)
-        if rc != 0
-            throw Error(&quot;layout probe load rc=&quot; rc, -1)
-        after := AhkMagic._RemoteRead(h, gscript, 0x200)
-        countOff := 0
-        loop 0x200 // 4 {
-            off := (A_Index - 1) * 4
-            before := NumGet(snap, off, &quot;Int&quot;)
-            afterVal := NumGet(after, off, &quot;Int&quot;)
-            if afterVal = before + 1 and before &gt;= 0 and afterVal &lt; 100000 {
-                countOff := off
-                break
-            }
-        }
-        if !countOff
-            throw Error(&quot;mFuncsCount offset not found&quot;, -1)
-        oldCount := NumGet(snap, countOff, &quot;Int&quot;)
-        lastOff := -1
+        snap := AhkMagic._RemoteRead(h, gscript, 0x800)
+        bestScore := -1
+        best := Map(&quot;funcs_off&quot;, 0, &quot;count_off&quot;, 0, &quot;arr_ptr&quot;, 0
+            , &quot;count&quot;, 0, &quot;name_off&quot;, 0, &quot;jump_off&quot;, 0
+            , &quot;back_off&quot;, 0, &quot;funcs&quot;, [], &quot;func_data&quot;, [])
+
         loop 0x200 // 8 {
             off := (A_Index - 1) * 8
-            before := NumGet(snap, off, &quot;Ptr&quot;)
-            afterVal := NumGet(after, off, &quot;Ptr&quot;)
-            if before != afterVal and afterVal &gt; 0x10000 {
-                lastOff := off
-                break
-            }
-        }
-        if lastOff &lt; 0
-            throw Error(&quot;mLastLine offset not found&quot;, -1)
-        oldLast := NumGet(snap, lastOff, &quot;Ptr&quot;)
-        newLast := NumGet(after, lastOff, &quot;Ptr&quot;)
-        lineSet := Map()
-        line := oldLast ? NumGet(AhkMagic._RemoteRead(h, oldLast + 32, 8)
-            , 0, &quot;Ptr&quot;) : 0
-        loop 10000 {
-            if !line
-                break
-            lineSet[line] := true
-            if line = newLast
-                break
-            line := NumGet(AhkMagic._RemoteRead(h, line + 32, 8), 0, &quot;Ptr&quot;)
-        }
-        funcsOff := 0
-        jumpOff := 0
-        loop 0x200 // 8 {
-            off := (A_Index - 1) * 8
-            p := NumGet(after, off, &quot;Ptr&quot;)
-            if p &lt;= 0x10000 or p &gt;= 0x7fffffffffff
+            if off + 12 &gt; snap.Size
                 continue
-            try {
-                newFunc := NumGet(AhkMagic._RemoteRead(h, p + oldCount * 8, 8)
-                    , 0, &quot;Ptr&quot;)
-            } catch
+            arrPtr := NumGet(snap, off, &quot;Ptr&quot;)
+            count := NumGet(snap, off + 8, &quot;Int&quot;)
+            if arrPtr &lt;= 0x10000 or arrPtr &gt;= 0x7fffffffffff
+                or count &lt; 1 or count &gt; 100000
                 continue
-            if newFunc &lt;= 0x10000 or newFunc &gt;= 0x7fffffffffff
-                continue
-            loop 0x100 // 8 {
-                joff := (A_Index - 1) * 8
-                try {
-                    q := NumGet(AhkMagic._RemoteRead(h, newFunc + joff, 8)
-                        , 0, &quot;Ptr&quot;)
-                } catch
-                    continue
-                if q &gt; 0x10000 and lineSet.Has(q) {
-                    funcsOff := off
-                    jumpOff := joff
+
+            limit := Min(count, 16)
+            funcs := []
+            funcData := []
+            lineCache := Map()
+            valid := true
+            loop limit {
+                try
+                    q := AhkMagic._RPtr(h, arrPtr + (A_Index - 1) * 8)
+                catch {
+                    valid := false
                     break
                 }
+                if q &lt;= 0x10000 or q &gt;= 0x7fffffffffff {
+                    valid := false
+                    break
+                }
+                funcs.Push(q)
+                funcData.Push(AhkMagic._RemoteRead(h, q, 0x400))
             }
-            if funcsOff
-                break
+            if !valid
+                continue
+
+            jumpOff := 0
+            jumpMatches := 0
+            jumpBestSlot := 0
+            jumpSlotOff := 0
+            loop 0x200 // 8 {
+                jo := (A_Index - 1) * 8
+                matches := 0
+                slotCount := Map()
+                for index, q in funcs {
+                    linePtr := NumGet(funcData[index], jo, &quot;Ptr&quot;)
+                    if linePtr &lt;= 0x10000 or linePtr &gt;= 0x7fffffffffff
+                        continue
+                    if lineCache.Has(linePtr) {
+                        lineData := lineCache[linePtr]
+                    } else {
+                        try {
+                            lineData := AhkMagic._RemoteRead(h, linePtr, 0x80)
+                            lineCache[linePtr] := lineData
+                        } catch {
+                            continue
+                        }
+                    }
+                    foundSlot := 0
+                    loop lineData.Size // 8 {
+                        bo := (A_Index - 1) * 8
+                        if NumGet(lineData, bo, &quot;Ptr&quot;) = q {
+                            foundSlot := bo
+                            break
+                        }
+                    }
+                    if foundSlot {
+                        matches += 1
+                        slotCount[foundSlot] := (slotCount.Has(foundSlot)
+                            ? slotCount[foundSlot] : 0) + 1
+                    }
+                }
+                bestSlot := 0
+                bestSlotCount := 0
+                for slot, count in slotCount {
+                    if count &gt; bestSlotCount or count = bestSlotCount {
+                        bestSlotCount := count
+                        bestSlot := slot
+                    }
+                }
+                if bestSlotCount &gt; jumpBestSlot
+                    or (bestSlotCount = jumpBestSlot and jumpBestSlot
+                        and jo &lt; jumpOff) {
+                    jumpMatches := matches
+                    jumpBestSlot := bestSlotCount
+                    jumpSlotOff := bestSlot
+                    jumpOff := jo
+                }
+            }
+
+            minJump := limit &lt; 2 ? 1 : 2
+            if jumpBestSlot &lt; minJump
+                continue
+
+            nameOff := 0
+            nameMatches := 0
+            nameUnique := 0
+            loop 0x200 // 8 {
+                no := (A_Index - 1) * 8
+                matches := 0
+                seen := Map()
+                for index, q in funcs {
+                    namePtr := NumGet(funcData[index], no, &quot;Ptr&quot;)
+                    if namePtr &lt;= 0x10000 or namePtr &gt;= 0x7fffffffffff
+                        continue
+                    try
+                        name := AhkMagic._RemoteReadString(h, namePtr, 128)
+                    catch
+                        continue
+                    if name = &quot;&quot; or StrLen(name) &gt; 127
+                        continue
+                    if !RegExMatch(name, &quot;^[A-Za-z_][A-Za-z0-9_.]*$&quot;)
+                        continue
+                    matches += 1
+                    seen[name] := 1
+                }
+                if matches &gt; nameMatches
+                    or (matches = nameMatches and seen.Count &gt; nameUnique) {
+                    nameMatches := matches
+                    nameUnique := seen.Count
+                    nameOff := no
+                }
+            }
+
+            minName := limit &lt; 2 ? 1 : 2
+            if nameMatches &lt; minName
+                continue
+
+            score := nameMatches * 100000 + nameUnique * 1000
+                + jumpMatches * 100 + limit
+            if score &gt; bestScore {
+                bestScore := score
+                best[&quot;funcs_off&quot;] := off
+                best[&quot;count_off&quot;] := off + 8
+                best[&quot;arr_ptr&quot;] := arrPtr
+                best[&quot;count&quot;] := count
+                best[&quot;name_off&quot;] := nameOff
+                best[&quot;jump_off&quot;] := jumpOff
+                best[&quot;back_off&quot;] := jumpSlotOff
+                best[&quot;funcs&quot;] := funcs
+                best[&quot;func_data&quot;] := funcData
+            }
         }
-        if !funcsOff or !jumpOff
-            throw Error(&quot;mFuncs/mJumpLine offset not found&quot;, -1)
-        AhkMagic._RemoteWrite(h, gscript, snap)
-        AhkMagic._RemoteWrite(h, g, gsnap)
-        savedBuf := Buffer(8)
-        NumPut(&quot;Ptr&quot;, savedCur, savedBuf, 0)
-        AhkMagic._RemoteWrite(h, g + currOff, savedBuf)
-        return Map(
+
+        if !best[&quot;funcs_off&quot;] or !best[&quot;name_off&quot;] or !best[&quot;jump_off&quot;]
+            throw Error(&quot;dynamic function layout not found&quot;, -1)
+
+        loc[&quot;parser&quot;] := AhkMagic._RemoteDiscoverParser(h, gscript
+            , loc[&quot;q_cmp&quot;], loc[&quot;d_cmp&quot;])
+        layout := Map(
             &quot;gscript&quot;, gscript,
             &quot;g&quot;, g,
             &quot;curr_off&quot;, currOff,
-            &quot;mfuncs_off&quot;, funcsOff,
-            &quot;mfuncs_count_off&quot;, countOff,
-            &quot;mlast_line_off&quot;, lastOff,
-            &quot;mjump_line_off&quot;, jumpOff,
+            &quot;mfuncs_off&quot;, best[&quot;funcs_off&quot;],
+            &quot;mfuncs_count_off&quot;, best[&quot;count_off&quot;],
+            &quot;mlast_line_off&quot;, 0,
+            &quot;mjump_line_off&quot;, best[&quot;jump_off&quot;],
+            &quot;name_off&quot;, best[&quot;name_off&quot;],
+            &quot;jump_back_off&quot;, best[&quot;back_off&quot;],
+            &quot;funcs&quot;, best[&quot;funcs&quot;],
+            &quot;func_data&quot;, best[&quot;func_data&quot;],
             &quot;parser&quot;, loc[&quot;parser&quot;])
+        layout[&quot;struct&quot;] := AhkMagic._RemoteDiscoverStructs(h, locOut
+            , best[&quot;funcs&quot;], best[&quot;func_data&quot;], best[&quot;jump_off&quot;]
+            , best[&quot;back_off&quot;])
+        return layout
     }
 
     static _RPtr(h, addr) {
@@ -2869,14 +3192,18 @@ ahkHackLayoutProbe() {
                 hook[&quot;script_layout&quot;] := layout
             }
             locOut := loc[&quot;loc_out&quot;]
+            if !layout.Has(&quot;struct&quot;)
+                layout[&quot;struct&quot;] := AhkMagic._RemoteDiscoverStructs(h, locOut
+                    , layout[&quot;funcs&quot;], layout[&quot;func_data&quot;]
+                    , layout[&quot;mjump_line_off&quot;], layout[&quot;jump_back_off&quot;])
+            s := layout[&quot;struct&quot;]
             gscript := layout[&quot;gscript&quot;]
             g := layout[&quot;g&quot;]
             currOff := layout[&quot;curr_off&quot;]
             parser := layout[&quot;parser&quot;]
-            oldLast := AhkMagic._RPtr(h, gscript + layout[&quot;mlast_line_off&quot;])
             oldFuncCount := AhkMagic._RInt(h, gscript + layout[&quot;mfuncs_count_off&quot;])
             savedCur := AhkMagic._RPtr(h, g + currOff)
-            savedCurFunc := AhkMagic._RPtr(h, g + 0x28)
+            savedCurFunc := AhkMagic._RPtr(h, g + currOff)
 
             savedState := []
             for key in [&quot;mopen&quot;, &quot;mpending_parent&quot;, &quot;mline_parent&quot;
@@ -2921,15 +3248,6 @@ ahkHackLayoutProbe() {
                 funcsItem := AhkMagic._RPtr(h, gscript + layout[&quot;mfuncs_off&quot;])
                 funcCount := AhkMagic._RInt(h, gscript + layout[&quot;mfuncs_count_off&quot;])
                 if funcCount &gt; oldFuncCount {
-                    firstNew := oldLast
-                        ? AhkMagic._RPtr(h, oldLast + 32) : 0
-                    if firstNew {
-                        rc := AhkMagic._RemoteCall(h
-                            , mod[&quot;base&quot;] + loc[&quot;preparse_rva&quot;]
-                            , [gscript, firstNew])
-                        if rc != 1
-                            throw Error(&quot;PreparseExpressions(tail) rc=&quot; rc, -1)
-                    }
                     loop funcCount - oldFuncCount {
                         idx := oldFuncCount + A_Index - 1
                         newFunc := AhkMagic._RPtr(h, funcsItem + idx * 8)
@@ -2937,7 +3255,7 @@ ahkHackLayoutProbe() {
                             , newFunc + layout[&quot;mjump_line_off&quot;])
                         if !jump
                             continue
-                        AhkMagic._WPtr(h, g + 0x28, newFunc)
+                        AhkMagic._WPtr(h, g + currOff, newFunc)
                         rc := AhkMagic._RemoteCall(h
                             , mod[&quot;base&quot;] + loc[&quot;preparse_rva&quot;]
                             , [gscript, jump])
@@ -2946,40 +3264,57 @@ ahkHackLayoutProbe() {
                         AhkMagic._WPtr(h, g + currOff, newFunc)
                         line := jump
                         while line {
-                            lineData := AhkMagic._RemoteRead(h, line, 40)
-                            action := NumGet(lineData, 0, &quot;UChar&quot;)
-                            attr := NumGet(lineData, 16, &quot;Ptr&quot;)
-                            argc := NumGet(lineData, 1, &quot;UChar&quot;)
-                            arg := NumGet(lineData, 8, &quot;Ptr&quot;)
+                            lineSize := Max(0x40, s[&quot;line_next&quot;] + 8
+                                , s[&quot;line_attribute&quot;] + 8, s[&quot;line_arg&quot;] + 8)
+                            lineData := AhkMagic._RemoteRead(h, line, lineSize)
+                            action := NumGet(lineData, s[&quot;line_action&quot;], &quot;UChar&quot;)
+                            attr := NumGet(lineData, s[&quot;line_attribute&quot;], &quot;Ptr&quot;)
+                            argc := NumGet(lineData, s[&quot;line_argc&quot;], &quot;UChar&quot;)
+                            arg := NumGet(lineData, s[&quot;line_arg&quot;], &quot;Ptr&quot;)
                             if action = 3 and attr
                                 AhkMagic._WPtr(h, g + currOff, attr)
                             if argc and arg
-                                and NumGet(AhkMagic._RemoteRead(h, arg + 1, 1)
+                                and NumGet(AhkMagic._RemoteRead(h
+                                    , arg + s[&quot;arg_expression&quot;], 1)
                                     , 0, &quot;UChar&quot;) {
-                                postfix := AhkMagic._RPtr(h, arg + 24)
+                                postfix := AhkMagic._RPtr(h
+                                    , arg + s[&quot;arg_postfix&quot;])
                                 if postfix {
                                     loop {
+                                        tokenSize := Max(s[&quot;token_stride&quot;]
+                                            , s[&quot;token_symbol&quot;] + 4
+                                            , s[&quot;token_usage&quot;] + 8
+                                            , s[&quot;token_value&quot;] + 8)
                                         token := AhkMagic._RemoteRead(h
-                                            , postfix, 24)
-                                        symbol := NumGet(token, 16, &quot;UInt&quot;)
+                                            , postfix, tokenSize)
+                                        symbol := NumGet(token
+                                            , s[&quot;token_symbol&quot;], &quot;UInt&quot;)
                                         if symbol = NumGet(locOut, 32, &quot;UInt&quot;)
                                             break
-                                        if symbol = 4
-                                            and NumGet(token, 8, &quot;UInt&quot;) &lt; 3 {
-                                            deref := NumGet(token, 0, &quot;Ptr&quot;)
+                                        if symbol = s[&quot;token_var_symbol&quot;]
+                                            and NumGet(token, s[&quot;token_usage&quot;]
+                                                , &quot;UInt&quot;) &lt; 3 {
+                                            deref := NumGet(token
+                                                , s[&quot;token_value&quot;], &quot;Ptr&quot;)
                                             if deref {
+                                                derefSize := Max(24
+                                                    , s[&quot;deref_len&quot;] + 4
+                                                    , s[&quot;deref_type&quot;] + 1
+                                                    , s[&quot;deref_marker&quot;] + 8
+                                                    , s[&quot;deref_var&quot;] + 8)
                                                 derefData := AhkMagic._RemoteRead(h
-                                                    , deref, 24)
+                                                    , deref, derefSize)
                                                 derefType := NumGet(derefData
-                                                    , 16, &quot;UChar&quot;)
+                                                    , s[&quot;deref_type&quot;], &quot;UChar&quot;)
                                                 marker := NumGet(derefData
-                                                    , 0, &quot;Ptr&quot;)
+                                                    , s[&quot;deref_marker&quot;], &quot;Ptr&quot;)
                                                 derefLen := NumGet(derefData
-                                                    , 20, &quot;UInt&quot;)
+                                                    , s[&quot;deref_len&quot;], &quot;UInt&quot;)
                                                 if derefType = 7 {
                                                     AhkMagic._WPtr(h, postfix
                                                         , AhkMagic._RPtr(h
-                                                            , deref + 8))
+                                                            , deref
+                                                            + s[&quot;deref_var&quot;]))
                                                 } else if derefType = 0
                                                     and marker
                                                     and derefLen &gt; 0
@@ -2989,16 +3324,19 @@ ahkHackLayoutProbe() {
                                                         , [gscript, marker
                                                             , derefLen, 0x103])
                                                     if var
-                                                        AhkMagic._WPtr(h, postfix
+                                                        AhkMagic._WPtr(h
+                                                            , postfix
+                                                                + s[&quot;token_value&quot;]
                                                             , var)
                                                 }
                                             }
                                         }
-                                        postfix += 24
+                                        postfix += s[&quot;token_stride&quot;]
                                     }
                                 }
                             }
-                            line := AhkMagic._RPtr(h, line + 32)
+                            line := AhkMagic._RPtr(h
+                                , line + s[&quot;line_next&quot;])
                         }
                         AhkMagic._WPtr(h, g + currOff, savedCur)
                         rc := AhkMagic._RemoteCall(h
@@ -3006,7 +3344,7 @@ ahkHackLayoutProbe() {
                             , [gscript, newFunc])
                         if rc != 1
                             throw Error(&quot;PreprocessLocalVars rc=&quot; rc, -1)
-                        AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
+                        AhkMagic._WPtr(h, g + currOff, savedCurFunc)
                     }
                 }
                 AhkMagic._WPtr(h, g + currOff, 0)
@@ -3035,7 +3373,7 @@ ahkHackLayoutProbe() {
                     else
                         AhkMagic._WByte(h, gscript + parser[item[1]], item[3])
                 }
-                AhkMagic._WPtr(h, g + 0x28, savedCurFunc)
+                AhkMagic._WPtr(h, g + currOff, savedCurFunc)
                 AhkMagic._WPtr(h, g + currOff, savedCur)
             }
         } finally {
@@ -3169,7 +3507,7 @@ ahkHackLayoutProbe() {
 
 MC_INTERNAL_LOCATOR_X64 := &quot;4157415641554154565755534881ec38030000488bb424a8030000c744242c000000004885c90f94c04885d2410f94c24108c24d85c0410f94c34508d34885f6410f94c2b8010000004508da0f854a0200004c8b9c24a00300004929d10f92c04929d3410f92c24108c2b8020000000f85270200004d8d9100000200b8030000004d39c20f8712020000498d41074c39d00f87000200004801ca4881c10000010031ff4c89c8eb180f1f840000000000488d58014883c0084c39d04889d8777c803c024875ea488d1c02807b018d75e0807b020d75da4c6373034c01f34883c3074839cb72ca4189ff4531f685ff74154a399cf430010000740b49ffc64d39f775ee4589fe4139fe400f95c583ff40410f93c44108ec75134a899cfc3001000042c744bc3000000000ffc74139fe73804489f3ff449c30e974ffffff85ff0f845301000089fb89d883e00383ff040f832202000031ff4531f631c94885c074384a8d1cf44881c3300100004e8d34b44983c6304531ffeb100f1f84000000000049ffc74c39f87410438b2cbe39cd76f04a8b3cfb89e9ebe84885ff0f84f6000000b8050000004981f8000100000f82e900000031c94889d3eb20660f1f4400004c8d71014881c10101000048ffc34c39c14c89f10f87c2000000803c0a4475e0807c0a018975d9807c0a024c75d2807c0a032475cb807c0a042075c441be04000000eb106666662e0f1f8400000000004983c60242807c33fc66752442807c33fd83751c42807c33fe3a751442807c33ff0074386666662e0f1f8400000000004981fe000100000f8473ffffff42807c33fd6675bb42807c33fe8375b342807c33ff3a75ab42803c330075a44c8d72ff4885c97418410fb6040e3dc3000000740e3dcc000000740748ffc975e831c94801d14531ffeb2eb8040000004881c4380300005b5d5f5e415c415d415e415fc3498d5f014983c706b8080000004d39c74989df77d742803c3ae875e44a8d043a486358014801d84883c0054839c875d04d85ff740f4c89fb41803c1ecc740748ffcb75f431db488d83000100004c39c077ae4801d3b804000000eb044883c002807c03fc667515807c03fd83750e807c03fe3a7507807c03ff007427483d000100000f8478ffffff807c03fd6675cd807c03fe8375c6807c03ff3a75bf803c030075b94d39d34d0f42d3498d41104c39d00f866d0100004531f6488d4a064531ffe99100000083e3fc31ff4531f631c9eb1b66666666662e0f1f8400000000004983c6044c39f30f84befdffff428b6cb43039cd760a4a8bbcf43001000089e9428b6cb43439cd760a4a8bbcf43801000089e9428b6cb43839cd760a4a8bbcf44001000089e9428b6cb43c39cd76b14a8bbcf44801000089e9eba54d8d5f014983c70648ffc1b8060000004d39c74d89df0f8795feffff42803c3ae875dd4a8d043a4c6360014c01e04829d04883c0054c39c875c64d8d5f05498d470a4c39c0400f97c5498d47654939c3410f93c34108eb75a741bb050000004d29e34531e442807c21ffe8750d4e632c214b8d2c234c01ed75264f8d2c274983c5064939c50f8375ffffff4f8d2c274983c50b49ffc44d39c576cae960ffffff4c8d4c242c4889d54889d14c89c24d89d0e80f01000085c00f84f90000004c01ed4c01fd498d042c4883c00a48893e4c89760848895e10488946188b44242c89462031c0e9c8fdffff4d89ceeb14498d46014983c6114d39d64989c60f877afeffff42803c324875e542807c32018975dd42807c32025475d542807c32032475cd42807c32041075c542807c32055575bd42807c32065675b542807c32075775ad42807c32084175a542807c320954759d42807c320a41759542807c320b55758d42807c320c41758542807c320d560f8579ffffff42807c320e410f856dffffff4983fe020f8263ffffff42807c320f570f8557ffffff42807c32ffcc0f854bffffff42807c32fecc0f853fffffff4901d6e9c8fdffffb807000000e9f0fcffff0f1f4000498d80000800004839d0480f42d04983c00431c0eb0d662e0f1f84000000000049ffc04939d0772842807c01fc8375f042807c01fe1075e8460fb65401ff458d5ace4180fb3277d8458911b801000000c3&quot;
 MC_MEM_SCRIPT_X64 := &quot;5657534883ec204c89c64989ca488b4c24684d85d20f94c04885d2410f94c04108c04d85c9410f94c34508c34885c9410f94c0b8010000004508d80f85c80100008b4424600f57c00f11010f1141100f1141200f1141300f1141400f1141500f1141600f1141700f1181800000000f1181900000000f1181a00000000f1181b00000000f1181c00000000f1181d00000000f1181e00000000f1181f00000004c8d81000100000f1181000100000f1181100100000f1181200100000f1181400100000f1181500100000f1181600100000f1181700100000f1181800100000f1181900100000f1181a00100000f1181b00100000f1181c00100000f1181d00100000f1181e00100000f1181f00100004c8d1d0a0100004c89194c8d1d300100004c8959084c8d1d350100004c8959104c8d1d5a0100004c8959184c8d1d9f0200004c8959204c8d1da40200004c8959284c8d1da90200004c8959304c8d1dae0200004c8959384889890001000048c781080100000c00000049bb00000000b00400004c899910010000c781180100000200000066c7812c01000000000f1181300100004c898940010000898148010000c6814c010000004c898950010000898158010000c6815c010000004c8989600100004885f674048b3eeb0231ff4885f60f94c34889d14c89c24189f841ffd289c131c083f9010f95c108cb740688c801c0eb06ffc7893e31c04883c4205b5f5ec36666666666662e0f1f84000000000048c7414000000000c7414800000000c6414c0048c7415000000000c7415800000000c6415c0048c7416000000000c390b001c3666666662e0f1f84000000000048c7414000000000c7414800000000c6414c0048c7415000000000c7415800000000c6415c0048c7416000000000c390565753488b41404c8b51504c8b4960448b59484c29d04c01d84589c34c39d8410f43c085c074214189c083f808410f92c34889d64c29d64883fe200f92c34408db740d4531dbeb7e4531c0e9e300000083f82073054531dbeb424589c34183e3e031f6666666662e0f1f840000000000410f100432410f104c32100f1104320f114c32104883c6204939f375e34539c30f849d00000041f6c018742a4c89de4589c34183e3f8662e0f1f840000000000498b3c3248893c324883c6084939f375ef4539c3746d4c89c74c89de4883e703741e4c89de66662e0f1f840000000000410fb61c32881c3248ffc648ffcf75f04d29c34983fbfc773a0f1f8000000000450fb61c3244881c32450fb65c320144885c3201450fb65c320244885c3202450fb65c320344885c32034883c6044939f075cd4d01c24c8951504d01c14c8949605b5f5ec366662e0f1f84000000000031c0c3666666662e0f1f84000000000031c0c3666666662e0f1f840000000000488b4150482b4140c30f1f80000000008b4148c3&quot;
-MC_INPROC_EVAL_X64 := &quot;4157415641554154565755534881ec980000004c89cf4c89c34989cf4c8ba42408010000488b8c240001000048c78424800000000000400048c7442468000000004d85ff0f94c04885d2410f94c04108c04885db0f94c04d85c9410f94c14108c14508c14885c90f94c04408c84d85e4410f94c04883bc242801000000410f94c14508c14108c14883bc243801000000410f94c04883bc244001000000410f94c2b8010000004508c24508ca41f6c2010f851b060000488b8424200100004c8bac24180100004c8d87000100004885c04889c6490f44f04c8db7800100004c8d8f000300004c894c24704c898c24900000004d85ed4c0f44ef756e0f57c00f11070f1147100f1147200f1147300f1147400f1147500f1147600f1147700f1187800000000f1187900000000f1187a00000000f1187b00000000f1187c00000000f1187d00000000f1187e00000000f1187f0000000c6070341c645010141c7450401000000498975080f57c0410f1106410f114610410f114620410f114630410f114640410f114650410f114660410f1146706683390074164531c90f1f40006642837c4902004d8d490175f3eb034531c94885c04c897c24600f85fe010000488d870008100048894424500f57c0410f1100410f114010410f114020410f114030410f114040410f114050410f114060410f11407041c60000c646010144894e0448894e0849b800010000000100004c8946204531c04989cb4d89d9eb0c904983c1044084ed4d0f45cb450fb7114183fa22744b4183fa2774454585d20f8457010000418d429f6683f81a0f828e000000664183fa5f0f8483000000418d42a56683f8e57779410fb7c23d80000000736e4983c102ebb30f1f8400000000004d8d5902450fb77902664585ff400f94c5664539d70f94c04008e875830f1f00664183ff60750f66418379040074074983c1044d89cb4d89d94983c302450fb77902664585ff400f94c50f8450ffffff664539d775cae945ffffff0f1f44000031ed4d89cbeb14660f1f840000000000450fb753024983c302ffc5418d429f6683f81a72eb418d42bf6683f81a0f92c0664183fa5f410f94c74108c775d2410fb7c23d800000000f92c04183c2c6664183faf6410f92c24484d074b44939c9741f4181f8ff0000000f92c066418379fe2e410f95c24184c20f84bcfeffffeb0d4181f8fe0000000f87adfeffff4489c0488d04404c8b5424504d890cc249c744c208000000006641c744c210000041896cc21441ffc0e97ffeffff4585c04c8b7c2460741941c1e003438d0440488b4c245048c704010000000048894e10488954247849c70424010000000f57c0410f11442408488b0348894424504c892b4c8d4424684c89e94889f241ffd789c5488b4c24684885c97407ff94244001000083fd0175214883bc2410010000000f84e8010000488bac24480100004c8b7e18418b4710eb32488b44245048890341c7042402000000e994020000488b400849890766666666662e0f1f840000000000418b47284983c71839e8745083f80475ef41837f080277e8498b074885c074e08078100774c5448b4014488b10488b8c242801000041b903010000ff9424380100004885c075a8488b44245048890341c7042405000000e923020000488b8424300100004885c00f94c1483b4424600f94c208ca75114c89e94889f2ffd083f8010f854d010000488b4424704889842488000000c78790010000ffffffff48c78788010000ffffffff4889879801000048c787a001000000000000488d8700033f004889442438488d8424800000004889442430488d8424900000004889442428488d842488000000488944242048c744244000003f004c8d44245c4c89e931d24d89f1ff542478488b4c245048890b4885c00f84ae00000041c70424000000008b8f9001000041894c2404488b8f8001000049894c240849894c2410498d4c24204889ca4c29f24883fa0f0f8797000000ba05000000660f1f840000000000450fb64416fb44884411fb450fb64416fc44884411fc450fb64416fd44884411fd450fb64416fe44884411fe450fb64416ff44884411ff450fb60416448804114883c2064883fa3575b6eb56488b44245048890348b8000000006300000049890424e9b800000041c7042403000000e9ab000000488b44245048890341c7042406000000e996000000410f10060f1101410f1046100f114110410f1046200f114120418b4c240483f9050f8785000000ba270000000fa3ca737b488b461849894424504885c0744b31c0660f1f440000488b4e180fb60c0141884c0458488b4e180fb64c010141884c0459488b4e180fb64c010241884c045a488b4e180fb64c010341884c045b4883c004483d2001000075bd8b44245c41898424c800000031c04881c4980000005b5d5f5e415c415d415e415fc341c7442404000000004989442410e972ffffff&quot;
+MC_INPROC_EVAL_X64 := &quot;4157415641554154565755534881ec980000004c89cf4c89c34989cf4c8ba42408010000488b8c240001000048c78424800000000000400048c7442460000000004d85ff0f94c04885d2410f94c04108c04885db0f94c04d85c9410f94c14108c14508c14885c90f94c04408c84d85e4410f94c04883bc242801000000410f94c14508c14108c14883bc243801000000410f94c04883bc244001000000410f94c2b8010000004508c24508ca41f6c2010f859b060000488b8424200100004c8bac24180100004c8d87000100004885c04889c6490f44f04c8db7800100004c8d8f000300004c894c24704c898c24900000004d85ed4c0f44ef756e0f57c00f11070f1147100f1147200f1147300f1147400f1147500f1147600f1147700f1187800000000f1187900000000f1187a00000000f1187b00000000f1187c00000000f1187d00000000f1187e00000000f1187f0000000c6070341c645010141c7450401000000498975080f57c0410f1106410f114610410f114620410f114630410f114640410f114650410f114660410f1146706683390074164531c90f1f40006642837c4902004d8d490175f3eb034531c94885c048895424780f85830200004c897c245048895c2468488d870008100048894424480f57c0410f1100410f114010410f114020410f114030410f114040410f114050410f114060410f11407041c60000c646010144894e0448894e0848b80001000000010000488946204531c04989cb4d89d94531d2660f1f440000470fb73c114585ff0f84dd0100004183ff27744c4183ff227446418d479f6683f81a0f82f8000000664183ff5f0f84ed000000418d47a56683f8e50f87df000000410fb7c73d800000000f83d00000004983c202ebaa662e0f1f8400000000004f8d1c114983c302430fb74411026685c0400f94c5664439f80f94c34008eb75396666666666662e0f1f8400000000006683f860750c6641837b020074044983c302410fb743024983c3026685c0400f94c57406664439f875d64084ed0f85280100004181f8fe00000077444489c0488d04404b8d1c114883c3024c89c24c8b44244849891cc041c644c008016641c744c01003014c89db4c29cb4c29d34883c3fe48d1eb41895cc0144989d041ffc04983c302e9dbfeffff0f1f80000000004c89c24b8d041131ed4989c3eb0d6690450fb77b024983c302ffc5418d5f9f6683fb1a72eb418d5fbf6683fb1a0f92c3664183ff5f410f94c04108d875d2450fb7c74181f880000000410f92c0418d5fc66683fbf60f92c34184d874b34839c874254889d381fbff0000000f92c06643837c11fe2e410f95c04184c04989d00f844ffeffffeb104989d04181f8fe0000000f873dfeffff4489c0488d04404d01d14c8b4424484d890cc049c744c008000000006641c744c010000041896cc0144989d041ffc0e909feffff4585c0488b5c24684c8b7c2450741941c1e003438d0440488b4c244848c704010000000048894e1049c70424010000000f57c0410f11442408488b0348894424484c892b4c8d4424604c89e94889f241ffd789c5488b4c24604885c97407ff94244001000083fd0175264883bc2410010000000f84e80100004c897c2450488bac24480100004c8b7e18418b4710eb2d488b44244848890341c7042402000000e98f020000488b4008498907660f1f840000000000418b47284983c71839e8745083f80475ef41837f080277e8498b074885c074e08078100774ca448b4014488b10488b8c242801000041b903010000ff9424380100004885c075ad488b44244848890341c7042405000000e923020000488b8424300100004885c00f94c1483b4424500f94c208ca75114c89e94889f2ffd083f8010f854d010000488b4424704889842488000000c78790010000ffffffff48c78788010000ffffffff4889879801000048c787a001000000000000488d8700033f004889442438488d8424800000004889442430488d8424900000004889442428488d842488000000488944242048c744244000003f004c8d44245c4c89e931d24d89f1ff542478488b4c244848890b4885c00f84ae00000041c70424000000008b8f9001000041894c2404488b8f8001000049894c240849894c2410498d4c24204889ca4c29f24883fa0f0f8797000000ba05000000660f1f840000000000450fb64416fb44884411fb450fb64416fc44884411fc450fb64416fd44884411fd450fb64416fe44884411fe450fb64416ff44884411ff450fb60416448804114883c2064883fa3575b6eb56488b44244848890348b8000000006300000049890424e9b800000041c7042403000000e9ab000000488b44244848890341c7042406000000e996000000410f10060f1101410f1046100f114110410f1046200f114120418b4c240483f9050f8785000000ba270000000fa3ca737b488b461849894424504885c0744b31c0660f1f440000488b4e180fb60c0141884c0458488b4e180fb64c010141884c0459488b4e180fb64c010241884c045a488b4e180fb64c010341884c045b4883c004483d2001000075bd8b44245c41898424c800000031c04881c4980000005b5d5f5e415c415d415e415fc341c7442404000000004989442410e972ffffff&quot;
 </code></pre>
         </details>
       </section>
@@ -3182,11 +3520,10 @@ MC_INPROC_EVAL_X64 := &quot;4157415641554154565755534881ec980000004c89cf4c89c349
 
   <footer class="wrap">
     <div class="footer">
-      ahk-hack · runtime structure scanner for AutoHotkey v2 ·
-      <a href="https://github.com/MonoEven/ahk-hack-library">GitHub</a> ·
-      MIT License
+      ahk-hack · AutoHotkey v2 runtime introspection · MIT License ·
+      <a href="https://github.com/MonoEven/ahk-hack-library">GitHub</a>
     </div>
   </footer>
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
 </body>
 </html>

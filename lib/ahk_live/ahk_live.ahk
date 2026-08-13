@@ -8,9 +8,14 @@ class AhkLive {
     static VERSION := "1.0.0"
     static renameSeq := 0
     static FUNC_SCAN_SIZE := 0x800
-    static NAME_PROBE_SCAN_SIZE := 0x1000
     static MIN_PTR := 0x10000
     static MAX_PTR := 0x7fffffffffff
+    static watchSeq := 0
+    static watches := Map()
+    static watchTimerActive := false
+    static reloadSeq := 0
+    static reloads := Map()
+    static reloadTimerActive := false
 
     static Attach(pid) {
         return AhkMagic.AttachRemote(pid)
@@ -49,10 +54,19 @@ class AhkLive {
             throw TypeError("hook must be an AttachRemote result", -1)
         if !(expr is String)
             throw TypeError("expr must be a string", -1)
-        state := Map("running", true, "last", "")
-        tick := AhkLive._WatchTick.Bind(hook, expr, state, onChange)
-        state["timer"] := SetTimer(tick, ms)
-        return AhkLiveWatcher(tick, state)
+        AhkLive.watchSeq += 1
+        state := Map(
+            "hook", hook,
+            "expr", expr,
+            "onChange", onChange,
+            "ms", ms,
+            "running", true,
+            "last", "",
+            "next", A_TickCount + ms
+        )
+        AhkLive.watches[AhkLive.watchSeq] := state
+        AhkLive._EnsureWatchTimer()
+        return AhkLiveWatcher("watch", AhkLive.watchSeq, state)
     }
 
     static HotReload(hook, scriptPath, interval := 1000) {
@@ -60,10 +74,18 @@ class AhkLive {
             throw TypeError("hook must be an AttachRemote result", -1)
         if !(scriptPath is String)
             throw TypeError("scriptPath must be a string", -1)
-        state := Map("running", true, "sig", "")
-        tick := AhkLive._HotReloadTick.Bind(hook, scriptPath, state)
-        state["timer"] := SetTimer(tick, interval)
-        return AhkLiveWatcher(tick, state)
+        AhkLive.reloadSeq += 1
+        state := Map(
+            "hook", hook,
+            "path", scriptPath,
+            "interval", interval,
+            "running", true,
+            "sig", "",
+            "next", A_TickCount + interval
+        )
+        AhkLive.reloads[AhkLive.reloadSeq] := state
+        AhkLive._EnsureReloadTimer()
+        return AhkLiveWatcher("reload", AhkLive.reloadSeq, state)
     }
 
     static TraceFunction(hook, name, outFile, journal := 0) {
@@ -74,12 +96,13 @@ class AhkLive {
         if !(outFile is String)
             throw TypeError("outFile must be a string", -1)
 
-        nameLen := StrLen(name)
-        oldName := AhkLive._ShortName(nameLen)
-        deadName := AhkLive._ShortName(nameLen)
-        retName := "_ahk_live_ret_" Format("{:x}", A_TickCount)
+        nonce := Format("{:x}", A_TickCount)
             . Format("{:x}", Random(1, 0x7fffffff))
-        escPath := StrReplace(outFile, "\", "\\")
+        oldName := "_ahk_live_clone_" . nonce
+        deadName := oldName
+        retName := "_ahk_live_ret_" . nonce
+        wrapperName := "_ahk_live_wrap_" . nonce
+        logVar := "_ahk_live_log_" . nonce
         sig := AhkLive._FuncSignature(hook, name)
         loop sig["max"] {
             if sig["optional"][A_Index] or sig["byref"][A_Index]
@@ -89,24 +112,84 @@ class AhkLive {
             throw Error("TraceFunction currently requires at least two required parameters: " name, -1)
         paramNames := AhkLive._ParamNames(hook, name)
         params := AhkLive._JoinList(paramNames)
-        callArgs := params
 
-        AhkLive._RenameFunc(hook, name, oldName, journal)
+        layout := AhkLive._EnsureLayout(hook)
+        nameOff := AhkLive._EnsureNameOffset(hook, layout)
+        h := AhkMagic._RemoteOpen(hook["pid"], true)
+        try {
+            funcs := AhkLive._FindExactFuncs(h, layout, nameOff, name)
+            if !funcs.Length
+                throw Error("function object not found: " name, -1)
+            nf := funcs[1]
+            mparamOff := AhkLive._FindMParamOff(h, nf, paramNames)
+            if !mparamOff
+                throw Error("mParam offset not found for " name, -1)
+            mparamPtr := AhkMagic._RPtr(h, nf + mparamOff)
+            p0 := AhkMagic._RPtr(h, mparamPtr)
+            p1 := AhkMagic._RPtr(h, mparamPtr + 24)
+            origJump := AhkMagic._RPtr(h, nf + layout["mjump_line_off"])
+            clonePtr := AhkLive._CloneUserFunc(h, layout, nf, oldName)
+            AhkLive._CreateGlobalObjectVar(h, layout, clonePtr, oldName)
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
+
         script := "`n" retName "(v, label) {`n"
-            . "    FileAppend(`"TRACE exit `" label `"=`" v Chr(10), `"" escPath "`")`n"
+            . "    global " logVar "`n"
+            . "    " logVar " .= `"TRACE exit `" label `"=`" v Chr(10)`n"
             . "    return v`n"
             . "}`n"
-            . name "(" params ") {`n"
-            . "    return " retName "(" oldName "(" callArgs "), `"" name "`")`n"
+            . wrapperName "(" params ") {`n"
+            . "    return " retName "(" oldName "(" params "), `"" name "`")`n"
             . "}`n"
             . "StrLen(`"`")"
         AhkMagic.RemoteEvalScript(hook, script)
+
+        h := AhkMagic._RemoteOpen(hook["pid"], true)
+        try {
+            wrappers := AhkLive._FindExactFuncs(h, layout, nameOff
+                , wrapperName)
+            if !wrappers.Length
+                throw Error("trace wrapper not found", -1)
+            wnf := wrappers[1]
+            wmparamOff := AhkLive._FindMParamOff(h, wnf, paramNames)
+            if !wmparamOff
+                throw Error("wrapper mParam offset not found", -1)
+            wmparamPtr := AhkMagic._RPtr(h, wnf + wmparamOff)
+            p0Buf := Buffer(8)
+            p1Buf := Buffer(8)
+            NumPut("Ptr", p0, p0Buf, 0)
+            NumPut("Ptr", p1, p1Buf, 0)
+            AhkMagic._RemoteWrite(h, wmparamPtr, p0Buf)
+            AhkMagic._RemoteWrite(h, wmparamPtr + 24, p1Buf)
+            mvars := AhkLive._FindMVars(h, wnf, paramNames)
+            if mvars {
+                listData := AhkMagic._RemoteRead(h, mvars["item"], 0x40)
+                loop 2 {
+                    wv := NumGet(listData, (A_Index - 1) * 8, "Ptr")
+                    target := A_Index = 1 ? p0 : p1
+                    aliasBuf := Buffer(8)
+                    NumPut("Ptr", target, aliasBuf, 0)
+                    AhkMagic._RemoteWrite(h, wv + 16, aliasBuf)
+                    AhkMagic._WByte(h, wv + 35, 0)
+                    attr := NumGet(AhkMagic._RemoteRead(h, wv + 33, 1)
+                        , 0, "UChar")
+                    AhkMagic._WByte(h, wv + 33, attr & 0xFD)
+                }
+            }
+            AhkLive._ReplaceFuncBodyExact(hook, name, wrapperName)
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
 
         return Map(
             "hook", hook,
             "name", name,
             "oldName", oldName,
             "deadName", deadName,
+            "clone_ptr", clonePtr,
+            "orig_jump", origJump,
+            "log_var", logVar,
             "retName", retName,
             "outFile", outFile,
             "signature", sig,
@@ -116,11 +199,23 @@ class AhkLive {
     }
 
     static Untrace(hook, tracer) {
-        if !(tracer is Map) or !tracer.Has("name") or !tracer.Has("oldName")
-            or !tracer.Has("deadName")
+        if !(tracer is Map) or !tracer.Has("name") or !tracer.Has("orig_jump")
             throw TypeError("tracer must be a TraceFunction result", -1)
-        AhkLive._RenameFunc(hook, tracer["name"], tracer["deadName"])
-        AhkLive._RenameFunc(hook, tracer["oldName"], tracer["name"])
+        layout := AhkLive._EnsureLayout(hook)
+        nameOff := AhkLive._EnsureNameOffset(hook, layout)
+        h := AhkMagic._RemoteOpen(hook["pid"], true)
+        try {
+            funcs := AhkLive._FindExactFuncs(h, layout, nameOff
+                , tracer["name"])
+            if !funcs.Length
+                throw Error("function object not found: " tracer["name"], -1)
+            jumpBuf := Buffer(8)
+            NumPut("Ptr", tracer["orig_jump"], jumpBuf, 0)
+            AhkMagic._RemoteWrite(h, funcs[1] + layout["mjump_line_off"]
+                , jumpBuf)
+        } finally {
+            DllCall("CloseHandle", "Ptr", h)
+        }
         return Map("name", tracer["name"], "restoredFrom", tracer["oldName"])
     }
 
@@ -169,6 +264,7 @@ class AhkLive {
                 name := AhkMagic._RemoteReadString(h
                     , AhkMagic._RPtr(h, nf + nameOff), 256)
                 if name = "" or InStr(name, "_ahk_live_") = 1
+                    or InStr(name, "ahkLiveNameProbe_") = 1
                     continue
                 max := 0
                 min := 0
@@ -267,6 +363,118 @@ class AhkLive {
         }
     }
 
+    static _FindMParamOff(h, nf, paramNames) {
+        data := AhkMagic._RemoteRead(h, nf, 0x400)
+        loop data.Size // 8 {
+            off := (A_Index - 1) * 8
+            q := NumGet(data, off, "Ptr")
+            if q <= AhkLive.MIN_PTR or q >= AhkLive.MAX_PTR
+                continue
+            try
+                arr := AhkMagic._RemoteRead(h, q, 0x60)
+            catch
+                continue
+            v0 := NumGet(arr, 0, "Ptr")
+            v1 := NumGet(arr, 24, "Ptr")
+            if v0 <= AhkLive.MIN_PTR or v1 <= AhkLive.MIN_PTR
+                continue
+            n0 := ""
+            n1 := ""
+            try
+                n0 := AhkMagic._RemoteReadString(h
+                    , NumGet(AhkMagic._RemoteRead(h, v0 + 40, 8)
+                        , 0, "Ptr"), 32)
+            catch
+                n0 := ""
+            try
+                n1 := AhkMagic._RemoteReadString(h
+                    , NumGet(AhkMagic._RemoteRead(h, v1 + 40, 8)
+                        , 0, "Ptr"), 32)
+            catch
+                n1 := ""
+            if n0 = paramNames[1] and n1 = paramNames[2]
+                return off
+        }
+        return 0
+    }
+
+    static _FindMVars(h, nf, paramNames) {
+        data := AhkMagic._RemoteRead(h, nf, 0x400)
+        loop 0x200 // 8 {
+            off := (A_Index - 1) * 8
+            itemPtr := NumGet(data, off, "Ptr")
+            count := NumGet(data, off + 8, "Int")
+            if itemPtr <= AhkLive.MIN_PTR or itemPtr >= AhkLive.MAX_PTR
+                or count < 2 or count > 100
+                continue
+            try
+                listData := AhkMagic._RemoteRead(h, itemPtr, count * 8)
+            catch
+                continue
+            v0 := NumGet(listData, 0, "Ptr")
+            v1 := NumGet(listData, 8, "Ptr")
+            n0 := ""
+            n1 := ""
+            try
+                n0 := AhkMagic._RemoteReadString(h
+                    , NumGet(AhkMagic._RemoteRead(h, v0 + 40, 8)
+                        , 0, "Ptr"), 32)
+            catch
+                n0 := ""
+            try
+                n1 := AhkMagic._RemoteReadString(h
+                    , NumGet(AhkMagic._RemoteRead(h, v1 + 40, 8)
+                        , 0, "Ptr"), 32)
+            catch
+                n1 := ""
+            if n0 = paramNames[1] and n1 = paramNames[2]
+                return Map("off", off, "item", itemPtr)
+        }
+        return 0
+    }
+
+    static _CloneUserFunc(h, layout, nf, newName) {
+        size := 0x400
+        clonePtr := DllCall("VirtualAllocEx", "Ptr", h, "Ptr", 0
+            , "UPtr", size, "UInt", 0x3000, "UInt", 0x40, "Ptr")
+        if !clonePtr
+            throw Error("VirtualAllocEx(clone) failed", -1)
+        AhkMagic._RemoteWrite(h, clonePtr
+            , AhkMagic._RemoteRead(h, nf, size))
+        nameBuf := Buffer((StrLen(newName) + 1) * 2)
+        StrPut(newName, nameBuf, "UTF-16")
+        nameBlock := DllCall("VirtualAllocEx", "Ptr", h, "Ptr", 0
+            , "UPtr", nameBuf.Size, "UInt", 0x3000, "UInt", 0x04, "Ptr")
+        if !nameBlock
+            throw Error("VirtualAllocEx(name) failed", -1)
+        AhkMagic._RemoteWrite(h, nameBlock, nameBuf)
+        ptrBuf := Buffer(8)
+        NumPut("Ptr", nameBlock, ptrBuf, 0)
+        AhkMagic._RemoteWrite(h, clonePtr + layout["name_off"], ptrBuf)
+        return clonePtr
+    }
+
+    static _CreateGlobalObjectVar(h, layout, objPtr, name) {
+        nameBuf := Buffer((StrLen(name) + 1) * 2)
+        StrPut(name, nameBuf, "UTF-16")
+        nameBlock := DllCall("VirtualAllocEx", "Ptr", h, "Ptr", 0
+            , "UPtr", nameBuf.Size, "UInt", 0x3000, "UInt", 0x04, "Ptr")
+        if !nameBlock
+            throw Error("VirtualAllocEx(name) failed", -1)
+        AhkMagic._RemoteWrite(h, nameBlock, nameBuf)
+        varPtr := AhkMagic._RemoteCall(h, layout["find_var"]
+            , [layout["gscript"], nameBlock, StrLen(name), 0x101])
+        if !varPtr
+            throw Error("FindOrAddVar failed for " name, -1)
+        objBuf := Buffer(8)
+        NumPut("Ptr", objPtr, objBuf, 0)
+        AhkMagic._RemoteWrite(h, varPtr, objBuf)
+        AhkMagic._WByte(h, varPtr + 33, 0x48)
+        AhkMagic._WByte(h, varPtr + 34, 0x41)
+        AhkMagic._WByte(h, varPtr + 35, 2)
+        return varPtr
+    }
+
     static _WatchTick(hook, expr, state, onChange) {
         if !state["running"]
             return
@@ -288,9 +496,39 @@ class AhkLive {
         }
     }
 
-    static _WatchStop(state, tick) {
+    static _EnsureWatchTimer() {
+        if AhkLive.watchTimerActive
+            return
+        SetTimer(AhkLive_WatchTimer, 50)
+        AhkLive.watchTimerActive := true
+    }
+
+    static _EnsureReloadTimer() {
+        if AhkLive.reloadTimerActive
+            return
+        SetTimer(AhkLive_HotReloadTimer, 50)
+        AhkLive.reloadTimerActive := true
+    }
+
+    static _StopWatcher(kind, id, state) {
         state["running"] := false
-        SetTimer(tick, 0)
+        if kind = "watch" {
+            AhkLive.watches.Delete(id)
+            if !AhkLive.watches.Count and AhkLive.watchTimerActive {
+                SetTimer(AhkLive_WatchTimer, 0)
+                AhkLive.watchTimerActive := false
+            }
+            return
+        }
+        if kind = "reload" {
+            AhkLive.reloads.Delete(id)
+            if !AhkLive.reloads.Count and AhkLive.reloadTimerActive {
+                SetTimer(AhkLive_HotReloadTimer, 0)
+                AhkLive.reloadTimerActive := false
+            }
+            return
+        }
+        throw ValueError("unknown watcher kind", -1)
     }
 
     static _HotReloadTick(hook, scriptPath, state) {
@@ -305,10 +543,6 @@ class AhkLive {
         AhkMagic.RemoteEvalScript(hook, FileRead(scriptPath, "UTF-8"))
     }
 
-    static _HotReloadStop(state, tick) {
-        state["running"] := false
-        SetTimer(tick, 0)
-    }
 
     static _FuncSignature(hook, name) {
         min := Integer(AhkMagic.RemoteEval(hook, name ".MinParams"))
@@ -419,11 +653,13 @@ class AhkLive {
             return hook["script_layout"]
         h := AhkMagic._RemoteOpen(hook["pid"], true)
         try {
-            mod := AhkMagic._RemoteModuleBase(h, hook["pid"])
-            secs := AhkMagic._RemoteSections(h, mod["base"])
-            loc := AhkMagic._RemoteLocateEvalScript(secs, mod["base"])
-            layout := AhkMagic._RemoteDiscoverLayout(h, secs, mod["base"], loc)
+            modBase := AhkMagic._RemoteModuleBase(h, hook["pid"])
+            secs := AhkMagic._RemoteSections(h, modBase["base"])
+            loc := AhkMagic._RemoteLocateEvalScript(secs, modBase["base"])
+            layout := AhkMagic._RemoteDiscoverLayout(h, secs, modBase["base"], loc)
+            layout["find_var"] := NumGet(loc["loc_out"], 16, "Ptr")
             hook["script_layout"] := layout
+            hook["script_loc"] := loc
             return layout
         } finally {
             DllCall("CloseHandle", "Ptr", h)
@@ -433,34 +669,11 @@ class AhkLive {
     static _EnsureNameOffset(hook, layout) {
         if hook.Has("name_off")
             return hook["name_off"]
-        name := "ahkLiveNameProbe_" Format("{:x}", A_TickCount)
-            . Format("{:x}", Random(1, 0x7fffffff))
-        script := "`n" name "() {`n    return 1`n}`nStrLen(`"`")"
-        AhkMagic.RemoteEvalScript(hook, script)
-        h := AhkMagic._RemoteOpen(hook["pid"], true)
-        try {
-            gscript := layout["gscript"]
-            arr := AhkMagic._RPtr(h, gscript + layout["mfuncs_off"])
-            count := AhkMagic._RInt(h, gscript + layout["mfuncs_count_off"])
-            nf := AhkMagic._RPtr(h, arr + (count - 1) * 8)
-            data := AhkMagic._RemoteRead(h, nf, AhkLive.NAME_PROBE_SCAN_SIZE)
-            loop data.Size // 8 {
-                off := (A_Index - 1) * 8
-                p := NumGet(data, off, "Ptr")
-                if p < AhkLive.MIN_PTR or p > AhkLive.MAX_PTR
-                    continue
-                try s := AhkMagic._RemoteReadString(h, p, StrLen(name) + 1)
-                catch
-                    continue
-                if s = name {
-                    hook["name_off"] := off
-                    return off
-                }
-            }
-            throw Error("function name offset not found", -1)
-        } finally {
-            DllCall("CloseHandle", "Ptr", h)
+        if layout.Has("name_off") and layout["name_off"] {
+            hook["name_off"] := layout["name_off"]
+            return layout["name_off"]
         }
+        throw Error("function name offset not found", -1)
     }
 
     static _FindExactFuncs(h, layout, nameOff, name) {
@@ -509,19 +722,41 @@ class AhkLive {
 
 
 class AhkLiveWatcher {
-    tick := 0
+    kind := ""
+    id := 0
     state := 0
 
-    __New(tick, state) {
-        this.tick := tick
+    __New(kind, id, state) {
+        this.kind := kind
+        this.id := id
         this.state := state
     }
 
     Stop() {
         if !this.state["running"]
             return
-        this.state["running"] := false
-        SetTimer(this.tick, 0)
+        AhkLive._StopWatcher(this.kind, this.id, this.state)
+    }
+}
+
+AhkLive_WatchTimer() {
+    now := A_TickCount
+    for id, state in AhkLive.watches {
+        if !state["running"] or now < state["next"]
+            continue
+        AhkLive._WatchTick(state["hook"], state["expr"]
+            , state, state["onChange"])
+        state["next"] := now + state["ms"]
+    }
+}
+
+AhkLive_HotReloadTimer() {
+    now := A_TickCount
+    for id, state in AhkLive.reloads {
+        if !state["running"] or now < state["next"]
+            continue
+        AhkLive._HotReloadTick(state["hook"], state["path"], state)
+        state["next"] := now + state["interval"]
     }
 }
 
