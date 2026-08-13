@@ -4,127 +4,110 @@
 ![AutoHotkey](https://img.shields.io/badge/AutoHotkey-v2-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg)
 
-Runtime structure scanner for AutoHotkey executables, implemented as embedded
-x64 machine code inside an AutoHotkey v2 library.
-
-The core capability is **scanning**: at runtime, the library locates the
-interpreter tables (`g_BIF`, `sMdFunc`, `g_BIV_A`) of the currently running
-`AutoHotkey.exe`, and can enumerate the PE export table of any loaded
-DLL/EXE. Everything else, including native AHK array construction and the
-optional cnumpy bridge, is built on that scanning layer.
+Runtime introspection for AutoHotkey v2 executables. The library scans a running
+`AutoHotkey64.exe`, locates interpreter structures, evaluates expressions
+through the interpreter's own parser, loads scripts from memory, attaches to
+other AutoHotkey processes, and provides a live product layer on top of those
+primitives.
 
 Repository: [https://github.com/MonoEven/ahk-hack-library](https://github.com/MonoEven/ahk-hack-library)
 
+Technical pages: [https://monoeven.github.io/ahk-hack-library/](https://monoeven.github.io/ahk-hack-library/)
+
 Practice integration: [https://github.com/MonoEven/cnumpy](https://github.com/MonoEven/cnumpy)
 
-Bilingual field notes: [https://monoeven.github.io/ahk-hack-library/](https://monoeven.github.io/ahk-hack-library/)
+## Contents
 
----
-
-## Table of Contents
-
-- [Features](#features)
+- [What it does](#what-it-does)
+- [Quick start](#quick-start)
 - [Architecture](#architecture)
-- [Quick Start](#quick-start)
-- [API Reference](#api-reference)
-- [Lifecycle and Ownership](#lifecycle-and-ownership)
+- [Dynamic layout discovery](#dynamic-layout-discovery)
+- [Remote hooking](#remote-hooking)
+- [AhkLive](#ahklive)
+- [Verification](#verification)
+- [Blog and Pages](#blog-and-pages)
 - [Security](#security)
-- [Performance](#performance)
-- [Supported Versions](#supported-versions)
-- [Project Layout](#project-layout)
-- [Building from Source](#building-from-source)
+- [Project layout](#project-layout)
+- [Building from source](#building-from-source)
 - [Testing](#testing)
 - [License](#license)
 
-## Features
+## What it does
 
-- **Version-independent interpreter scanning.** The same machine-code blob
-  discovers `g_BIF`, `sMdFunc`, and `g_BIV_A` across AutoHotkey 2.0-beta.10
-  through 2.1-alpha.30 without per-version offsets.
-- **Generic PE export scanning.** `AhkMagic.ScanExports()` parses the export
-  directory of any loaded module and returns every named export with its
-  function RVA and ordinal.
-- **Runtime built-in redirection.** `PatchBif()` can temporarily re-point a
-  built-in C function and `RestoreBif()` restores it.
-- **Expression eval.** `AhkMagic.Eval()` tries the interpreter's in-process
-  expression pipeline first and falls back to `EvalSubprocess()` for
-  expressions it cannot evaluate yet. `EvalNative()` is the in-process core.
-  `EvalScript()` loads multi-line script text through the interpreter's own
-  `LoadIncludedFile` from an in-memory `TextStream`, so function definitions
-  and class definitions work in-process without a temp `.ahk` file.
-- **Optional cnumpy bridge.** `CnpBridge` converts `CnpArray` to native AHK
-  values, supports zero-copy views, and is validated by 1D/2D/3D tests.
-- **Self-contained at runtime.** No Python, no external scanner, no
-  interpreter source changes. clang is needed only to rebuild the embedded
-  machine code.
-- **Single-file core.** `ahk_hack_single.ahk` contains the whole scanning
-  core; `ahk_hack_demo.ahk` runs a self-test.
+The core is one file: `ahk_hack_single.ahk`. It contains `MCode()`, `AhkMagic`,
+all embedded x64 machine-code blobs, dynamic layout scanners, and remote
+primitives.
 
-## Architecture
+Main capabilities:
 
-The machine code is written in C under `lib/mcode/`, compiled with clang into
-freestanding, position-independent functions, and embedded into
-`lib/ahk_hack.ahk` as raw hex. The build tool refuses to embed `.text` if any
-relocation escapes the blob.
+- Runtime PE parsing and interpreter table discovery.
+- Generic PE export scanning for any loaded module.
+- Built-in function redirection at table and object level.
+- In-process expression evaluation through `ExpressionToPostfix` and
+  `ExpandExpression`.
+- In-memory script loading through `LoadIncludedFile(TextStream*)`.
+- Remote attach, remote eval, remote script loading, and function body
+  replacement.
+- Live function tracing based on `UserFunc` cloning.
+- `lib/ahk_live/`: sessions, inventory, watch, hot reload, observability, fault
+  injection, CLI, MCP, and GUI.
 
-| Blob | Source | Purpose |
-| --- | --- | --- |
-| Interpreter scanner | `lib/mcode/scanner.c` | Locates `g_BIF`, `sMdFunc`, `g_BIV_A` |
-| Export scanner | `lib/mcode/export_scanner.c` | Generic PE export-table scan |
-| Internal locator | `lib/mcode/internal_locator.c` | Dynamically locates EvalNative internals (`g_script`, `FinalizeExpression`, `FindOrAddVar`, CRT free, `SYM_INVALID`) |
-The AHK entry point is `lib/init.ahk`, which loads only the scanning core.
-The cnumpy integration lives in `lib/cnumpy/` and is optional.
-
-## Quick Start
+## Quick start
 
 ### Core scanning
 
 ```ahk
-#Include lib\init.ahk
+#Include ahk_hack_single.ahk
 
 AhkMagic.Init()
 MsgBox AhkMagic.Summary()
 
-absRva := AhkMagic.BifRva("Abs")
+absRva  := AhkMagic.BifRva("Abs")
 absAddr := AhkMagic.BifAddr("Abs")
 ```
 
 ### Export scanning
 
 ```ahk
-hmod := DllCall("LoadLibraryW", "Str", "D:\path\cnumpy_ahk.dll", "Ptr")
+hmod := DllCall("LoadLibraryW", "Str", "D:\path\module.dll", "Ptr")
 exports := AhkMagic.ScanExports(hmod)
 MsgBox exports.Count
 ```
 
-### Runtime redirection
+### Built-in redirection
 
 ```ahk
 old := AhkMagic.PatchBif("Abs", "Sin")
 name := "Abs"
-MsgBox %name%(1)               ; first dynamic call returns sin(1)
+MsgBox %name%(1)              ; dynamic lookup returns sin(1)
 AhkMagic.RestoreBif("Abs", old)
+
+state := AhkMagic.PatchBifObject(Abs, "Sin")
+MsgBox Abs(1)                 ; direct call returns sin(1)
+AhkMagic.RestoreBifObject(Abs, state)
 ```
 
-### Expression eval
+### In-process Eval
 
 ```ahk
-MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7, in-process
-MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5, in-process
-MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)") ; "bc", in-process
-MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5, in-process first
-MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))") ; explicit subprocess
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
+MsgBox AhkMagic.EvalNative("Abs(-5)")             ; 5
+MsgBox AhkMagic.EvalNative("Point(1, 2).y")       ; 2, class loaded in-process
+```
 
-script := "
+### EvalScript
+
+```ahk
+text := "
 (
 add(a, b) {
     return a + b
 }
 add(1, 2)
 )"
-MsgBox AhkMagic.EvalScript(script)          ; 3, in-process
+MsgBox AhkMagic.EvalScript(text)                   ; 3
 
-classScript := "
+cls := "
 (
 class Point {
     x := 0
@@ -134,455 +117,249 @@ class Point {
         this.y := y
     }
 }
-Point(1, 2).x
+Point(1, 2).y
 )"
-MsgBox AhkMagic.EvalScript(classScript)     ; 1, class loaded and used in-process
+MsgBox AhkMagic.EvalScript(cls)                    ; 2
 ```
 
-### Optional cnumpy integration
+### Remote hook
 
 ```ahk
-Numpy.DllPath := "D:\...\build\x64\Release\cnumpy_ahk.dll"
-#Include lib\cnumpy\init.ahk
+hook := AhkMagic.AttachRemote(pid)
+MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")      ; 7
 
-ahk := CnpBridge.ToAhkNative(arr)   ; N-D deep copy, runtime-discovered layout
-view := CnpBridge.View(arr)         ; zero-copy read/write view
+script := "
+(
+rhkAdd(a, b) {
+    return a + b
+}
+rhkAdd(1, 2)
+)"
+MsgBox AhkMagic.RemoteEvalScript(hook, script)     ; 3
+
+AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
 ```
 
-## Examples
+## Architecture
 
-- `ahk_hack_demo.ahk` - runnable self-test: interpreter table inventory,
-  distinct built-in C functions, kernel32 export scan, built-in redirection,
-  and Eval.
-- `examples/ahk_hack_export_inventory.ahk` - dumps a module's exports to CSV,
-  with an optional name filter.
-- `examples/ahk_hack_builtin_probe.ahk` - prints RVA, absolute address, and
-  parameter counts for built-in functions by name.
-- `examples/ahk_hack_compiled_demo.ahk` - MsgBox demo for Ahk2Exe-compiled
-  exes: in-process Eval, function definition, and class access.
+### PE parsing and table discovery
+
+The scanner parses the DOS header, PE headers, and section table. It classifies
+`.text`, `.rdata`, and `.data`, then validates candidate records without an RVA
+table:
+
+- the name pointer resolves to UTF-16 text;
+- the function pointer lands in executable code;
+- neighboring records are sorted by name;
+- known anchors such as `Abs`, `BlockInput`, and `AhkPath` are present.
+
+The table record strides on x64 are `0x20` for `g_BIF`, `0x28` for `sMdFunc`,
+and `0x18` for `g_BIV_A`.
+
+### Machine-code build
+
+The stable scanner is written in C under `lib/mcode/`. The build uses clang to
+produce freestanding, position-independent COFF objects:
 
 ```powershell
-& D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
-& D:\...\AutoHotkey64.exe examples\ahk_hack_export_inventory.ahk kernel32.dll Virtual
-& D:\...\AutoHotkey64.exe examples\ahk_hack_builtin_probe.ahk Abs StrLen
+clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding `
+  -fno-builtin -fno-stack-protector -fno-unwind-tables `
+  -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
 ```
 
-### GUI console
+`tools/build_mcode.py` extracts `.text`, decodes relocations, and rejects any
+blob with a relocation that escapes the blob. The resulting hex string is
+embedded in `ahk_hack_single.ahk`.
 
-`ahk_hack_gui.ahk` provides a visual remote console: pick a running AutoHotkey
-process, attach, evaluate expressions, load scripts, redirect builtins, and
-watch expressions on a timer. It is aimed at live debugging and interpreter
-research; see [docs/gui-and-debugging.md](docs/gui-and-debugging.md).
+### Expression evaluation
 
-```powershell
-AutoHotkey64.exe ahk_hack_gui.ahk
-```
+AutoHotkey compiles expression strings into postfix `ExprTokenType` arrays.
+`EvalNative()` builds a temporary `Line` and `ArgStruct`, then calls the
+interpreter's own `ExpressionToPostfix` and `ExpandExpression`.
 
-## API Reference
+`EvalScript()` feeds multi-line text through `LoadIncludedFile(TextStream*)`
+from an in-memory `TextStream`. No temporary file is created.
 
-### AhkMagic
+## Dynamic layout discovery
 
-| Method | Description |
-| --- | --- |
-| `Init()` | Scans the running AutoHotkey executable and builds `bif`, `mdfunc`, `biv` maps |
-| `Summary()` | Returns table addresses and entry counts |
-| `BifRva(name)` / `BifAddr(name)` | RVA / absolute address of a built-in C function |
-| `ScanExports(moduleBase)` | Returns `Map(name -> {rva, ordinal})` for a loaded module |
-| `PatchBif(name, newName)` / `RestoreBif(name, oldPtr)` | Temporarily redirect and restore a built-in |
-| `PatchBifObject(fnObj, newName)` / `RestoreBifObject(fnObj, state)` | Deep-redirect an already-resolved built-in so direct calls are affected |
-| `Eval(expr)` | Tries the in-process pipeline, then `EvalSubprocess()` for unsupported expressions |
-| `EvalScript(text)` | Loads multi-line script text in-process and evaluates the last expression |
-| `EvalSubprocess(expr)` | Evaluates an expression string in a hidden child process; compiled scripts re-enter interpreter mode with `/script` |
-| `EvalNative(expr)` | Evaluates literals, operators, variables, and function calls through the interpreter's in-process expression pipeline |
-| `AttachRemote(pid)` | Opens another AutoHotkey process, reads its PE sections and the three interpreter tables remotely; returns a hook map |
-| `AttachRemoteByName(name)` | Resolves a process ID from the image name, then attaches to it |
-| `RemoteRedirect(hook, name, newName)` | Writes a new function pointer into a running process's BIF table |
-| `RemoteDeepRedirect(hook, name, newName)` | Also patches already-resolved `Func` objects, so direct calls inside other functions change |
-| `RemoteEval(hook, expr)` | Injects a thread into the target and evaluates an expression through its own expression pipeline |
-| `RemoteEvalScript(hook, text)` | Loads a multi-line script inside the target through its script-loading pipeline (functions and classes verified) |
-| `RemoteReplaceFuncBody(hook, oldName, newName)` | Writes `newName`'s `mJumpToLine` into `oldName`'s `UserFunc`, so direct calls to `oldName` execute the new body |
+The library does not maintain a per-version offset table. The following items
+are discovered from the live module or process:
 
-### CnpBridge
+- PE section map and interpreter table addresses;
+- `ExpressionToPostfix`, `ExpandExpression`, `FindOrAddVar`, `gScript`, and
+  `g`;
+- `mFuncs`, `mFuncsCount`, function name field, and `mJumpToLine`;
+- parser-state anchors inside `LoadIncludedFile`;
+- `Line`, `ArgStruct`, `ExprTokenType`, and `DerefType` field offsets;
+- `SYM_INVALID` and related locator outputs.
 
-| Method | Description |
-| --- | --- |
-| `Metadata(arr)` | Read-only `CnpArray` metadata peek |
-| `ToAhk(arr)` | Deep copy to nested AHK `Array` (cnumpy conversion path) |
-| `ToAhkFast(arr)` | Deep copy via raw element reads |
-| `ToAhkNative(arr)` | Deep copy with machine-code Array construction |
-| `View(arr)` | Zero-copy read/write view |
-| `ToBuffer(arr)` | Raw bytes copied into an AHK `Buffer` |
-| `FromAhk(data, dtype)` / `FromAhkFast(data, dtype)` | Nested AHK `Array` to `NdArray` |
-| `FromBuffer(buffer, dtype)` | `Buffer` to `NdArray` (copy semantics) |
-| `WriteRaw(arr, flat)` | Writes exact-dtype bytes into a C-contiguous array |
+The exact audit is in [docs/hardcoded-audit.md](docs/hardcoded-audit.md).
 
-## Remote Hook
+## Remote hooking
 
-Think of the target as a running machine. We do not install anything into it
-and it does not have to cooperate: no `#Include`, no exported pointer, no
-callback. We read its memory map, find the labels on its internal shelves
-(`g_BIF`, `sMdFunc`, `g_BIV_A`), then insert a small worker thread through the
-OS remote-thread door. That worker uses the machine's own interpreter
-functions and reports back through a shared memory mailbox.
+`AttachRemote(pid)` opens a target process, reads its PE image and interpreter
+tables, and returns a hook. `RemoteEval()` injects a locator/evaluator thread.
+`RemoteEvalScript()` loads script text through the target's own parser.
+`RemoteReplaceFuncBody()` swaps `mJumpToLine` so existing callers execute a new
+body.
 
-`AhkMagic.AttachRemote(pid)` reads another AutoHotkey process without
-injecting anything:
-
-1. `OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ)` opens the target.
-2. A Toolhelp32 module snapshot finds the main module image base.
-3. `ReadProcessMemory` reads the PE headers, section table, and the data
-   sections that can contain interpreter tables.
-4. The same anchor logic used by the machine-code scanner locates `g_BIF`,
-   `sMdFunc`, and `g_BIV_A` by scanning for `Abs`, `BlockInput`, and `AhkPath`
-   entries and counting sorted runs.
-5. The result is a hook map with `image_base`, `builtins`,
-   `native_functions`, and `builtin_vars` (each with `table_rva`, `stride`,
-   `count`, and `entries`).
-
-`AhkMagic.RemoteRedirect(hook, name, newName)` reopens the target with
-`PROCESS_VM_WRITE | PROCESS_VM_OPERATION`, computes
-`image_base + table_rva + index * stride + 8`, and writes the destination
-function pointer into that slot. Already-resolved `Func` objects are not
-retroactively affected, matching the in-process `PatchBif` limitation.
-
-`AhkMagic.RemoteDeepRedirect(hook, name, newName)` goes one level deeper: it
-scans the target heap for the already-resolved `Func` object (matching the old
-function pointer and the entry's name pointer) and patches its `mBIF`. This is
-what changes a function like `B()` that directly calls `A()`.
-
-`AhkMagic.RemoteEval(hook, expr)` allocates executable memory in the target,
-copies the internal locator and expression-evaluator blobs plus a tiny thread
-stub into it, and runs them with `CreateRemoteThread`. The stub first
-discovers `gScript`, `finalize`, `findOrAddVar`, `crtFree`, and `symInvalid`
-inside the target, then calls the same expression pipeline used by
-`EvalNative`.
-
-Resident hotkey verification pattern:
-
-- `tests/remote_hook_resident_target.ahk` is the target. It stays resident and
-  binds `F7` to write dynamic `%name%(1)` and `F8` to write global `x`.
-- `tests/remote_hook_resident_demo.ahk` is the attacher. Every hook step sends
-  the matching target hotkey and reads the result back.
+Hotkey verification:
 
 ```ahk
-F1:: {
-    global hook
-    hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+hook := AhkMagic.AttachRemote(pid)
+AhkMagic.RemoteEvalScript(hook, "
+(
+NewA() {
+    return 42
 }
-F2:: {
-    global hook
-    AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
-    Send "{F7}"          ; activate target hotkey to verify
-    Sleep 400
-    ; read back f7=0.8414709848078965
-}
-F3:: {
-    global hook
-    AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
-    Send "{F8}"          ; activate target hotkey to verify
-    Sleep 400
-    ; read back f8=7
-}
+NewA()
+)")
+AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
+Send("{F9}")
 ```
 
-The Python tool exposes the same path:
+The target writes `A()=42` after the original output was `A()=1`.
 
-```powershell
-python tools\ahk_remote_attach.py --pid 1234 --eval "1 + 2 * 3"
-python tools\ahk_remote_attach.py --name AutoHotkey64.exe --eval "1 + 2 * 3"
+## AhkLive
+
+`lib/ahk_live/` builds a stable API on the remote primitives.
+
+```ahk
+#Include lib\ahk_live\init.ahk
+
+session := AhkLiveSession()
+if !session.Attach(pid).ok
+    throw Error("attach failed")
+
+snap := session.Snapshot(Map(
+    "add", "Add(2, 3)",
+    "mul", "Mul(4)"
+))
+
+patch := session.BeginPatch()
+ps := patch.value
+ps.Replace("Mul", "NewMul")
+ps.Rollback()
+
+session.Close()
 ```
 
-After each hook step, the target hotkey output changes:
+AhkLive includes:
 
-```text
-attached 28504
-after redirect f7=0.8414709848078965
-after eval f8=7
-```
+- `Attach`, `Eval`, `EvalScript`, `Snapshot`, `Globals`;
+- `ListFunctions`, `ListClasses`;
+- `ReplaceFunction`, `RestoreFunction`, `TraceFunction`, `Untrace`;
+- `Watch`, `HotReload`;
+- `AhkLiveJournal`, `AhkLiveSession`, `AhkLivePatchSession`;
+- `AhkLiveAgent`, `AhkLiveObservability`, `AhkLiveFault`;
+- `AhkLiveDesktop`, `AhkLiveForensics`, `AhkLiveCompat`;
+- `ahk_live_cli.ahk`, `tools/ahk_live_mcp.py`, `ahk_live_gui.ahk`.
 
-Function-to-function verification:
+`TraceFunction` clones the target `UserFunc`, creates a `VAR_CONSTANT` alias,
+injects a wrapper, aliases the wrapper's parameter `Var` objects to the
+original parameters, and swaps `mJumpToLine`. This keeps `mFuncs` and
+`VarList` sorted across repeated script injections.
 
-- `tests/remote_hook_function_target.ahk` defines `B_direct()` that calls
-  `Abs()` directly and `B_dynamic()` that calls `%name%()`.
-- `tests/remote_hook_function_demo.ahk` attaches, then deep redirects
-  `Abs -> Sin` and triggers both target hotkeys.
+## Verification
 
-```text
-direct=0.8414709848078965 dynamic=0.8414709848078965
-```
+`tools/verify_all_runtimes.ps1` runs a nine-test matrix against every
+AutoHotkey runtime found on this machine. Current coverage:
 
-Before the deep redirect, both output `1`; after it, both output `Sin(1)`.
+- `2.0-beta.9/10/12/13/15`
+- `2.0-rc.1/3`
+- `2.0.0/2/3/4/26`
+- `2.1-alpha.1/4/13/16/30`
+- two local `2.0-beta` dev builds
 
-The target needs no special code: no `#Include`, no exported pointers, no
-callback, and no embedded metadata. `--name` resolves the PID from the image
-name, so the PID file in the test harness is only test orchestration.
+All 19 runtimes pass all 9 tests. The latest report is
+[reports/runtime_matrix_all.txt](reports/runtime_matrix_all.txt).
 
-`RemoteEval` is verified for numeric expressions, builtin calls, string
-literals, and string-returning builtins such as `SubStr` and `Format`.
+## Blog and Pages
 
-`RemoteEvalScript` loads multi-line scripts inside the target, including new
-function definitions (`add(a, b)` plus `add(1, 2)` returns `3`) and class
-definitions (`Point(1, 2).y` returns `2`). The injected thread sets
-`g->CurrentFunc` before `PreparseExpressions`, which is what class methods with
-`Super` need.
+The repository separates the blog from the technical Pages site.
 
-Hotkey verification for `RemoteEvalScript`:
-
-- `tests/remote_hook_evalscript_target.ahk` defines `B_add(x)` calling `A(x)`
-  directly and binds `F9` to `B_add(1)`.
-- `tests/remote_hook_evalscript_demo.ahk` loads `NewA` on `F2`, replaces `A`'s
-  function body with `RemoteReplaceFuncBody("A", "NewA")`, then sends `F9`.
-- `F3` loads the `PointNew` class and verifies `PointNew(1, 2).y` with
-  `RemoteEval`.
-
-```text
-after address replace A f9=42
-after class eval=2
-```
-
-Remote hook compatibility matrix (verified):
-
-- 16/16 interpreter x interpreter: attacher and target both run across
-  `2.1-alpha.30`, `2.0.26`, `2.0.0`, `2.0-beta.10` in every combination.
-- 16/16 Ahk2Exe-compiled UPX target x interpreter: targets compiled from each
-  of the four runtimes are hooked by each of the four interpreter versions.
-
-Reproduce with:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1
-```
-
-Remote hooking was also verified against an Ahk2Exe-compiled UPX target:
-`RemoteEval("1 + 2 * 3")` returns `7`, `RemoteEval("x := 1 + 2 * 3")` makes the
-target's `F8` write `7`, and `RemoteDeepRedirect` changes the target's `F7`
-output from `1` to `0.8414709848078965`.
-
-Live hotkey verification:
-
-```powershell
-& D:\...\AutoHotkey64.exe tests\remote_hotkey_target.ahk
-python tools\ahk_remote_attach.py --pid <pid> --redirect Abs Sin
-& D:\...\AutoHotkey64.exe tests\remote_hotkey_trigger.ahk
-```
-
-`remote_hotkey_target.ahk` binds `F7` to a dynamic `%name%(1)` call. After the
-remote redirect, pressing `F7` writes `0.8414709848078965` (`Sin(1)`) instead
-of `1` (`Abs(1)`), so the running process is really affected by the hook.
-
-## Lifecycle and Ownership
-
-All conversion APIs except `CnpView` use copy semantics. `CnpView` borrows
-cnumpy memory and holds a strong reference to the owner `NdArray`, so the
-underlying array cannot be freed while the view is alive. Writes through the
-view require a writeable array. See
-[`docs/lifecycle-and-ownership.md`](fork/cnumpy-ahk-bridge/docs/lifecycle-and-ownership.md)
-for the full contract.
-
-The cnumpy bridge does not hardcode `CnpArray` offsets. Data pointers come
-from `cnp_ahk_data_ptr`, dtype kind from `cnp_dtype_kind`, and native Array
-construction uses `AhkLayout.Discover()` with cnumpy's own
-`cnp_ahk_fill_array_flat` / `cnp_ahk_fill_array_nd` fillers.
+- Blog: practical examples with the full single-file source embedded.
+  - `blog_ahk_hack_en.txt`
+  - `blog_ahk_hack.txt`
+  - Built by `tools/build_blog.py`.
+- Pages: analysis and extraction workflow.
+  - `docs/pages_en.txt`
+  - `docs/pages_zh.txt`
+  - Generated by `tools/build_site.py`.
 
 ## Security
 
-> This library allocates executable memory, executes machine code, and reads
-> or writes interpreter internals directly. Treat it as a reverse-engineering
-> research tool.
+This library allocates executable memory, executes machine code, and writes
+interpreter memory. It does not provide sandbox isolation.
 
-Operations fall into three categories:
+Rules:
 
-- **Read-only:** `Init`, `Summary`, `BifRva`, `BifAddr`, `ScanExports`,
-  `Metadata`, and `CnpView` reads. These do not modify process state.
-- **Mutating:** `PatchBif`, `RestoreBif`, `WriteRaw`, and `CnpView.Set`.
-  Wrong offsets, types, or ordering can crash the interpreter.
-- **Executing:** `Eval` and `EvalNative`. This is arbitrary expression/code
-  execution.
+- attach only to processes you own;
+- use disposable targets for repeated experiments;
+- restore patches in `finally` or through `AhkLivePatchSession.Rollback()`;
+- never eval untrusted input;
+- treat locator failures as errors.
 
-Key risks:
-
-- Executable-memory allocation and internal function calls may be flagged by
-  antivirus or EDR.
-- All `EvalScript` entry points and globals (`PreparseExpressions`,
-  `PreprocessLocalVars`, `OpenIncludedFile`, `LoadIncludedFile`,
-  `g`, `Line::sSourceFileCount`) are located at runtime. The only remaining
-  hardcoded axis was C++ struct layout; that is now also discovered at
-  runtime by a one-time probe (`_DiscoverEvalLayout`). Other versions,
-  compilers, or architectures may still differ. Run the test suite against
-  the target exe first.
-- Never eval untrusted input. Never leave `PatchBif` enabled in production.
-- `EvalNative` builds a temporary `Line`/`ArgStruct` inside the interpreter.
-  Variable/function derefs are resolved through the interpreter's own var
-  table; unsupported syntax fails loudly instead of degrading silently.
-  Internal addresses and enum deltas such as `SYM_INVALID` are discovered
-  at runtime by the embedded locator, not hardcoded per version.
-- Never use `CnpView` after its owner reference is released.
-- Do not substitute external `Buffer` memory for the internal `mItem` of an
-  `Array()`; it causes a double free.
-- 32-bit AutoHotkey is not supported; `Init()` raises an explicit error.
-
-Recommended workflow: test in a VM or isolated environment, back up the exe,
-record its SHA256, and only analyze software you are authorized to research.
-This library is not intended to bypass licensing, DRM, or access controls.
-
-## Performance
-
-Measured with QPC on a 64-bit Windows host using AutoHotkey 2.0.26.
-
-| Scenario | Result |
-| --- | --- |
-| `ToAhkNative`, 100,000,000 float64 elements | ~705 ms |
-| `ToBuffer`, 800 MB memcpy | ~206 ms |
-| `CnpView` create | ~0.011 ms |
-| `ToAhkNative`, 1000x1000 2D | ~14.9 ms |
-| `ToAhk` (old AHK loop), 1000x1000 2D | ~466 ms |
-
-The early "1M elements under 1 ms" figure was a timer-resolution artifact;
-the 100M measurement is the real figure.
-
-## Supported Versions
-
-- AutoHotkey 2.1-alpha.30 (64-bit)
-- AutoHotkey 2.0.26 (64-bit)
-- AutoHotkey 2.0.0 (64-bit)
-- AutoHotkey 2.0-beta.10 (64-bit)
-
-`EvalNative` is verified on AutoHotkey 2.1-alpha.30, 2.0.26, 2.0.0, and
-2.0-beta.10 (all x64).
-
-`EvalScript` is verified on all four builds. Every function entry point and
-global used by the pipeline is located at runtime, including
-`LoadIncludedFile(TextStream*)` and `Line::sSourceFileCount`. There is no
-per-version table: `mFuncs`, `mFuncsCount`, `mLastLine`, `mJumpLine`, the
-parser-state anchors, and the `TextStream` layout are all discovered at
-runtime by a one-time probe.
-
-The exact audit of dynamic offsets versus intentional ABI constants is in
-[`docs/hardcoded-audit.md`](docs/hardcoded-audit.md).
-
-The local machine also contains 19 AutoHotkey runtime builds from
-`2.0-beta.9` through `2.1-alpha.30`. `tools/verify_all_runtimes.ps1` runs a
-nine-test matrix against all of them; the latest results are in
-[`reports/runtime_matrix_all.txt`](reports/runtime_matrix_all.txt).
-
-Ahk2Exe packaging does not disable the in-process Eval pipeline. When
-`AutoHotkey64.exe` is selected as the base file, the compiled exe embeds that
-runtime, so `Init`, `EvalNative`, and `EvalScript` keep working. This was
-verified on all four versions. `EvalSubprocess` also works: the regular v2
-runtime accepts `/script`, so the compiled exe is relaunched in interpreter
-mode to run the temporary script.
-
-UPX/MPRESS compression also keeps the pipeline working. The scanner falls back
-to content-based section classification when packers rename `.text`,
-`.rdata`, and `.data` (UPX0/UPX1, .MPRESS1/...). A separate
-`tools/ahk_remote_attach.py` can attach to a running AutoHotkey process by PID
-and scan the same tables remotely with `ReadProcessMemory`.
-
-## Project Layout
+## Project layout
 
 ```text
+ahk_hack_single.ahk        single-file core
+ahk_hack_demo.ahk          runnable demo
+ahk_live_gui.ahk           GUI for live inspection
+blog_ahk_hack_en.txt       English blog with embedded single-file source
+blog_ahk_hack.txt          Chinese blog with embedded single-file source
+docs/
+  pages_en.txt             English Pages source
+  pages_zh.txt             Chinese Pages source
+  index.html               generated English Pages
+  index.zh.html            generated Chinese Pages
 lib/
-  init.ahk                  core entry, scanning only
-  ahk_hack.ahk              MCode() + AhkMagic
-  mcode/                    machine-code C sources
-  cnumpy/                   optional cnumpy integration
+  init.ahk                 core entry
+  ahk_hack.ahk             MCode() + AhkMagic
+  ahk_live/                product layer
+  mcode/                   machine-code C sources
+  cnumpy/                  optional cnumpy integration
 tools/
-  build_mcode.py            compiles and embeds the machine code
-  ahk_inspect.py            Python/PE cross-check analyzer
-  locate_internal_functions.py locates the internal expression parser/evaluator
-  ahk_remote_attach.py      attach to a running AutoHotkey process and scan its tables
-tests/                      core, export, and eval tests
-examples/                   export inventory and built-in probe demos
-fork/cnumpy-ahk-bridge/     cnumpy integration tests and benchmarks
-blog_ahk_hack.txt           blog post (ZH)
-blog_ahk_hack_en.txt        blog post (EN)
-docs/                       bilingual GitHub Pages blog site
-ahk_hack_single.ahk         standalone single-file core
-ahk_hack_demo.ahk           runnable self-test demo
-ahk_hack_gui.ahk            visual remote console (attach/eval/script/hook)
+  build_mcode.py           builds and embeds machine code
+  build_site.py            generates Pages
+  build_blog.py            embeds single-file source into blog
+  verify_all_runtimes.ps1  full runtime matrix
+  ahk_live_mcp.py          MCP server
+tests/                     core, eval, remote, AhkLive tests
+reports/                   runtime matrix reports
 ```
 
-## Building from Source
+## Building from source
 
-Requirements: LLVM clang (for example `F:\Tech\LLVM\bin\clang.exe`).
+The embedded machine code can be regenerated with:
 
 ```powershell
-python tools\build_mcode.py --embed-only --out lib\ahk_hack.ahk
+python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk
 ```
 
-The build compiles all C sources under `lib/mcode/`, verifies that no
-relocation escapes the `.text` blob, and writes the machine code back into
-`lib/ahk_hack.ahk`.
-
-The bilingual Pages site in `docs/` is generated from
-`tools/site_templates/`; after changing the single-file core, rebuild it with:
+After rebuilding, regenerate the blog and Pages:
 
 ```powershell
+python tools\build_blog.py
 python tools\build_site.py
 ```
 
-## Locating internal expression functions
-
-`tools/locate_internal_functions.py` finds the addresses of
-`Line::ExpressionToPostfix` and `Line::ExpandExpression` in a given
-AutoHotkey exe, using error-string fingerprints and RIP-relative xrefs:
-
-```powershell
-python tools\locate_internal_functions.py D:\...\AutoHotkey64.exe
-```
-
-These RVAs are consumed by `AhkMagic.EvalNative()`, which builds a temporary
-`Line`/`ArgStruct` and calls the interpreter's own compiler and evaluator
-directly instead of launching a child process.
-
 ## Testing
 
+Run the in-process probes:
+
 ```powershell
-python -m unittest discover -s tests -p 'test_*.py' -v
+AutoHotkey64.exe tests\evalscript_inproc.ahk
+AutoHotkey64.exe tests\evalscript_repeat.ahk
+AutoHotkey64.exe tests\evalscript_class.ahk
+```
 
-# Core scan and built-in patch demo
-& D:\...\AutoHotkey64.exe tests\ahk_mcode_test.ahk
+Run the remote and AhkLive matrix:
 
-# Generic PE export scan
-& D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
-
-# In-process expression eval
-& D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
-
-# In-process long text with function definitions
-& D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
-
-# In-process class definition and instantiation
-& D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
-
-# Repeated in-memory loads in one process
-& D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
-
-# Ahk2Exe packaged exe (use the AutoHotkey v2 runtime as /base)
-& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
-& build\compiled_eval_probe.exe
-
-# UPX-compressed variant of the same probe
-& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_upx.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 2 /silent verbose
-& build\compiled_eval_probe_upx.exe
-
-# Interactive compiled demo (shows a MsgBox)
-& D:\...\Compiler2\Ahk2Exe.exe /in examples\ahk_hack_compiled_demo.ahk /out build\compiled_eval_demo.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /silent verbose
-& build\compiled_eval_demo.exe
-
-# Per-version internal address probe
-& D:\...\AutoHotkey64.exe tests\version_probe.ahk
-
-# Attach to a running AutoHotkey process and scan its tables remotely
-python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
-
-# Redirect a builtin in the live table (e.g. Abs -> Sin)
-python tools\ahk_remote_attach.py --pid 1234 --redirect Abs Sin
-
-# cnumpy integration, including 1D/2D/3D native construction
-& D:\...\AutoHotkey64.exe fork\cnumpy-ahk-bridge\tests\cnumpy_bridge.test.ahk
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\verify_all_runtimes.ps1
 ```
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT
