@@ -50,7 +50,7 @@ def parse(source: str):
     def flush_para() -> None:
         nonlocal para
         if para:
-            body.append("<p>" + inline("<br>".join(para)) + "</p>")
+            body.append("<p>" + inline(" ".join(para)) + "</p>")
             para = []
 
     def close_list() -> None:
@@ -105,6 +105,34 @@ def parse(source: str):
             section_open = True
             toc.append((ident, title))
             i += 1
+            continue
+
+        if line.startswith("|"):
+            flush_para()
+            close_list()
+            rows = []
+            while i < len(lines) and lines[i].strip().startswith("|"):
+                rows.append(lines[i].strip())
+                i += 1
+            if len(rows) >= 2 and re.match(r"^\|[\s:\-|]+\|$", rows[1]):
+                header = [inline(c.strip()) for c in rows[0].strip("|").split("|")]
+                body_rows = rows[2:]
+                table = ["<table><thead><tr>"]
+                table.extend(f"<th>{c}</th>" for c in header)
+                table.append("</tr></thead><tbody>")
+                for row in body_rows:
+                    cells = [inline(c.strip()) for c in row.strip("|").split("|")]
+                    table.append("<tr>")
+                    table.extend(f"<td>{c}</td>" for c in cells)
+                    table.append("</tr>")
+                table.append("</tbody></table>")
+                body.append("".join(table))
+            else:
+                for row in rows:
+                    cells = [inline(c.strip()) for c in row.strip("|").split("|")]
+                    body.append("<table><tr>"
+                        + "".join(f"<td>{c}</td>" for c in cells)
+                        + "</tr></table>")
             continue
 
         if line.startswith("- "):

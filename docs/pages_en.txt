@@ -1,81 +1,91 @@
-[b]1. Goal and scope[/b]
+[b]1. Objective and method[/b]
 
-This article documents the full analysis and extraction workflow used by
-[c]ahk-hack[/c]. The goal is to take a running [c]AutoHotkey64.exe[/c], discover
-its internal interpreter structures at runtime, and build higher-level
-features such as expression evaluation, script loading from memory, remote
-hooking, and live function tracing.
+The goal is to analyze [c]AutoHotkey64.exe[/c] as a live interpreter and extract enough structure to implement expression evaluation, script loading from memory, remote hooking, and live function tracing. The method is a repeatable loop: read the source tree to identify candidate fields, inspect process memory to confirm their actual offsets, encode the stable logic as position-independent machine code, then validate every result against structural invariants.
 
-The process is not a single script. It is a loop:
-
-- read the AutoHotkey source tree to form hypotheses;
-- inspect the live process memory to confirm offsets;
-- encode the stable parts as position-independent machine code;
-- validate every discovered pointer against structural invariants;
-- run the same checks across many interpreter versions.
+This page documents that loop in detail. It is not an API reference; it is an extraction process.
 
 [b]2. PE parsing and section mapping[/b]
 
-The first step is to map the loaded image. AutoHotkey v2 x64 executables use
-the standard PE32+ layout:
+Every x64 AutoHotkey v2 executable starts with an [c]MZ[/c] DOS header. The PE signature is at the offset stored in [c]e_lfanew[/c]. The optional header uses PE32+ magic [c]0x20B[/c]. The section table immediately follows the optional header.
 
 [codebox=autohotkey file=pe-map]
-peOff := NumGet(base, 0x3C, "UInt")
-numSections := NumGet(base + peOff + 6, "UShort")
+peOff   := NumGet(base, 0x3C, "UInt")
+numSec  := NumGet(base + peOff + 6, "UShort")
 optSize := NumGet(base + peOff + 20, "UShort")
-secTable := base + peOff + 24 + optSize
+secTab  := base + peOff + 24 + optSize
+
+loop numSec {
+    off := (A_Index - 1) * 40
+    name := StrGet(hdr.Ptr + off, 8, "UTF-8")
+    vsize := NumGet(hdr + off + 8, "UInt")
+    va := NumGet(hdr + off + 12, "UInt")
+    rawSize := NumGet(hdr + off + 16, "UInt")
+}
 [/codebox]
 
-The scanner keeps [c]{rva, size, ptr}[/c] for each section and classifies them
-by name. [c].text[/c] is executable code, [c].rdata[/c] holds read-only strings,
-and [c].data[/c] holds writable interpreter globals.
+The scanner stores each section as [c]{rva, size, ptr}[/c] and classifies it by name. Three sections matter:
+
+| Section | Role | Invariant |
+| --- | --- | --- |
+| [c].text[/c] | executable code | function pointers must land here |
+| [c].rdata[/c] | read-only strings | UTF-16 names usually live here |
+| [c].data[/c] | writable globals | interpreter tables live here |
+
+For packed builds, section names are unreliable. The scanner falls back to content-based classification: non-[c].rsrc[/c] code-like sections are treated as executable, and readable non-executable sections are treated as data/string storage.
 
 [b]3. Interpreter table discovery[/b]
 
-The interpreter keeps three tables in the image:
+The interpreter keeps three tables in the image. Their record strides are stable on x64:
 
-- [c]g_BIF[/c]: script-visible built-ins such as [c]Abs[/c] and [c]Sin[/c];
-- [c]sMdFunc[/c]: typed native functions such as [c]MsgBox[/c];
-- [c]g_BIV_A[/c]: built-in variables starting with [c]A_[/c].
+| Table | Contents | Record stride |
+| --- | --- | --- |
+| [c]g_BIF[/c] | script-visible built-ins such as [c]Abs[/c] and [c]Sin[/c] | [c]0x20[/c] |
+| [c]sMdFunc[/c] | typed native functions such as [c]MsgBox[/c] | [c]0x28[/c] |
+| [c]g_BIV_A[/c] | built-in variables beginning with [c]A_[/c] | [c]0x18[/c] |
 
-The scanner does not trust an RVA table. It walks pointer-aligned slots and
-accepts a record only when:
+The scanner does not hardcode addresses. It walks pointer-aligned slots and accepts a record only when:
 
-- the name pointer resolves to printable UTF-16 text;
-- the function pointer lands in [c].text[/c];
-- neighboring records remain sorted by name;
-- a known anchor such as [c]Abs[/c], [c]BlockInput[/c], or [c]AhkPath[/c] is
-  present.
+- the first qword resolves to a printable UTF-16 string;
+- the second qword resolves into [c].text[/c];
+- neighboring records are sorted by name;
+- a known anchor is present, such as [c]Abs[/c], [c]BlockInput[/c], or [c]AhkPath[/c].
 
-The longest valid run is the table. This works across 2.0-beta through
-2.1-alpha without a per-version offset table.
+The longest valid run becomes the table. The same algorithm runs as x64 machine code, so the scan speed and the scan logic do not depend on the AHK version.
 
-[b]4. Source archaeology[/b]
+[b]4. Source-to-memory validation[/b]
 
-The source tree is the ground truth for names, but not for final offsets.
-Compiler layout, debugger fields, and build flags move members. The workflow
-therefore reads source to learn what to look for, then verifies in memory.
+Source code gives names and intent, not final offsets. The compiler, build flags, and debugger fields move members. The workflow therefore uses source to form hypotheses and memory to confirm them.
 
-For example, [c]UserFunc[/c] in [c]script.h[/c] owns:
+For [c]UserFunc[/c] in [c]script.h[/c], the source declares:
 
-- [c]mJumpToLine[/c]: the first body line;
-- [c]mParam[/c]: the formal parameter array;
-- [c]mVars[/c]: the sorted local variable list.
-
-The memory probe confirms the actual x64 offsets:
-
-[codebox=text file=func-layout]
-2.1-alpha.30: mName=0x28, mJumpToLine=0x48, mParam=0x50
-2.0.26:       mName=0x20, mJumpToLine=0x40, mParam=0x48
+[codebox=cpp file=userfunc-source]
+class UserFunc : public Func
+{
+public:
+    int mInstances = 0;
+    Line *mJumpToLine = nullptr;
+    FuncParam *mParam = nullptr;
+    Object *mClass = nullptr;
+    ...
+    VarList mVars {};
+    VarList mStaticVars {};
+};
 [/codebox]
 
-The offsets differ between versions, so the library discovers them at runtime
-instead of embedding a table.
+The memory probe confirms the actual x64 layout on two representative builds:
 
-[b]5. Machine-code extraction[/b]
+| Field | v2.1-alpha.30 | v2.0.26 |
+| --- | --- | --- |
+| [c]mName[/c] | [c]0x28[/c] | [c]0x20[/c] |
+| [c]mJumpToLine[/c] | [c]0x48[/c] | [c]0x40[/c] |
+| [c]mParam[/c] | [c]0x50[/c] | [c]0x48[/c] |
+| [c]mVars[/c] | [c]0x80[/c] | [c]0x70[/c] |
 
-The stable scanning logic is written in C under [c]lib/mcode/[/c]. The build
-uses clang to produce a freestanding COFF object:
+The offsets differ, so the library discovers them at runtime instead of shipping a version table.
+
+[b]5. Machine-code extraction pipeline[/b]
+
+The stable scanner is written in C under [c]lib/mcode/[/c]. The build uses clang to produce a freestanding, position-independent COFF object:
 
 [codebox=text file=clang-build]
 clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
@@ -83,93 +93,233 @@ clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
   -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
 [/codebox]
 
-[c]tools/build_mcode.py[/c] extracts [c].text[/c], walks relocation records, and
-rejects any blob with a relocation that escapes the blob. The final hex string
-is embedded into [c]ahk_hack_single.ahk[/c].
+[c]tools/build_mcode.py[/c] performs four checks:
 
-[b]6. In-process expression evaluation[/b]
+- extract [c].text[/c] from the COFF object;
+- decode every relocation record;
+- accept [c]IMAGE_REL_AMD64_REL32[/c] only when the target stays inside [c].text[/c];
+- reject any blob with an escaping relocation.
 
-AutoHotkey compiles expressions into postfix [c]ExprTokenType[/c] arrays.
-[c]EvalNative()[/c] builds a temporary [c]Line[/c]/[c]ArgStruct[/c], calls the
-interpreter's [c]ExpressionToPostfix[/c] and [c]ExpandExpression[/c], and reads
-the result. The evaluator discovers [c]gScript[/c], [c]FindOrAddVar[/c],
-[c]FinalizeExpression[/c], and [c]SYM_INVALID[/c] from machine-code references.
+The final hex string is embedded into [c]ahk_hack_single.ahk[/c]. [c]MCode()[/c] decodes it into a [c]Buffer[/c], changes protection to executable, and returns it for [c]DllCall[/c].
+
+[b]6. EvalNative: expression evaluation analysis[/b]
+
+AutoHotkey does not evaluate expression strings directly. During script load, [c]Line::ExpressionToPostfix[/c] compiles an expression into an [c]ExprTokenType[/c] postfix array. [c]Line::ExpandExpression[/c] later evaluates that array.
+
+[c]EvalNative()[/c] constructs the same temporary [c]Line[/c] and [c]ArgStruct[/c] the parser would have built, then calls those two functions. This reuses the interpreter's own grammar and variable resolution.
+
+The internal locator machine code discovers:
+
+| Symbol | Source | Discovery |
+| --- | --- | --- |
+| [c]ExpressionToPostfix[/c] | error string [c]"Missing operand."[/c] | RIP-relative ref + prologue walk |
+| [c]ExpandExpression[/c] | error string [c]"Error evaluating expression."[/c] | RIP-relative ref + prologue walk |
+| [c]gScript[/c] | most frequent [c]lea rcx,[rip+disp][/c] target | frequency filter |
+| [c]FindOrAddVar[/c] | six-argument prologue | signature match |
+| [c]SYM_INVALID[/c] | postfix terminator | immediate inside evaluator |
+
+The token layout used by the evaluator is:
+
+| Field | Offset | Type |
+| --- | --- | --- |
+| value | [c]0x00[/c] | pointer/int64/double union |
+| marker/usage | [c]0x08[/c] | pointer or [c]VarRefUsageType[/c] |
+| symbol | [c]0x10[/c] | 32-bit [c]SymbolType[/c] |
+| stride | [c]0x18[/c] | total struct size |
 
 [codebox=autohotkey file=evalnative]
 #Include ahk_hack_single.ahk
 AhkMagic.Init()
 
 MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
+MsgBox AhkMagic.EvalNative("2 * 3.5")             ; 7.0
 MsgBox AhkMagic.EvalNative("Abs(-5)")             ; 5
-MsgBox AhkMagic.EvalNative("Point(1, 2).y")       ; 2, class loaded in-process
+MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)")  ; "bc"
+
+myVar := 42
+MsgBox AhkMagic.EvalNative("myVar + 1")           ; 43
 [/codebox]
 
-[b]7. Script loading from memory[/b]
+[b]7. EvalScript: parser and in-memory loading[/b]
 
-Expression eval cannot define functions or classes. [c]EvalScript()[/c] feeds
-multi-line text through [c]LoadIncludedFile(TextStream*)[/c] from an in-memory
-[c]TextStream[/c]. The parser entry points, [c]g[/c], [c]gScript[/c], and
-parser-state offsets are discovered at runtime.
+Expression eval cannot define functions or classes. [c]EvalScript()[/c] feeds multi-line text through the interpreter's include pipeline from an in-memory [c]TextStream[/c].
 
-The script state is saved before loading and restored in a [c]finally[/c] block:
+The relevant pipeline is:
 
-- pending parent/related lines;
-- pending parameter initializers;
-- current module;
-- expression-function index;
-- class object count.
+[codebox=cpp file=load-include]
+ResultType Script::LoadIncludedFile(TextStream *fp)
+{
+    int source_file_index = mCurrFileIndex;
+    bool blocks_previously_open = mLineParent || mClassObjectCount;
+    auto module_previously_open = mCurrentModule;
+    bool caller_backcompatmode = mBackCompatMode;
+    ...
+}
+[/codebox]
+
+Before loading, the library saves and later restores:
+
+- [c]mOpenBlock[/c] / [c]mLineParent[/c];
+- [c]mPendingRelatedLine[/c];
+- [c]mLastParamInitializer[/c];
+- [c]mPendingHotkey[/c];
+- [c]mExprFuncIndex[/c];
+- [c]mNextLineIsFunctionBody[/c];
+- [c]mIgnoreNextBlockBegin[/c];
+- [c]mBackCompatMode[/c];
+- [c]mClassObjectCount[/c];
+- [c]mCurrentModule[/c] and [c]mLastModule[/c].
+
+Parser-state anchors are read from the [c]LoadIncludedFile[/c] prologue:
+
+- [c]q[/c]: the offset of [c]mOpenBlock[/c]/[c]mLineParent[/c];
+- [c]d[/c]: the offset of [c]mClassObjectCount[/c].
+
+The [c]TextStream[/c] object is built with both possible [c]mData[/c] regions populated, so the same object works for 2.0 and 2.1 layouts.
 
 [b]8. Remote introspection[/b]
 
-[c]AttachRemote(pid)[/c] opens a target process, reads its PE image and tables,
-and returns a hook. [c]RemoteEval()[/c] injects a locator/evaluator thread;
-[c]RemoteEvalScript()[/c] loads script text through the target's own parser.
-[c]RemoteReplaceFuncBody()[/c] swaps [c]mJumpToLine[/c] so existing callers
-execute a new body.
+[c]AttachRemote(pid)[/c] opens the target with [c]OpenProcess[/c], reads its PE image, scans its interpreter tables, and returns a hook map.
+
+Remote eval injects a thread stub plus the locator and evaluator blobs:
+
+| Step | Operation |
+| --- | --- |
+| 1 | allocate a scratch block with [c]VirtualAllocEx[/c] |
+| 2 | write stub, locator, evaluator, expression, output buffers |
+| 3 | create a remote thread with [c]CreateRemoteThread[/c] |
+| 4 | wait and read the result buffer |
+| 5 | free the scratch block |
+
+[c]RemoteEvalScript()[/c] uses the target's own [c]LoadIncludedFile[/c] and [c]PreparseExpressions[/c]. The injected thread sets [c]g->CurrentFunc[/c] before preparse, so class methods and [c]Super[/c] parse correctly.
+
+[codebox=autohotkey file=remote-eval]
+hook := AhkMagic.AttachRemote(pid)
+MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")     ; 7
+
+script := "
+(
+rhkAdd(a, b) {
+    return a + b
+}
+rhkAdd(1, 2)
+)"
+MsgBox AhkMagic.RemoteEvalScript(hook, script)    ; 3
+[/codebox]
+
+Function body replacement swaps [c]mJumpToLine[/c]:
+
+[codebox=autohotkey file=remote-replace]
+AhkMagic.RemoteEvalScript(hook, "
+(
+NewA() {
+    return 42
+}
+NewA()
+)")
+AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
+Send("{F9}")
+[/codebox]
+
+The target writes [c]A()=42[/c] instead of [c]A()=1[/c].
 
 [b]9. Dynamic offset discovery[/b]
 
-The remote layout scanner validates [c]mFuncs[/c], [c]mFuncsCount[/c],
-[c]mJumpToLine[/c], the function name field, parser anchors, [c]Line[/c],
-[c]ArgStruct[/c], token, and [c]DerefType[/c] offsets from live memory. It
-prefers structural invariants:
+The remote layout scanner derives [c]mFuncs[/c], [c]mFuncsCount[/c], the function name field, and [c]mJumpToLine[/c] from live memory:
 
-- a [c]Line[/c] contains a back-reference to its owning [c]Func[/c];
-- an [c]ArgStruct[/c] contains a postfix token array;
-- token arrays terminate with the discovered [c]SYM_INVALID[/c];
-- [c]DerefType[/c] has two pointer-sized fields before the type byte.
+- candidate array/count pairs are validated by reading each [c]Func[/c] pointer;
+- [c]mName[/c] is a pointer to a valid identifier string;
+- [c]mJumpToLine[/c] points to a [c]Line[/c] that contains a back-reference to its owning [c]Func[/c];
+- the back-reference slot is consistent across ordinary functions.
 
-[b]10. TraceFunction cloning[/b]
+The struct validator then discovers:
 
-The trace feature exposed a subtle problem: renaming a function breaks
-[c]mFuncs[/c] and [c]VarList[/c] ordering. The stable fix clones the
-[c]UserFunc[/c], creates a [c]VAR_CONSTANT[/c] alias, injects a wrapper, and
-aliases the wrapper's parameter [c]Var[/c] objects back to the original
-function's parameters. [c]UserFunc::Call[/c] writes through
-[c]mParam[i].var[/c], so sharing the same [c]Var[/c] objects makes both the
-original body and the wrapper agree on argument values.
+| Struct | Validated fields |
+| --- | --- |
+| [c]Line[/c] | action, argc, arg pointer, attribute, next line |
+| [c]ArgStruct[/c] | is_expression, postfix pointer, deref pointer |
+| [c]ExprTokenType[/c] | stride, symbol offset, usage offset, value offset |
+| [c]DerefType[/c] | marker, var, type, length |
 
-[b]11. Verification[/b]
+Token arrays are validated by walking until [c]SYM_INVALID[/c] and requiring a [c]SYM_VAR[/c] token before the terminator. [c]DerefType[/c] is read from [c]ArgStruct.deref[/c] arrays that already exist in the running process.
 
-[c]tools/verify_all_runtimes.ps1[/c] runs a nine-test matrix against every
-AutoHotkey runtime found on this machine. The current matrix covers:
+[b]10. TraceFunction: cloning instead of renaming[/b]
 
-- [c]2.0-beta.9[/c], [c]beta.10[/c], [c]beta.12[/c], [c]beta.13[/c],
-  [c]beta.15[/c];
-- [c]2.0-rc.1[/c], [c]rc.3[/c];
-- [c]2.0.0[/c], [c]2.0.2[/c], [c]2.0.3[/c], [c]2.0.4[/c], [c]2.0.26[/c];
-- [c]2.1-alpha.1[/c], [c]alpha.4[/c], [c]alpha.13[/c], [c]alpha.16[/c],
-  [c]alpha.30[/c];
-- two local [c]2.0-beta[/c] development builds.
+Function tracing is harder than function replacement. The original implementation renamed the target function and injected a wrapper. That broke because:
 
-All 19 runtimes pass all 9 tests.
+- function names live in [c]Func.mName[/c] and global [c]Var.mName[/c];
+- [c]mFuncs[/c] and [c]VarList[/c] are sorted arrays;
+- renaming one side breaks binary search;
+- body replacement alone does not rebind parameter [c]Var[/c] objects.
+
+The stable fix reads [c]UserFunc::Call[/c]:
+
+[codebox=cpp file=userfunc-call]
+bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
+{
+    ...
+    for (j = 0; j < mParamCount; ++j)
+    {
+        FuncParam &this_formal_param = mParam[j];
+        ...
+    }
+}
+[/codebox]
+
+The call path writes through [c]mParam[i].var[/c]. Therefore two function objects can share the same parameter [c]Var[/c] objects, and both bodies see the same values.
+
+The final design:
+
+- clone the [c]UserFunc[/c] object;
+- create a [c]VAR_CONSTANT[/c] global alias for the clone;
+- inject a wrapper that calls the clone;
+- alias the wrapper's parameter [c]Var[/c] objects to the original parameters;
+- replace the original function body pointer;
+- on untrace, restore the original [c]mJumpToLine[/c].
+
+The wrapper logs to a target-side global string, so [c]RemoteEval[/c] can read the trace without relying on file I/O inside the evaluator thread.
+
+[b]11. Verification matrix[/b]
+
+[c]tools/verify_all_runtimes.ps1[/c] runs nine tests against every runtime found on this machine:
+
+| Test | Covers |
+| --- | --- |
+| [c]ahk_live_cross_smoke[/c] | attach, snapshot, inventory, replace, watch |
+| [c]ahk_live_test[/c] | full trace/replace path |
+| [c]ahk_live_product_test[/c] | session and patch rollback |
+| [c]ahk_live_six_test[/c] | observability, fault, desktop, forensics, agent, CSV |
+| [c]ahk_live_benchmark[/c] | eval/snapshot/list timings |
+| [c]remote_hook_test[/c] | remote eval, script, class, function replacement |
+| [c]evalscript_inproc[/c] | in-process script loading |
+| [c]evalscript_repeat[/c] | repeated function/class loading |
+| [c]evalscript_class[/c] | class definitions |
+
+Current result:
+
+| Runtime family | Builds | Result |
+| --- | --- | --- |
+| 2.0 beta | beta.9, beta.10, beta.12, beta.13, beta.15 | 9/9 each |
+| 2.0 rc | rc.1, rc.3 | 9/9 each |
+| 2.0 stable | 0.0, 0.2, 0.3, 0.4, 0.26 | 9/9 each |
+| 2.1 alpha | alpha.1, alpha.4, alpha.13, alpha.16, alpha.30 | 9/9 each |
+| local dev builds | two [c]2.0-beta[/c] binaries | 9/9 each |
+
+Total: 19 runtimes, all 9/9.
 
 [b]12. Security and boundaries[/b]
 
-This library executes machine code, fabricates interpreter objects, and
-writes target process memory. It is not a sandbox. Use disposable targets,
-restore patches, and never eval untrusted input. Packed or hostile builds may
-break string-based discovery; the scanner fails loudly instead of guessing.
+This library allocates executable memory, executes machine code, and writes interpreter memory in the current or target process. It is not a sandbox.
+
+Rules:
+
+- only attach to processes you own;
+- use disposable targets for repeated experiments;
+- restore patches in [c]finally[/c] or through [c]AhkLivePatchSession.Rollback()[/c];
+- never eval untrusted input;
+- treat locator failures as errors, never as a reason to guess.
+
+Packed or hostile builds can rename sections or remove strings. The content-based scanner handles common packers, but a hostile build can still defeat discovery.
 
 [b]13. Further reading[/b]
 

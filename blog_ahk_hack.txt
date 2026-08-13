@@ -1,168 +1,519 @@
-[b]AutoHotkey64.exe 内部：一份实验日志[/b]
+[b]AutoHotkey 运行时扫描库（ahk-hack）[/b]
 
-仓库：[url=https://github.com/MonoEven/ahk-hack-library]MonoEven/ahk-hack-library[/url]
+仓库：[url=https://github.com/MonoEven/ahk-hack-library]https://github.com/MonoEven/ahk-hack-library[/url]
 
-在线技术流程：[url=https://monoeven.github.io/ahk-hack-library/]https://monoeven.github.io/ahk-hack-library/[/url]
+在线双语版本：[url=https://monoeven.github.io/ahk-hack-library/]https://monoeven.github.io/ahk-hack-library/[/url]
 
-这是项目背后的实验日志。它按探索过程写：试了什么、哪里坏了、最后怎么解决。
-如果你想看正式的分析与提取流程，请读 Pages 站点；这份文件是故事。
+这个库解决一个问题：让 AutoHotkey 脚本在运行时读取正在运行的[c]AutoHotkey.exe[/c]，定位解释器内部表，并在此基础上提供内置函数重定向、表达式求值和远程 Hook。实现方式是往一个 AHK v2 文件里嵌入 x64 机器码，运行时解析 PE 结构并扫描内部结构。
 
-[b]1. 第一个问题[/b]
 
-AutoHotkey v2 暴露了 [c]A_AhkPath[/c] 和大量内置函数，但没有暴露解释器
-内部的 C API。我想知道一个脚本能不能读取正在运行它的 exe、找到解释器表，
-然后在上面构建真实功能。
+[b]1. 运行时扫描[/b]
 
-答案是：可以，但需要足够小心。
+AutoHotkey 2 解释器在[c].data[/c]段维护几张关键表：
 
-[b]2. 读 PE 镜像[/b]
+- [c]g_BIF[/c]：内置脚本函数表（[c]Abs[/c]、[c]Sin[/c]等），x64 下每条记录 0x20 字节；
+- [c]sMdFunc[/c]：带类型签名的原生函数表（[c]MsgBox[/c]、[c]WinActivate[/c]等），0x28 字节；
+- [c]g_BIV_A[/c]：以[c]A_[/c]开头的内置变量表（[c]A_AhkPath[/c]、[c]A_YYYY[/c]等），0x18 字节。
 
-第一个实验很简单：解析 DOS 头，跟随 [c]e_lfanew[/c]，遍历节表，打印
-[c].text[/c]、[c].rdata[/c] 和 [c].data[/c]。这部分很容易。PE 格式稳定
-且有文档。
+定位分两步。先解析 DOS 头、NT 头、节表，拿到各段内存范围；再检查[c].data[/c]和[c].rdata[/c]里的指针槽，看是否满足三个条件：名字指针指向 UTF-16 字符串、函数指针落在[c].text[/c]、表内记录按字典序排列。满足条件的连续记录区就是目标表，随后读出每条记录的 RVA、参数个数和 ID。
 
-[codebox=autohotkey file=pe-read]
-peOff := NumGet(base, 0x3C, "UInt")
-numSections := NumGet(base + peOff + 6, "UShort")
-optSize := NumGet(base + peOff + 20, "UShort")
-secTable := base + peOff + 24 + optSize
+这套逻辑写进机器码后，同一段代码可以跑在 2.0-beta、2.0.0、2.0.26、2.1-alpha 上。通用化之后还能扫任意 DLL/EXE 的导出表，枚举具名导出、RVA 和序号。
+
+
+[b]2. 机器码生成[/b]
+
+机器码用 C 编写，经 clang 编译后从 COFF 对象的[c].text[/c]段提取，再以十六进制字符串嵌进 AHK：
+
+[codebox=text file=mcode-build]
+clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
+  -fno-builtin -fno-stack-protector -fno-unwind-tables \
+  -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
 [/codebox]
 
-[b]3. 不靠 RVA 表找表[/b]
+构建脚本会检查[c].text[/c]的重定位，只要有重定位逃出代码块就拒绝嵌入。这样保证嵌入结果是自包含、位置无关的机器码。
 
-解释器表就是镜像里的普通数组。最初的想法是搜索 [c]Abs[/c] 字符串再往回走。
-那能跑一次，但感觉太脆弱。
+机器码部分包含以下代码块：
 
-更好的想法是结构化验证记录：记录必须有 UTF-16 名字指针和落在可执行代码里
-的函数指针，相邻记录必须保持排序。满足三个条件的最长连续区就是目标表。
-这样就不依赖具体版本的地址。
+- [c]scanner.c[/c]：解释器三张内部表扫描；
+- [c]export_scanner.c[/c]：通用 PE 导出表扫描；
+- [c]inproc_eval.c[/c]：进程内表达式求值；
+- [c]internal_locator.c[/c]：EvalNative 内部符号的运行时发现；
+- [c]mem_script.c[/c]：EvalScript 的内存[c]TextStream[/c]；
+- [c]remote_call_stub.c[/c]：远程线程调用 stub；
+- [c]remote_eval_stub.c[/c]：远程表达式求值 stub。
 
-[b]4. 为什么用机器码[/b]
+重新构建机器码需要 LLVM clang（本机在[c]F:\Tech\LLVM\bin\clang.exe[/c]）：
 
-AHK 循环可以解析 PE 头，但慢且明显。我想让同一套逻辑在进程内以 C 的速度
-运行。于是用 clang 把扫描器编译成无 CRT 的 x64 代码，检查没有重定位逃出
-代码块，再把十六进制字符串嵌入 AHK 文件。
-
-构建脚本拒绝嵌入坏掉的 blob。这条规则救了我很多次。
-
-[b]5. Eval 兔子洞[/b]
-
-表达式求值是下一堵墙。AutoHotkey 不会直接求值表达式字符串，而是先编译成
-后缀 token 数组，之后再执行。
-
-突破口是意识到 [c]EvalNative()[/c] 不需要新解释器。它只需要一个临时
-[c]Line[/c] 和 [c]ArgStruct[/c]，也就是解析器本来会创建的对象，再加上解释器
-自己的 [c]ExpressionToPostfix[/c] 与 [c]ExpandExpression[/c] 指针。
-
-[codebox=autohotkey file=evalnative]
-#Include ahk_hack_single.ahk
-AhkMagic.Init()
-
-MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
-MsgBox AhkMagic.EvalNative("Abs(-5)")             ; 5
-MsgBox AhkMagic.EvalNative("Point(1, 2).y")       ; 2，类已加载
+[codebox=text file=rebuild]
+python tools\build_mcode.py --embed-only --out ahk_hack_single.ahk
 [/codebox]
 
-[b]6. 从内存加载脚本[/b]
 
-表达式求值无法定义函数或类。下一个实验把多行文本通过内存 [c]TextStream[/c]
-喂给解释器的 include 加载器，不写临时文件。解析器无法区分来源。
+[b]3. 单文件核心[/b]
 
-这解锁了函数定义、class 定义和进程内脚本加载。
+扫描核心被提炼成一个文件：[c]ahk_hack_single.ahk[/c]。它包含[c]MCode()[/c]、[c]AhkMagic[/c]和全部嵌入的机器码，复制到哪里都能用。仓库里另有一个[c]ahk_hack_demo.ahk[/c]，直接运行就能看到扫描摘要、内置函数替换和 Eval 的效果。
 
-[b]7. 远程化[/b]
+库结构：
 
-同一套原语可以作用在另一个 AutoHotkey 进程上。[c]AttachRemote(pid)[/c]
-打开进程、读取表并返回 hook。[c]RemoteEval()[/c] 在目标里执行表达式。
-[c]RemoteEvalScript()[/c] 通过目标自己的解析器加载整个脚本。
-
-热键验证是最有意思的部分：
-
-[codebox=autohotkey file=remote-hotkey]
-hook := AhkMagic.AttachRemote(pid)
-AhkMagic.RemoteEvalScript(hook, "
-(
-NewA() {
-    return 42
-}
-NewA()
-)")
-AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
-Send("{F9}")
+[codebox=text file=library-layout]
+ahk_hack_single.ahk        单文件核心
+ahk_hack_demo.ahk          可直接运行的演示
+ahk_hack_gui.ahk           可视化远程控制台
+lib/
+  init.ahk                 核心入口，仅扫描
+  ahk_hack.ahk             MCode() + AhkMagic
+  mcode/                   机器码 C 源码
+tools/
+  build_mcode.py           编译并嵌入机器码
+  ahk_inspect.py           Python/PE 交叉验证
+  ahk_remote_attach.py     远程附加与 Hook
+  verify_remote_compat.ps1 远程兼容矩阵
+tests/                     核心、导出、eval、远程 Hook 测试
+examples/                  导出清单、内置函数探针、编译版演示
+docs/                      双语 Pages 站点
 [/codebox]
 
-目标开始输出 [c]A()=42[/c]，而不是 [c]A()=1[/c]。
 
-[b]8. 一直不肯消失的 Trace bug[/b]
+[b]4. 基础用法：扫描与重定向[/b]
 
-最难的 bug 是 [c]TraceFunction[/c]。第一版重命名原函数并注入 wrapper，
-有时能用，然后坏掉。
+[color=#BF4000][b]4.1 核心扫描[/b][/color]
 
-根因不是简单偏移：
-
-- 函数名同时存在于 [c]Func.mName[/c] 和全局 [c]Var.mName[/c]；
-- [c]mFuncs[/c] 与 [c]VarList[/c] 是排序数组；
-- 只改一边会破坏二分查找；
-- 仅替换函数体不会重新绑定参数 [c]Var[/c] 对象。
-
-我试过同时重排两个列表，也试过摘除旧函数并创建别名。第二次脚本注入后都
-不稳定。
-
-稳定修复来自读 [c]UserFunc::Call[/c]：
-
-[codebox=cpp file=usercall]
-for (j = 0; j < mParamCount; ++j)
-{
-    FuncParam &this_formal_param = mParam[j];
-    ...
-}
-[/codebox]
-
-调用路径通过 [c]mParam[i].var[/c] 写入参数。也就是说，两个函数对象可以共享
-同一组参数 [c]Var[/c]，两个函数体都会看到相同的值。
-
-最终设计：
-
-- 克隆 [c]UserFunc[/c] 对象；
-- 为克隆体创建 [c]VAR_CONSTANT[/c] 别名；
-- 注入调用克隆体的 wrapper；
-- 把 wrapper 的参数 [c]Var[/c] 别名回原函数参数；
-- 替换原函数体指针。
-
-这个版本通过了本机全部 19 个运行时。
-
-[b]9. 验证文化[/b]
-
-这台机器上有许多 AutoHotkey 构建。矩阵脚本
-[c]tools/verify_all_runtimes.ps1[/c] 对每个运行时执行九项测试：
-
-- 实时快照与清单；
-- 完整 Trace/替换路径；
-- 产品会话；
-- 观测与故障注入；
-- 基准；
-- 远程 Hook 与 class 加载；
-- 进程内 EvalScript 变体。
-
-当前结果是 19 个运行时，每个 9/9。
-
-[b]10. 单文件里有什么[/b]
-
-整个核心只有一个文件：[c]ahk_hack_single.ahk[/c]。它包含 [c]MCode()[/c]、
-[c]AhkMagic[/c]、全部嵌入机器码、动态布局扫描器和远程原语。
-
-把它复制到脚本旁边并 include：
-
-[codebox=autohotkey file=single-usage]
+[codebox=autohotkey file=single-file-core-usage]
 #Include ahk_hack_single.ahk
 
 AhkMagic.Init()
 MsgBox AhkMagic.Summary()
 
-MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
+absRva  := AhkMagic.BifRva("Abs")
+absAddr := AhkMagic.BifAddr("Abs")
+
+hmod := DllCall("LoadLibraryW", "Str", "D:\path\module.dll", "Ptr")
+exports := AhkMagic.ScanExports(hmod)
+MsgBox exports.Count
 [/codebox]
 
-完整源码嵌入在下面。
+[color=#BF4000][b]4.2 内置函数重定向[/b][/color]
+
+[codebox=autohotkey file=built-in-pointer-replacement]
+#Include ahk_hack_single.ahk
+
+old := AhkMagic.PatchBif("Abs", "Sin")
+name := "Abs"
+MsgBox %name%(1)              ; 表指针替换：动态调用返回 sin(1)
+
+state := AhkMagic.PatchBifObject(Abs, "Sin")
+MsgBox Abs(1)                 ; 深替换：源码里的直接调用也返回 sin(1)
+AhkMagic.RestoreBifObject(Abs, state)
+AhkMagic.RestoreBif("Abs", old)
+[/codebox]
+
+表指针替换影响后续动态查找；深替换直接改写已解析函数对象的 C 函数指针，所以脚本里写死的[c]Abs(1)[/c]也会变成[c]sin(1)[/c]，还原后恢复为 1。
+
+[b]5. 进程内 Eval[/b]
+
+[color=#BF4000][b]5.1 表达式求值[/b][/color]
+
+[codebox=autohotkey file=eval-usage]
+#Include ahk_hack_single.ahk
+
+MsgBox AhkMagic.Eval("1 + 2 * 3")          ; 7
+MsgBox AhkMagic.Eval("StrLen(`"hello`")")   ; 5
+MsgBox AhkMagic.EvalSubprocess("Format(`"{:.2f}`", Sin(1))") ; 显式子进程
+MsgBox AhkMagic.EvalNative("1 + 2 * 3")     ; 7，同进程
+MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0，同进程
+MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5，同进程
+[/codebox]
+
+[c]EvalNative[/c]构造临时[c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的[c]ExpressionToPostfix[/c]和[c]ExpandExpression[/c]。已验证的四个版本上都支持字面量、运算符、全局变量与函数调用；不支持的语法会直接报错。[c]Eval[/c]先走同进程管线，需要时再使用[c]EvalSubprocess[/c]。
+
+[color=#BF4000][b]5.2 函数定义[/b][/color]
+
+[codebox=autohotkey file=evalscript-function]
+#Include ahk_hack_single.ahk
+
+script := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
+MsgBox AhkMagic.EvalScript(script)          ; 3，同进程
+[/codebox]
+
+[color=#BF4000][b]5.3 类定义[/b][/color]
+
+[codebox=autohotkey file=evalscript-class]
+#Include ahk_hack_single.ahk
+
+classScript := "
+(
+class Point {
+    x := 0
+    y := 0
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
+}
+Point(1, 2).x
+)"
+MsgBox AhkMagic.EvalScript(classScript)     ; 1，类定义并实例化
+MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2，类已加载并在进程内使用
+[/codebox]
+
+[c]EvalScript[/c]不写临时[c].ahk[/c]文件：它把文本编码成 UTF-16，在 scratch 缓冲区里构造[c]TextMem[/c]兼容的[c]TextStream[/c]，直接交给[c]LoadIncludedFile(TextStream*)[/c]，所以函数定义和类定义都能在进程内生效。
+
+[color=#BF4000][b]5.4 原理[/b][/color]
+
+[c]为什么这样就能 Eval：[/c]AutoHotkey 不会直接求值表达式字符串。脚本加载时，[c]Line::ExpressionToPostfix[/c]把每个表达式编译成后缀[c]ExprTokenType[/c]数组，[c]PreparseExpressions[/c]在加载期预编译表达式行，[c]PreprocessLocalVars[/c]绑定局部变量，最后[c]Line::ExpandExpression[/c]执行后缀。[c]EvalNative()[/c]构造同样的临时[c]Line[/c]/[c]ArgStruct[/c]并调用这些函数，所以复用的是解释器自己的语法和求值语义。[c]EvalScript()[/c]则通过内存[c]TextStream[/c]喂给同一条[c]LoadIncludedFile(TextStream*, int)[/c]管线；解析器不知道文本来自磁盘还是合成流，这就是函数和类能在进程内生效的原因。
+
+[c]为什么能动态获取：[/c]稳定错误字符串在每次构建里都由 RIP 相对的[c]lea[/c]指令引用，扫描这些交叉引用并回退到函数开头就能得到函数地址；全局变量也用同样方式物化。布局偏移则让运行中的解释器自己暴露：一次性探针加载一个临时函数，diff 存活[c]Script[/c]对象得到[c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c]，沿新函数的行链找到[c]mJumpLine[/c]，再从[c]LoadIncludedFile[/c]的[c]cmp[/c] prologue 读取解析器状态锚点。[c]TextStream[/c]对象同时填充两个[c]mData[/c]区域，不需要选择布局。
+
+[c]多版本兼容：[/c]四版本矩阵用同一份 blob 跑 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30。稳定偏移在这些构建中没有变化；变化的都改为运行时发现。无法识别的布局会让探针抛错，而不是猜一个偏移继续，失败因此是显式且隔离的。
+
+[codebox=text file=source-snippets]
+// source/script.h (AutoHotkey v2.1-alpha.30)
+ResultType ExpressionToPostfix(ArgStruct &aArg);
+LPTSTR ExpandExpression(int aArgIndex, ResultType &aResult, ResultToken *aResultToken,
+    LPTSTR &aTarget, LPTSTR &aDerefBuf, size_t &aDerefBufSize,
+    LPTSTR aArgDeref[], size_t aExtraSize);
+
+Line *mLastLine;
+FuncList mFuncs;
+Line *mLineParent = nullptr;
+Line *mPendingRelatedLine;
+int mExprFuncIndex = INT_MAX;
+bool mBackCompatMode = true;
+int mClassObjectCount;
+
+// source/TextIO.h
+class TextMem : public TextStream {
+public:
+    struct Buffer { LPVOID mBuffer; DWORD mLength; bool mOwned; };
+private:
+    Buffer mData;
+    LPBYTE mDataPos;
+};
+[/codebox]
+
+[b]6. 远程 Hook[/b]
+
+把目标进程想象成一台正在运行的机器。我们不往里面安装任何东西，它也不需要配合：不需要[c]#Include[/c]、不需要导出指针、不需要回调。我们读取它的内存地图，找到内部架子上的标签，再通过操作系统的远程线程入口放进一个小工人。
+
+[color=#BF4000][b]6.1 外部扫描工具[/b][/color]
+
+[c]tools\ahk_remote_attach.py[/c]可以在不注入的情况下按 PID 或映像名读取目标进程：用[c]ReadProcessMemory[/c]读取 PE 头和 data 节，复用同一套锚点和连续记录扫描，直接报告三张内部表；也可以改写运行中的内置函数表，或在目标进程内执行表达式。
+
+[codebox=text file=remote]
+python tools\ahk_remote_attach.py --pid 1234 --filter Abs,MsgBox,AhkPath
+python tools\ahk_remote_attach.py --name AutoHotkey64.exe --redirect Abs Sin
+python tools\ahk_remote_attach.py --name AutoHotkey64.exe --eval "1 + 2 * 3"
+[/codebox]
+
+[color=#BF4000][b]6.2 AHK Hook API[/b][/color]
+
+[c]AttachRemoteByName("AutoHotkey64.exe")[/c]按映像名找到运行中的目标进程，用[c]OpenProcess[/c]打开，用[c]ReadProcessMemory[/c]读取 PE 头和 data 节，扫描锚点名和连续排序记录定位三张表，返回包含[c]image_base[/c]、[c]table_rva[/c]和条目的 Map。[c]AttachRemote(pid)[/c]是同一套扫描的 PID 形式。
+
+[c]RemoteRedirect(hook, "Abs", "Sin")[/c]以写权限重新打开目标，把目标函数指针写进源条目对应的[c]fn_ptr[/c]槽。[c]RemoteDeepRedirect(hook, "Abs", "Sin")[/c]再深一层：扫描目标堆里已经解析出来的[c]Func[/c]对象，改写它的[c]mBIF[/c]。这样像[c]B()[/c]直接调用[c]A()[/c]的函数也会跟着变化。
+
+[color=#BF4000][b]6.3 热键验证[/b][/color]
+
+远程改的是另一个进程的内存，验证时需要让目标自己把结果写出来。目标脚本[c]tests\remote_hook_resident_target.ahk[/c]保持常驻，[c]F7[/c]输出动态调用[c]%name%(1)[/c]，[c]F8[/c]输出全局变量[c]x[/c]；挂载脚本[c]tests\remote_hook_resident_demo.ahk[/c]每做一步 Hook 就向目标发送对应热键。
+
+[codebox=autohotkey file=remote-hook-attacher]
+#Include ahk_hack_single.ahk
+
+; Attacher：tests\remote_hook_resident_demo.ahk
+F1:: {
+    global hook
+    hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+}
+F2:: {
+    global hook
+    AhkMagic.RemoteRedirect(hook, "Abs", "Sin")
+    Send "{F7}"          ; 触发目标热键校验
+    Sleep 400
+}
+F3:: {
+    global hook
+    AhkMagic.RemoteEval(hook, "x := 1 + 2 * 3")
+    Send "{F8}"          ; 触发目标热键校验
+    Sleep 400
+}
+[/codebox]
+
+[codebox=autohotkey file=remote-resident-target]
+; 常驻目标：tests\remote_hook_resident_target.ahk
+#NoTrayIcon
+Persistent
+
+pidFile := A_Temp "\ahk_remote_attach_target.pid"
+outFile := A_Temp "\ahk_remote_resident.out"
+errFile := A_Temp "\ahk_remote_resident.err"
+try FileDelete(outFile)
+try FileDelete(errFile)
+FileAppend(DllCall("GetCurrentProcessId") "`n", pidFile)
+
+x := 0
+name := "Abs"
+
+F7:: {
+    global name
+    global outFile
+    try {
+        FileAppend("f7=" %name%(1) "`n", outFile)
+    } catch as e {
+        FileAppend("f7err=" e.Message "`n", outFile)
+    }
+}
+
+F8:: {
+    global x
+    global outFile
+    FileAppend("f8=" x "`n", outFile)
+}
+[/codebox]
+
+启动目标脚本，先按[c]F1[/c]挂载，再按[c]F2[/c]把[c]Abs[/c]重定向为[c]Sin[/c]。目标收到[c]F7[/c]后写出[c]0.8414709848078965[/c]（即[c]Sin(1)[/c]），原来是[c]1[/c]。按[c]F3[/c]远程执行[c]x := 1 + 2 * 3[/c]，目标收到[c]F8[/c]后写出[c]7[/c]。
+
+[color=#BF4000][b]6.4 RemoteEval[/b][/color]
+
+[c]RemoteEval(hook, expr)[/c]把内部定位器和表达式求值 blob 连同一个小型线程 stub 写进目标进程，用[c]CreateRemoteThread[/c]执行，再读回结果。[c]1 + 2 * 3[/c]、[c]2 * 3.5[/c]这类基础表达式已远程验证；字符串字面量和返回字符串的内置调用（如[c]SubStr[/c]、[c]Format[/c]）也能正确读回。
+
+目标进程不需要任何特殊代码：不需要[c]#Include[/c]、不需要导出指针、不需要回调，也不需要内嵌元数据。测试脚本里写 PID 文件只是测试编排用的，[c]tools\ahk_remote_attach.py --name AutoHotkey64.exe[/c]可以直接按映像名解析 PID。
+
+函数到函数的验证：[c]tests\remote_hook_function_target.ahk[/c]定义了[c]B_direct()[/c]（直接调用[c]Abs[/c]）和[c]B_dynamic()[/c]（动态调用[c]%name%[/c]）。[c]tests\remote_hook_function_demo.ahk[/c]深补丁[c]Abs -> Sin[/c]并触发两个热键，两个输出都变成[c]0.8414709848078965[/c]。
+
+[color=#BF4000][b]6.5 RemoteEvalScript[/b][/color]
+
+[c]RemoteEvalScript(hook, text)[/c]通过目标自己的脚本加载管线在目标里加载多行脚本。注入线程会在[c]PreparseExpressions[/c]前设置[c]g->CurrentFunc[/c]，所以函数和 class 定义都能正常工作。
+
+[codebox=autohotkey file=remote-eval-script]
+#Include ahk_hack_single.ahk
+
+hook := AhkMagic.AttachRemoteByName("AutoHotkey64.exe")
+
+script := "
+(
+add(a, b) {
+    return a + b
+}
+add(1, 2)
+)"
+MsgBox AhkMagic.RemoteEvalScript(hook, script)   ; 3
+[/codebox]
+
+[color=#BF4000][b]6.6 函数体替换与类验证[/b][/color]
+
+热键校验采用和[c]Abs -> Sin[/c]一样的地址替换。[c]tests\remote_hook_evalscript_target.ahk[/c]定义[c]B_add(x)[/c]直接调用[c]A(x)[/c]，[c]F9[/c]输出[c]B_add(1)[/c]；[c]tests\remote_hook_evalscript_demo.ahk[/c]在[c]F2[/c]加载[c]NewA[/c]，用[c]RemoteReplaceFuncBody("A", "NewA")[/c]替换[c]A[/c]的函数体地址，再发送[c]F9[/c]。
+
+[codebox=autohotkey file=remote-eval-script-target]
+; 常驻目标：tests\remote_hook_evalscript_target.ahk
+A(x) {
+    return 1
+}
+B_add(x) {
+    return A(x)
+}
+F9:: FileAppend("f9=" B_add(1) "`n", A_Temp "\ahk_remote_evalscript.out")
+[/codebox]
+
+[codebox=autohotkey file=remote-eval-script-attacher]
+#Include ahk_hack_single.ahk
+
+; Attacher：tests\remote_hook_evalscript_demo.ahk
+F2:: {
+    script := "
+    (
+    NewA(x) {
+        return 42
+    }
+    NewA(1)
+    )"
+    AhkMagic.RemoteEvalScript(hook, script)
+    AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
+    Send "{F9}"
+}
+F3:: {
+    classScript := "
+    (
+    class PointNew {
+        x := 0
+        y := 0
+    __New(x, y) {
+        this.x := x
+        this.y := y
+    }
+    }
+    PointNew(1, 2).y
+    )"
+    AhkMagic.RemoteEvalScript(hook, classScript)
+    MsgBox AhkMagic.RemoteEval(hook, "PointNew(1, 2).y") ; 2
+}
+[/codebox]
+
+[c]F2[/c]替换函数体后，目标收到[c]F9[/c]写出[c]after address replace A f9=42[/c]。[c]F3[/c]先把[c]PointNew[/c]类加载进目标，再由[c]RemoteEval[/c]在同一个目标里实例化并读取[c]PointNew(1, 2).y[/c]，返回[c]2[/c]。
+
+[codebox=text file=remote-eval-script-results]
+after address replace A f9=42
+after class eval=2
+[/codebox]
+
+[color=#BF4000][b]6.7 远程兼容矩阵[/b][/color]
+
+远程 Hook 现在由完整运行时矩阵覆盖。[c]tools/verify_all_runtimes.ps1[/c] 对本机所有 AutoHotkey 运行时执行九项测试，当前共 19 个构建，从 [c]2.0-beta.9[/c] 到 [c]2.1-alpha.30[/c]。19 个全部 9/9。远程 Hook 也在 Ahk2Exe 编译并用 UPX 压缩的目标上验证过：远程 eval 返回[c]7[/c]，远程赋值让[c]F8[/c]写出[c]7[/c]，深补丁让[c]F7[/c]从[c]1[/c]变成[c]0.8414709848078965[/c]。
+
+[codebox=text file=compat]
+powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1
+[/codebox]
+
+
+[b]7. 验证与兼容性[/b]
+
+[color=#BF4000][b]7.1 测试命令[/b][/color]
+
+[codebox=text file=tests]
+python -m unittest discover -s tests -p 'test_*.py' -v
+& D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
+& D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
+& D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
+& D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
+[/codebox]
+
+当前矩阵验证 19 个运行时：[c]2.0-beta.9/10/12/13/15[/c]、[c]2.0-rc.1/3[/c]、[c]2.0.0/2/3/4/26[/c]、[c]2.1-alpha.1/4/13/16/30[/c]，以及两个本机 [c]2.0-beta[/c] 开发副本。每个运行时都通过全部九项测试。
+
+[color=#BF4000][b]7.2 Ahk2Exe 与压缩[/b][/color]
+
+Ahk2Exe 打包同样验证过。编译出的 exe 内嵌的还是同一个 AutoHotkey 运行时，[c]Init[/c]、[c]EvalNative[/c]、[c]EvalScript[/c] 仍会扫描该模块并在进程内求值。打包时把[c]AutoHotkey64.exe[/c]作为[c]/base[/c]传给 Ahk2Exe 即可。[c]EvalSubprocess[/c]也能正常工作：普通 v2 运行时支持[c]/script[/c]，可以让编译后的 exe 重新进入解释器模式，再运行临时脚本。
+
+UPX 和 MPRESS 压缩也验证过。压缩后的 exe 会改写解释器节名，扫描器会退回到基于内容的节分类，仍然能找到三张表；[c]EvalNative[/c]、[c]EvalScript[/c]、[c]EvalSubprocess[/c]全部通过。
+
+[color=#BF4000][b]7.3 AhkLive 与 TraceFunction[/b][/color]
+
+[c]lib/ahk_live/[/c] 把远程原语变成产品层：会话、清单、Watch、热重载、Trace、观测、故障注入、CLI、MCP 与 GUI。
+
+[codebox=autohotkey file=ahklive]
+#Include lib\ahk_live\init.ahk
+
+session := AhkLiveSession()
+if !session.Attach(pid).ok
+    throw Error("attach failed")
+
+snap := session.Snapshot(Map(
+    "add", "Add(2, 3)",
+    "mul", "Mul(4)"
+))
+
+patch := session.BeginPatch()
+ps := patch.value
+ps.Replace("Mul", "NewMul")
+ps.Rollback()
+
+session.Close()
+[/codebox]
+
+[c]TraceFunction[/c] 不再重命名函数。它克隆目标 [c]UserFunc[/c]，创建 [c]VAR_CONSTANT[/c] 别名，注入调用克隆体的 wrapper，把 wrapper 的参数 [c]Var[/c] 别名回原函数参数，再交换 [c]mJumpToLine[/c]。这样 [c]mFuncs[/c] 与 [c]VarList[/c] 始终保持排序，反复注入脚本也不会破坏状态。
+
+[codebox=text file=compiled]
+# 普通编译
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe.exe /base D:\...\v2.0.26\AutoHotkey64.exe /silent verbose
+& build\compiled_eval_probe.exe
+
+# UPX 压缩
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_upx.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 2 /silent verbose
+& build\compiled_eval_probe_upx.exe
+
+# MPRESS 压缩
+& D:\...\Compiler2\Ahk2Exe.exe /in tests\compiled_eval_probe.ahk /out build\compiled_eval_probe_mpress.exe /base D:\...\v2.1-alpha.30\AutoHotkey64.exe /compress 1 /silent verbose
+& build\compiled_eval_probe_mpress.exe
+[/codebox]
+
+
+[b]8. 安全性[/b]
+
+[color=#BF4000]这个库会在你的进程里分配可执行内存、执行机器码，并直接读写解释器内部结构。请按逆向工程研究工具的标准来使用。[/color]
+
+[c]Eval 安全吗？不安全。[/c][c]Eval[/c]、[c]EvalNative[/c]、[c]EvalScript[/c]会在当前进程以宿主脚本相同的权限执行任意代码，不是沙箱。进程内路径还会伪造解释器对象，布局错误或状态保存失误可能直接损坏内存，而不是抛出一个干净的异常。远程 API 等价于在另一个 AutoHotkey 进程里执行同样的操作。
+
+操作分三类：
+
+- 只读：[c]Init / Summary / BifRva / BifAddr / ScanExports / AttachRemote[/c]，不修改进程状态，主要风险在兼容性；
+- 修改：[c]PatchBif / RestoreBif / RemoteRedirect / RemoteDeepRedirect / RemoteReplaceFuncBody[/c]，直接改内存里的内部结构，写错会崩溃。开发中实际遇到过[c]0xC0000374[/c]（堆损坏）；
+- 执行：[c]Eval / EvalNative / EvalScript / RemoteEval / RemoteEvalScript[/c]，等价于运行任意脚本。
+
+需要留意的风险：
+
+- 可执行内存分配和内部函数调用可能被杀毒软件或 EDR 标记；
+- 全部函数入口、全局量和布局偏移均在运行时定位，没有按版本表；仍需在目标 exe 上跑测试确认；
+- [c]PatchBif[/c]和远程重定向用完必须还原，不要长期保留；
+- 不要 eval 未受信任的输入；
+- 32 位版本会显式报错。
+
+建议在虚拟机或隔离环境里验证，备份被分析的 exe 并记录 SHA256。这个库不用于绕过授权、DRM 或访问控制。
+
+
+[b]9. 更新记录[/b]
+
+2026-08-11：
+
+- 初始版本：运行时扫描库、机器码生成与单文件核心；
+- 内置函数重定向：[c]PatchBif[/c]表指针替换与[c]PatchBifObject[/c]深替换；
+- 新增[c]EvalNative[/c]，基于解释器自身的[c]ExpressionToPostfix[/c]/[c]ExpandExpression[/c]管线实现同进程表达式求值，支持字面量、运算符、全局变量与函数调用；
+- 新增[c]EvalScript[/c]，用内存[c]TextStream[/c]加载多行脚本，函数和类定义在进程内生效；
+- 修复可选集成层依赖第三方结构的硬编码偏移，改用运行时布局发现与原生填充接口；
+- 重写 README，博客改为只引用单文件核心。
+
+2026-08-12：
+
+- [c]EvalScript[/c]全部入口与布局改为运行时发现：一次性探针获取[c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c]/[c]mJumpLine[/c]与解析器状态锚点，删除按版本表；
+- 双语 Pages 站点上线，加入可伸缩侧栏与代码高亮；
+- 在四个版本上用 Ahk2Exe 编译后验证[c]Init[/c]、[c]EvalNative[/c]、[c]EvalScript[/c]仍然可用；
+- [c]EvalSubprocess[/c]在编译版里通过[c]/script[/c]重新进入解释器模式工作；
+- 增加基于内容的节分类回退，UPX/MPRESS 压缩后的 exe 仍然可用；
+- 新增[c]tools\ahk_remote_attach.py[/c]和[c]AhkMagic.AttachRemote()[/c]/[c]AttachRemoteByName()[/c]/[c]RemoteRedirect()[/c]，按 PID 或映像名挂到运行中的 AutoHotkey 进程；
+- 新增[c]RemoteDeepRedirect[/c]，改写已解析[c]Func[/c]对象，让直接调用链跟着变化；
+- 新增常驻热键验证：目标[c]F7/F8[/c]，attacher 每步触发并读回结果；
+- 新增[c]RemoteEval[/c]，注入线程在目标进程内求值；
+- 新增[c]RemoteEvalScript[/c]，先支持函数定义，再支持 class 定义（注入线程在[c]PreparseExpressions[/c]前设置[c]g->CurrentFunc[/c]）；
+- 新增[c]RemoteReplaceFuncBody[/c]，替换函数体地址，热键验证从[c]1[/c]变成[c]42[/c]；
+- 新增[c]tools\verify_remote_compat.ps1[/c]，远程兼容矩阵解释器 x 解释器 16/16、UPX 目标 x 解释器 16/16 通过；
+- 修复[c]EvalNative[/c]对字符串内花括号的解析：字符串字面量以 QSTRING deref 交给解释器，不再误判为对象字面量；远程字符串结果改为按 UTF-16 字符边界读取；
+- 同步博客附录中的单文件源码，与仓库内[c]ahk_hack_single.ahk[/c]保持一致；
+- 重排博客章节，拆分重复示例并补齐更新记录；Pages 远程章节独立成章。
+
+2026-08-13：
+
+- 重做[c]RemoteEvalScript[/c]，让[c]Line[/c]、[c]ArgStruct[/c]、token 与[c]DerefType[/c]偏移都从存活内存发现；
+- 进程内 EvalScript 布局发现改用同一套结构验证器；
+- 修复[c]AhkLiveObservability.WatchWhen[/c]，让 watcher 有真正的[c]Stop()[/c]；
+- 基于[c]UserFunc[/c]克隆与共享参数[c]Var[/c]重写[c]TraceFunction[/c]；
+- 新增[c]tools/verify_all_runtimes.ps1[/c]与 19 运行时九项矩阵；
+- 把 Pages 与 Blog 拆开：Pages 记录分析与提取流程，Blog 保留实践示例与完整单文件源码。
+
+
+[b]10. 已知限制[/b]
+
+- 机器码块只支持 x64，32 位会显式报错；
+- [c]EvalNative()[/c]通过解释器内部的同进程表达式管线执行，已验证的四个版本上支持字面量、运算符、全局变量与函数调用。[c]Eval()[/c]在脚本模式和普通运行时编译出的 exe 里都能回退到[c]EvalSubprocess()[/c]；如果用[c]AUTOHOTKEYSC[/c]独立运行时作 base，则不支持[c]/script[/c]，需要单独验证；
+- UPX/MPRESS 压缩已验证；第三方壳、VM 保护或真正的脚本加密仍需逐个目标验证；
+- [c]PatchBif()[/c]和[c]RemoteRedirect()[/c]对已经缓存的函数对象不追溯生效，需要[c]PatchBifObject()[/c]/[c]RemoteDeepRedirect()[/c]；
+- [c]RemoteReplaceFuncBody()[/c]要求源函数和目标函数都已加载进目标进程；
+- [c]TraceFunction[/c]目前要求至少两个必选参数，并拒绝可选/ByRef 参数；
+
+
+[b]11. 写在后面[/b]
+
+项目最后落在扫描上：把 exe 当作程序自身可以读取的结构化文档，先扫描出内部地图，再在地图上做实验。同进程 eval、远程 Hook、脚本加载与函数 Trace 现在已在 19 个验证构建上跑通；后续方向包括自动生成 DLL 绑定、更深的对象模型发现，以及对恶意加壳构建的更强处理。
+
+
+
+[b]12. 附录：单文件源码[/b]
+
+完整核心源码嵌入在下面。仓库中的 [c]ahk_hack_single.ahk[/c] 是同一份文件，
+本段由 [c]tools/build_blog.py[/c] 自动生成。
 
 [codebox=autohotkey file=ahk_hack_single]
 ; ahk-hack standalone core.
@@ -3489,11 +3840,3 @@ MC_MEM_SCRIPT_X64 := "5657534883ec204c89c64989ca488b4c24684d85d20f94c04885d2410f
 MC_INPROC_EVAL_X64 := "4157415641554154565755534881ec980000004c89cf4c89c34989cf4c8ba42408010000488b8c240001000048c78424800000000000400048c7442460000000004d85ff0f94c04885d2410f94c04108c04885db0f94c04d85c9410f94c14108c14508c14885c90f94c04408c84d85e4410f94c04883bc242801000000410f94c14508c14108c14883bc243801000000410f94c04883bc244001000000410f94c2b8010000004508c24508ca41f6c2010f859b060000488b8424200100004c8bac24180100004c8d87000100004885c04889c6490f44f04c8db7800100004c8d8f000300004c894c24704c898c24900000004d85ed4c0f44ef756e0f57c00f11070f1147100f1147200f1147300f1147400f1147500f1147600f1147700f1187800000000f1187900000000f1187a00000000f1187b00000000f1187c00000000f1187d00000000f1187e00000000f1187f0000000c6070341c645010141c7450401000000498975080f57c0410f1106410f114610410f114620410f114630410f114640410f114650410f114660410f1146706683390074164531c90f1f40006642837c4902004d8d490175f3eb034531c94885c048895424780f85830200004c897c245048895c2468488d870008100048894424480f57c0410f1100410f114010410f114020410f114030410f114040410f114050410f114060410f11407041c60000c646010144894e0448894e0848b80001000000010000488946204531c04989cb4d89d94531d2660f1f440000470fb73c114585ff0f84dd0100004183ff27744c4183ff227446418d479f6683f81a0f82f8000000664183ff5f0f84ed000000418d47a56683f8e50f87df000000410fb7c73d800000000f83d00000004983c202ebaa662e0f1f8400000000004f8d1c114983c302430fb74411026685c0400f94c5664439f80f94c34008eb75396666666666662e0f1f8400000000006683f860750c6641837b020074044983c302410fb743024983c3026685c0400f94c57406664439f875d64084ed0f85280100004181f8fe00000077444489c0488d04404b8d1c114883c3024c89c24c8b44244849891cc041c644c008016641c744c01003014c89db4c29cb4c29d34883c3fe48d1eb41895cc0144989d041ffc04983c302e9dbfeffff0f1f80000000004c89c24b8d041131ed4989c3eb0d6690450fb77b024983c302ffc5418d5f9f6683fb1a72eb418d5fbf6683fb1a0f92c3664183ff5f410f94c04108d875d2450fb7c74181f880000000410f92c0418d5fc66683fbf60f92c34184d874b34839c874254889d381fbff0000000f92c06643837c11fe2e410f95c04184c04989d00f844ffeffffeb104989d04181f8fe0000000f873dfeffff4489c0488d04404d01d14c8b4424484d890cc049c744c008000000006641c744c010000041896cc0144989d041ffc0e909feffff4585c0488b5c24684c8b7c2450741941c1e003438d0440488b4c244848c704010000000048894e1049c70424010000000f57c0410f11442408488b0348894424484c892b4c8d4424604c89e94889f241ffd789c5488b4c24604885c97407ff94244001000083fd0175264883bc2410010000000f84e80100004c897c2450488bac24480100004c8b7e18418b4710eb2d488b44244848890341c7042402000000e98f020000488b4008498907660f1f840000000000418b47284983c71839e8745083f80475ef41837f080277e8498b074885c074e08078100774ca448b4014488b10488b8c242801000041b903010000ff9424380100004885c075ad488b44244848890341c7042405000000e923020000488b8424300100004885c00f94c1483b4424500f94c208ca75114c89e94889f2ffd083f8010f854d010000488b4424704889842488000000c78790010000ffffffff48c78788010000ffffffff4889879801000048c787a001000000000000488d8700033f004889442438488d8424800000004889442430488d8424900000004889442428488d842488000000488944242048c744244000003f004c8d44245c4c89e931d24d89f1ff542478488b4c244848890b4885c00f84ae00000041c70424000000008b8f9001000041894c2404488b8f8001000049894c240849894c2410498d4c24204889ca4c29f24883fa0f0f8797000000ba05000000660f1f840000000000450fb64416fb44884411fb450fb64416fc44884411fc450fb64416fd44884411fd450fb64416fe44884411fe450fb64416ff44884411ff450fb60416448804114883c2064883fa3575b6eb56488b44244848890348b8000000006300000049890424e9b800000041c7042403000000e9ab000000488b44244848890341c7042406000000e996000000410f10060f1101410f1046100f114110410f1046200f114120418b4c240483f9050f8785000000ba270000000fa3ca737b488b461849894424504885c0744b31c0660f1f440000488b4e180fb60c0141884c0458488b4e180fb64c010141884c0459488b4e180fb64c010241884c045a488b4e180fb64c010341884c045b4883c004483d2001000075bd8b44245c41898424c800000031c04881c4980000005b5d5f5e415c415d415e415fc341c7442404000000004989442410e972ffffff"
 
 [/codebox]
-
-[b]11. 链接[/b]
-
-- [url=https://github.com/MonoEven/ahk-hack-library]仓库[/url]
-- [url=https://monoeven.github.io/ahk-hack-library/]技术 Pages[/url]
-- [url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode]机器码 C 源码[/url]
-- [url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/ahk_live]AhkLive 层[/url]
-- [url=https://github.com/MonoEven/ahk-hack-library/tree/master/tests]测试[/url]

@@ -1,74 +1,91 @@
-[b]1. 目标与范围[/b]
+[b]1. 目标与方法[/b]
 
-这篇文章记录 [c]ahk-hack[/c] 的完整分析与提取流程。目标是让运行中的
-[c]AutoHotkey64.exe[/c] 暴露内部解释器结构，并在此基础上实现表达式求值、
-内存脚本加载、远程 Hook 和在线函数 Trace。
+目标是把 [c]AutoHotkey64.exe[/c] 当作活体解释器分析，并提取足够多的结构来实现表达式求值、内存脚本加载、远程 Hook 和在线函数 Trace。方法是可重复的循环：先读源码找出候选字段，再检查进程内存确认真实偏移，把稳定逻辑编码成位置无关机器码，最后用结构不变量验证每个结果。
 
-这不是单个脚本，而是一个循环：
-
-- 阅读 AutoHotkey 源码形成假设；
-- 检查进程内存确认偏移；
-- 把稳定部分编码为位置无关机器码；
-- 用结构不变量验证每个指针；
-- 在大量解释器版本上重复验证。
+本页记录的就是这个循环。它不是 API 参考，而是提取流程。
 
 [b]2. PE 解析与节区映射[/b]
 
-第一步是映射已加载镜像。AutoHotkey v2 x64 使用标准 PE32+ 布局：
+每个 x64 AutoHotkey v2 可执行文件都以 [c]MZ[/c] DOS 头开始。PE 签名位于 [c]e_lfanew[/c] 指向的偏移，可选头使用 PE32+ 魔数 [c]0x20B[/c]。节表紧随可选头。
 
 [codebox=autohotkey file=pe-map]
-peOff := NumGet(base, 0x3C, "UInt")
-numSections := NumGet(base + peOff + 6, "UShort")
+peOff   := NumGet(base, 0x3C, "UInt")
+numSec  := NumGet(base + peOff + 6, "UShort")
 optSize := NumGet(base + peOff + 20, "UShort")
-secTable := base + peOff + 24 + optSize
+secTab  := base + peOff + 24 + optSize
+
+loop numSec {
+    off := (A_Index - 1) * 40
+    name := StrGet(hdr.Ptr + off, 8, "UTF-8")
+    vsize := NumGet(hdr + off + 8, "UInt")
+    va := NumGet(hdr + off + 12, "UInt")
+    rawSize := NumGet(hdr + off + 16, "UInt")
+}
 [/codebox]
 
-扫描器按名称分类节区。[c].text[/c] 是可执行代码，[c].rdata[/c] 保存只读
-字符串，[c].data[/c] 保存可写解释器全局量。
+扫描器把每个节区保存为 [c]{rva, size, ptr}[/c]，并按名称分类。三个节区最重要：
+
+| 节区 | 作用 | 不变量 |
+| --- | --- | --- |
+| [c].text[/c] | 可执行代码 | 函数指针必须落在这里 |
+| [c].rdata[/c] | 只读字符串 | UTF-16 名字通常在这里 |
+| [c].data[/c] | 可写全局量 | 解释器表在这里 |
+
+对于加壳构建，节名不可靠。扫描器会退回到基于内容的分类：非 [c].rsrc[/c] 的代码样节区当作可执行节区，可读的非执行节区当作数据/字符串存储。
 
 [b]3. 解释器表发现[/b]
 
-解释器在镜像中维护三张表：
+解释器在镜像中维护三张表。它们的 x64 记录步长是稳定的：
 
-- [c]g_BIF[/c]：脚本可见内置函数，如 [c]Abs[/c]、[c]Sin[/c]；
-- [c]sMdFunc[/c]：带类型签名的原生函数，如 [c]MsgBox[/c]；
-- [c]g_BIV_A[/c]：以 [c]A_[/c] 开头的内置变量。
+| 表 | 内容 | 记录步长 |
+| --- | --- | --- |
+| [c]g_BIF[/c] | 脚本可见内置函数，如 [c]Abs[/c]、[c]Sin[/c] | [c]0x20[/c] |
+| [c]sMdFunc[/c] | 带类型签名的原生函数，如 [c]MsgBox[/c] | [c]0x28[/c] |
+| [c]g_BIV_A[/c] | 以 [c]A_[/c] 开头的内置变量 | [c]0x18[/c] |
 
-扫描器不信任 RVA 表。它按指针对齐槽位扫描，只有同时满足以下条件才接受
-记录：
+扫描器不硬编码地址。它按指针对齐槽位扫描，只有同时满足以下条件才接受记录：
 
-- 名字指针指向可打印 UTF-16 文本；
-- 函数指针落在 [c].text[/c]；
+- 第一个 qword 解析为可打印 UTF-16 字符串；
+- 第二个 qword 落在 [c].text[/c]；
 - 相邻记录按名字排序；
 - 存在 [c]Abs[/c]、[c]BlockInput[/c] 或 [c]AhkPath[/c] 等锚点。
 
-最长的合法连续区就是目标表。这套逻辑可以在 2.0-beta 到 2.1-alpha 之间
-工作，不需要按版本维护偏移表。
+最长的合法连续区成为目标表。同一算法以 x64 机器码运行，因此扫描速度与逻辑不依赖 AHK 版本。
 
-[b]4. 源码考古[/b]
+[b]4. 源码到内存的验证[/b]
 
-源码树提供名字层面的真相，但不提供最终偏移。编译器布局、调试器字段和构建
-选项都会移动成员。因此流程是先读源码学习要找什么，再在内存里验证。
+源码提供名字与意图，不提供最终偏移。编译器、构建选项和调试器字段都会移动成员。因此流程先用源码形成假设，再用内存确认。
 
-例如 [c]script.h[/c] 中的 [c]UserFunc[/c] 拥有：
+对于 [c]script.h[/c] 中的 [c]UserFunc[/c]，源码声明了：
 
-- [c]mJumpToLine[/c]：函数体第一行；
-- [c]mParam[/c]：正式参数数组；
-- [c]mVars[/c]：排序后的局部变量列表。
-
-内存探针确认了实际 x64 偏移：
-
-[codebox=text file=func-layout]
-2.1-alpha.30: mName=0x28, mJumpToLine=0x48, mParam=0x50
-2.0.26:       mName=0x20, mJumpToLine=0x40, mParam=0x48
+[codebox=cpp file=userfunc-source]
+class UserFunc : public Func
+{
+public:
+    int mInstances = 0;
+    Line *mJumpToLine = nullptr;
+    FuncParam *mParam = nullptr;
+    Object *mClass = nullptr;
+    ...
+    VarList mVars {};
+    VarList mStaticVars {};
+};
 [/codebox]
 
-这些偏移在不同版本间不同，所以库在运行时发现它们，而不是内嵌一张表。
+内存探针在两个代表性构建上确认了实际 x64 布局：
 
-[b]5. 机器码提取[/b]
+| 字段 | v2.1-alpha.30 | v2.0.26 |
+| --- | --- | --- |
+| [c]mName[/c] | [c]0x28[/c] | [c]0x20[/c] |
+| [c]mJumpToLine[/c] | [c]0x48[/c] | [c]0x40[/c] |
+| [c]mParam[/c] | [c]0x50[/c] | [c]0x48[/c] |
+| [c]mVars[/c] | [c]0x80[/c] | [c]0x70[/c] |
 
-稳定的扫描逻辑写在 [c]lib/mcode/[/c] 下的 C 源码中。构建使用 clang 生成
-无 CRT 的 COFF 对象：
+偏移不同，所以库在运行时发现它们，而不是维护一张版本表。
+
+[b]5. 机器码提取流水线[/b]
+
+稳定扫描器写在 [c]lib/mcode/[/c] 下的 C 源码中。构建使用 clang 生成无 CRT、位置无关的 COFF 对象：
 
 [codebox=text file=clang-build]
 clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
@@ -76,88 +93,233 @@ clang -c -O2 -target x86_64-pc-windows-msvc -ffreestanding \
   -fno-asynchronous-unwind-tables -fno-jump-tables scanner.c
 [/codebox]
 
-[c]tools/build_mcode.py[/c] 提取 [c].text[/c]，检查重定位记录，并拒绝任何
-引用逃出代码块的内容。最终十六进制字符串被嵌入
-[c]ahk_hack_single.ahk[/c]。
+[c]tools/build_mcode.py[/c] 执行四步检查：
 
-[b]6. 进程内表达式求值[/b]
+- 从 COFF 对象提取 [c].text[/c]；
+- 解码每条重定位记录；
+- 只有目标仍在 [c].text[/c] 内的 [c]IMAGE_REL_AMD64_REL32[/c] 才被接受；
+- 任何引用逃出代码块的内容都会被拒绝。
 
-AutoHotkey 把表达式编译成后缀 [c]ExprTokenType[/c] 数组。[c]EvalNative()[/c]
-构造临时 [c]Line[/c]/[c]ArgStruct[/c]，调用解释器自己的
-[c]ExpressionToPostfix[/c] 与 [c]ExpandExpression[/c]，再读取结果。定位器从
-机器码引用中发现 [c]gScript[/c]、[c]FindOrAddVar[/c]、
-[c]FinalizeExpression[/c] 与 [c]SYM_INVALID[/c]。
+最终十六进制字符串嵌入 [c]ahk_hack_single.ahk[/c]。[c]MCode()[/c] 把字符串解码为 [c]Buffer[/c]，修改为可执行保护，并返回给 [c]DllCall[/c]。
+
+[b]6. EvalNative：表达式求值分析[/b]
+
+AutoHotkey 不会直接求值表达式字符串。脚本加载时，[c]Line::ExpressionToPostfix[/c] 把表达式编译成 [c]ExprTokenType[/c] 后缀数组，[c]Line::ExpandExpression[/c] 之后再执行该数组。
+
+[c]EvalNative()[/c] 构造解析器本来会创建的临时 [c]Line[/c] 和 [c]ArgStruct[/c]，然后调用这两个函数。因此它复用了解释器自己的语法与变量解析。
+
+内部定位器机器码发现以下符号：
+
+| 符号 | 来源 | 发现方式 |
+| --- | --- | --- |
+| [c]ExpressionToPostfix[/c] | 错误串 [c]"Missing operand."[/c] | RIP 相对引用 + prologue 回退 |
+| [c]ExpandExpression[/c] | 错误串 [c]"Error evaluating expression."[/c] | RIP 相对引用 + prologue 回退 |
+| [c]gScript[/c] | 最频繁的 [c]lea rcx,[rip+disp][/c] 目标 | 频率过滤 |
+| [c]FindOrAddVar[/c] | 六参数 prologue | 签名匹配 |
+| [c]SYM_INVALID[/c] | 后缀终止符 | 求值器内立即数 |
+
+求值器使用的 token 布局：
+
+| 字段 | 偏移 | 类型 |
+| --- | --- | --- |
+| value | [c]0x00[/c] | 指针/int64/double 联合 |
+| marker/usage | [c]0x08[/c] | 指针或 [c]VarRefUsageType[/c] |
+| symbol | [c]0x10[/c] | 32 位 [c]SymbolType[/c] |
+| stride | [c]0x18[/c] | 结构总大小 |
 
 [codebox=autohotkey file=evalnative]
 #Include ahk_hack_single.ahk
 AhkMagic.Init()
 
 MsgBox AhkMagic.EvalNative("1 + 2 * 3")           ; 7
+MsgBox AhkMagic.EvalNative("2 * 3.5")             ; 7.0
 MsgBox AhkMagic.EvalNative("Abs(-5)")             ; 5
-MsgBox AhkMagic.EvalNative("Point(1, 2).y")       ; 2，类已加载
+MsgBox AhkMagic.EvalNative("SubStr(`"abc`", 2)")  ; "bc"
+
+myVar := 42
+MsgBox AhkMagic.EvalNative("myVar + 1")           ; 43
 [/codebox]
 
-[b]7. 内存脚本加载[/b]
+[b]7. EvalScript：解析器与内存加载[/b]
 
-表达式求值无法定义函数或类。[c]EvalScript()[/c] 通过内存 [c]TextStream[/c]
-把多行文本喂给 [c]LoadIncludedFile(TextStream*)[/c]。解析器入口、[c]g[/c]、
-[c]gScript[/c] 与解析器状态偏移都在运行时发现。
+表达式求值无法定义函数或类。[c]EvalScript()[/c] 通过内存 [c]TextStream[/c] 把多行文本喂给解释器的 include 管线。
 
-加载前保存脚本状态，并在 [c]finally[/c] 中恢复：
+相关管线：
 
-- 待处理的 parent/related 行；
-- 待处理的参数初始化器；
-- 当前模块；
-- 表达式函数索引；
-- class 对象数量。
+[codebox=cpp file=load-include]
+ResultType Script::LoadIncludedFile(TextStream *fp)
+{
+    int source_file_index = mCurrFileIndex;
+    bool blocks_previously_open = mLineParent || mClassObjectCount;
+    auto module_previously_open = mCurrentModule;
+    bool caller_backcompatmode = mBackCompatMode;
+    ...
+}
+[/codebox]
+
+加载前，库保存并在之后恢复：
+
+- [c]mOpenBlock[/c] / [c]mLineParent[/c]；
+- [c]mPendingRelatedLine[/c]；
+- [c]mLastParamInitializer[/c]；
+- [c]mPendingHotkey[/c]；
+- [c]mExprFuncIndex[/c]；
+- [c]mNextLineIsFunctionBody[/c]；
+- [c]mIgnoreNextBlockBegin[/c]；
+- [c]mBackCompatMode[/c]；
+- [c]mClassObjectCount[/c]；
+- [c]mCurrentModule[/c] 与 [c]mLastModule[/c]。
+
+解析器状态锚点从 [c]LoadIncludedFile[/c] prologue 中读取：
+
+- [c]q[/c]：指向 [c]mOpenBlock[/c]/[c]mLineParent[/c] 的偏移；
+- [c]d[/c]：指向 [c]mClassObjectCount[/c] 的偏移。
+
+[c]TextStream[/c] 同时填充两种可能的 [c]mData[/c] 区域，因此同一对象可用于 2.0 与 2.1 布局。
 
 [b]8. 远程内省[/b]
 
-[c]AttachRemote(pid)[/c] 打开目标进程，读取 PE 镜像与解释器表，并返回
-hook。[c]RemoteEval()[/c] 注入定位器/求值线程；[c]RemoteEvalScript()[/c]
-通过目标自己的解析器加载脚本文本；[c]RemoteReplaceFuncBody()[/c] 交换
-[c]mJumpToLine[/c]，让已有调用方执行新函数体。
+[c]AttachRemote(pid)[/c] 使用 [c]OpenProcess[/c] 打开目标，读取 PE 镜像，扫描解释器表，并返回 hook map。
+
+远程求值注入线程 stub、定位器和求值器 blob：
+
+| 步骤 | 操作 |
+| --- | --- |
+| 1 | 用 [c]VirtualAllocEx[/c] 分配 scratch 块 |
+| 2 | 写入 stub、定位器、求值器、表达式、输出缓冲 |
+| 3 | 用 [c]CreateRemoteThread[/c] 创建远程线程 |
+| 4 | 等待并读取结果缓冲 |
+| 5 | 释放 scratch 块 |
+
+[c]RemoteEvalScript()[/c] 使用目标自己的 [c]LoadIncludedFile[/c] 与 [c]PreparseExpressions[/c]。注入线程会在 preparse 前设置 [c]g->CurrentFunc[/c]，因此 class 方法与 [c]Super[/c] 能正确解析。
+
+[codebox=autohotkey file=remote-eval]
+hook := AhkMagic.AttachRemote(pid)
+MsgBox AhkMagic.RemoteEval(hook, "1 + 2 * 3")     ; 7
+
+script := "
+(
+rhkAdd(a, b) {
+    return a + b
+}
+rhkAdd(1, 2)
+)"
+MsgBox AhkMagic.RemoteEvalScript(hook, script)    ; 3
+[/codebox]
+
+函数体替换交换 [c]mJumpToLine[/c]：
+
+[codebox=autohotkey file=remote-replace]
+AhkMagic.RemoteEvalScript(hook, "
+(
+NewA() {
+    return 42
+}
+NewA()
+)")
+AhkMagic.RemoteReplaceFuncBody(hook, "A", "NewA")
+Send("{F9}")
+[/codebox]
+
+目标开始输出 [c]A()=42[/c]，而不是 [c]A()=1[/c]。
 
 [b]9. 动态偏移发现[/b]
 
-远程布局扫描器从存活内存验证 [c]mFuncs[/c]、[c]mFuncsCount[/c]、
-[c]mJumpToLine[/c]、函数名字段、解析器锚点、[c]Line[/c]、[c]ArgStruct[/c]、
-token 与 [c]DerefType[/c] 偏移。它优先使用结构不变量：
+远程布局扫描器从存活内存推导 [c]mFuncs[/c]、[c]mFuncsCount[/c]、函数名字段与 [c]mJumpToLine[/c]：
 
-- [c]Line[/c] 包含指向所属 [c]Func[/c] 的回引用；
-- [c]ArgStruct[/c] 包含后缀 token 数组；
-- token 数组以发现的 [c]SYM_INVALID[/c] 终止；
-- [c]DerefType[/c] 在类型字节前有两个指针字段。
+- 候选 array/count 对通过读取每个 [c]Func[/c] 指针验证；
+- [c]mName[/c] 是指向合法标识符字符串的指针；
+- [c]mJumpToLine[/c] 指向包含回指所属 [c]Func[/c] 的 [c]Line[/c]；
+- 回引用槽位在普通函数之间保持一致。
 
-[b]10. TraceFunction 克隆实验[/b]
+结构验证器随后发现：
 
-Trace 功能暴露了一个深层问题：重命名函数会破坏 [c]mFuncs[/c] 与
-[c]VarList[/c] 的排序。稳定修复是克隆 [c]UserFunc[/c]，创建
-[c]VAR_CONSTANT[/c] 别名，注入 wrapper，并把 wrapper 的参数 [c]Var[/c]
-别名回原函数的参数。[c]UserFunc::Call[/c] 通过 [c]mParam[i].var[/c] 写入，
-因此共享同一组 [c]Var[/c] 对象可以让原函数体与 wrapper 使用一致的参数值。
+| 结构 | 验证字段 |
+| --- | --- |
+| [c]Line[/c] | action、argc、arg 指针、attribute、next |
+| [c]ArgStruct[/c] | is_expression、postfix 指针、deref 指针 |
+| [c]ExprTokenType[/c] | stride、symbol 偏移、usage 偏移、value 偏移 |
+| [c]DerefType[/c] | marker、var、type、length |
 
-[b]11. 验证[/b]
+Token 数组通过走到 [c]SYM_INVALID[/c] 并在终止符前要求一个 [c]SYM_VAR[/c] token 来验证。[c]DerefType[/c] 从运行进程中已有的 [c]ArgStruct.deref[/c] 数组读取。
 
-[c]tools/verify_all_runtimes.ps1[/c] 对本机所有 AutoHotkey 运行时运行九项
-矩阵。当前矩阵覆盖：
+[b]10. TraceFunction：克隆而不是重命名[/b]
 
-- [c]2.0-beta.9[/c]、[c]beta.10[/c]、[c]beta.12[/c]、[c]beta.13[/c]、
-  [c]beta.15[/c]；
-- [c]2.0-rc.1[/c]、[c]rc.3[/c]；
-- [c]2.0.0[/c]、[c]2.0.2[/c]、[c]2.0.3[/c]、[c]2.0.4[/c]、
-  [c]2.0.26[/c]；
-- [c]2.1-alpha.1[/c]、[c]alpha.4[/c]、[c]alpha.13[/c]、
-  [c]alpha.16[/c]、[c]alpha.30[/c]；
-- 两个本机 [c]2.0-beta[/c] 开发副本。
+函数 Trace 比函数替换更难。最初实现重命名目标函数并注入 wrapper，结果失败，因为：
 
-全部 19 个运行时都通过全部 9 项测试。
+- 函数名同时存在于 [c]Func.mName[/c] 与全局 [c]Var.mName[/c]；
+- [c]mFuncs[/c] 与 [c]VarList[/c] 是排序数组；
+- 只改一边会破坏二分查找；
+- 只替换函数体不会重新绑定参数 [c]Var[/c] 对象。
+
+稳定修复来自阅读 [c]UserFunc::Call[/c]：
+
+[codebox=cpp file=userfunc-call]
+bool UserFunc::Call(ResultToken &aResultToken, ExprTokenType *aParam[], int aParamCount)
+{
+    ...
+    for (j = 0; j < mParamCount; ++j)
+    {
+        FuncParam &this_formal_param = mParam[j];
+        ...
+    }
+}
+[/codebox]
+
+调用路径通过 [c]mParam[i].var[/c] 写入参数。因此两个函数对象可以共享同一组参数 [c]Var[/c]，两个函数体都能看到相同值。
+
+最终设计：
+
+- 克隆 [c]UserFunc[/c] 对象；
+- 为克隆体创建 [c]VAR_CONSTANT[/c] 全局别名；
+- 注入调用克隆体的 wrapper；
+- 把 wrapper 的参数 [c]Var[/c] 别名回原函数参数；
+- 替换原函数体指针；
+- Untrace 时恢复原 [c]mJumpToLine[/c]。
+
+Wrapper 写入目标端全局字符串，因此 [c]RemoteEval[/c] 可以读取 Trace 日志，而不依赖求值线程内的文件 I/O。
+
+[b]11. 验证矩阵[/b]
+
+[c]tools/verify_all_runtimes.ps1[/c] 对本机每个运行时执行九项测试：
+
+| 测试 | 覆盖 |
+| --- | --- |
+| [c]ahk_live_cross_smoke[/c] | attach、快照、清单、替换、Watch |
+| [c]ahk_live_test[/c] | 完整 Trace/替换路径 |
+| [c]ahk_live_product_test[/c] | 会话与补丁回滚 |
+| [c]ahk_live_six_test[/c] | 观测、故障、桌面、取证、代理、CSV |
+| [c]ahk_live_benchmark[/c] | eval/快照/清单耗时 |
+| [c]remote_hook_test[/c] | 远程求值、脚本、class、函数替换 |
+| [c]evalscript_inproc[/c] | 进程内脚本加载 |
+| [c]evalscript_repeat[/c] | 重复函数/class 加载 |
+| [c]evalscript_class[/c] | class 定义 |
+
+当前结果：
+
+| 运行时家族 | 构建 | 结果 |
+| --- | --- | --- |
+| 2.0 beta | beta.9、beta.10、beta.12、beta.13、beta.15 | 各 9/9 |
+| 2.0 rc | rc.1、rc.3 | 各 9/9 |
+| 2.0 stable | 0.0、0.2、0.3、0.4、0.26 | 各 9/9 |
+| 2.1 alpha | alpha.1、alpha.4、alpha.13、alpha.16、alpha.30 | 各 9/9 |
+| 本机开发副本 | 两个 [c]2.0-beta[/c] 二进制 | 各 9/9 |
+
+总计：19 个运行时，全部 9/9。
 
 [b]12. 安全与边界[/b]
 
-这个库会执行机器码、伪造解释器对象，并写入目标进程内存。它不是沙箱。请
-使用一次性目标、及时恢复补丁，并且永远不要 eval 不可信输入。加壳或恶意
-构建可能破坏基于字符串的发现；扫描器会显式失败，而不是猜测。
+这个库会分配可执行内存、执行机器码，并写入当前或目标进程的解释器内存。它不是沙箱。
+
+规则：
+
+- 只附加自己拥有的进程；
+- 反复实验使用一次性目标；
+- 补丁用 [c]finally[/c] 或 [c]AhkLivePatchSession.Rollback()[/c] 恢复；
+- 永远不要 eval 不可信输入；
+- 定位失败是错误，不是猜测的理由。
+
+加壳或恶意构建可能改节名或删字符串。内容分类扫描可以处理常见加壳器，但恶意构建仍可能绕过发现。
 
 [b]13. 继续阅读[/b]
 
