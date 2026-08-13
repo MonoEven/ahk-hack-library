@@ -274,6 +274,22 @@ AutoHotkey runtime found on this machine. Current coverage:
 All 19 runtimes pass all 9 tests. The latest report is
 [reports/runtime_matrix_all.txt](reports/runtime_matrix_all.txt).
 
+## Screenshots
+
+The AhkLive GUI can attach to a running AutoHotkey process, evaluate
+expressions, load scripts, inspect inventory, patch functions, trace calls,
+watch values, and export runtime reports.
+
+![AhkLive main](docs/images/ahk_live_gui_main.png)
+
+![AhkLive script](docs/images/ahk_live_gui_script.png)
+
+![AhkLive inventory](docs/images/ahk_live_gui_inventory.png)
+
+![AhkLive trace](docs/images/ahk_live_gui_trace.png)
+
+![AhkLive forensics](docs/images/ahk_live_gui_forensics.png)
+
 ## Blog and Pages
 
 The repository separates the blog from the technical Pages site.
@@ -313,6 +329,7 @@ docs/
   pages_zh.txt             Chinese Pages source
   index.html               generated English Pages
   index.zh.html            generated Chinese Pages
+  images/                  screenshots and visual assets
 lib/
   init.ahk                 core entry
   ahk_hack.ahk             MCode() + AhkMagic
