@@ -13,12 +13,13 @@ AutoHotkey v2 runtime that is present on this machine.
 | v2.0-rc.1 | pass | pass | pass | pass | pass |
 | v2.0-rc.3 | pass | pass | pass | pass | pass |
 | v2.0.0 | pass | pass | pass | pass | pass |
-| v2.0.2 | pass | pass | fail | fail | pass |
-| v2.0.3 | pass | pass | fail | fail | pass |
-| v2.0.4 | pass | pass | fail | fail | pass |
+| v2.0.2 | pass | pass | pass | pass | pass |
+| v2.0.3 | pass | pass | pass | pass | pass |
+| v2.0.4 | pass | pass | pass | pass | pass |
 | v2.0.26 | pass | pass | pass | pass | pass |
 | 2.1-alpha.30 | pass | pass | pass | pass | pass |
 
-For 2.0.2 through 2.0.4, `OpenIncludedFile` is not discovered by the current
-script-loader locator, so in-memory script loading and function inventory do
-not work. Core attach, expression eval, and watch still work.
+`v2.1-alpha.13` and `v2.1-alpha.16` currently fail the combined
+replace/restore/watch path. Their `PreparseExpressions` and remote eval state
+recover differently after a patch, so those two alpha builds are not listed as
+supported until that path is fixed.

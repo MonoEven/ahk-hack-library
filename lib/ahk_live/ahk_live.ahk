@@ -50,9 +50,9 @@ class AhkLive {
         if !(expr is String)
             throw TypeError("expr must be a string", -1)
         state := Map("running", true, "last", "")
-        tick := (*) => AhkLive._WatchTick(hook, expr, state, onChange)
+        tick := AhkLive._WatchTick.Bind(hook, expr, state, onChange)
         state["timer"] := SetTimer(tick, ms)
-        state["Stop"] := (*) => AhkLive._WatchStop(state, tick)
+        state["Stop"] := AhkLive._WatchStop.Bind(state, tick)
         return state
     }
 
@@ -62,9 +62,9 @@ class AhkLive {
         if !(scriptPath is String)
             throw TypeError("scriptPath must be a string", -1)
         state := Map("running", true, "sig", "")
-        tick := (*) => AhkLive._HotReloadTick(hook, scriptPath, state)
+        tick := AhkLive._HotReloadTick.Bind(hook, scriptPath, state)
         state["timer"] := SetTimer(tick, interval)
-        state["Stop"] := (*) => AhkLive._HotReloadStop(state, tick)
+        state["Stop"] := AhkLive._HotReloadStop.Bind(state, tick)
         return state
     }
 
