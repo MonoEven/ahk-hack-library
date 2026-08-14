@@ -248,11 +248,11 @@ Send(&quot;{F9}&quot;)</code></pre>
 <p>Wrapper 写入目标端全局字符串，因此 <code>RemoteEval</code> 可以读取 Trace 日志，而不依赖求值线程内的文件 I/O。</p>
 </section>
 <section id="sec-11"><h2>验证矩阵</h2>
-<p><code>tools/verify_all_runtimes.ps1</code> 对本机每个运行时执行九项测试：</p>
-<table><thead><tr><th>测试</th><th>覆盖</th></tr></thead><tbody><tr><td><code>ahk_live_cross_smoke</code></td><td>attach、快照、清单、替换、Watch</td></tr><tr><td><code>ahk_live_test</code></td><td>完整 Trace/替换路径</td></tr><tr><td><code>ahk_live_product_test</code></td><td>会话与补丁回滚</td></tr><tr><td><code>ahk_live_six_test</code></td><td>观测、故障、桌面、取证、代理、CSV</td></tr><tr><td><code>ahk_live_benchmark</code></td><td>eval/快照/清单耗时</td></tr><tr><td><code>remote_hook_test</code></td><td>远程求值、脚本、class、函数替换</td></tr><tr><td><code>evalscript_inproc</code></td><td>进程内脚本加载</td></tr><tr><td><code>evalscript_repeat</code></td><td>重复函数/class 加载</td></tr><tr><td><code>evalscript_class</code></td><td>class 定义</td></tr></tbody></table>
+<p><code>tools/verify_all_runtimes.ps1</code> 对本机每个运行时执行十三项测试：</p>
+<table><thead><tr><th>测试</th><th>覆盖</th></tr></thead><tbody><tr><td><code>ahk_live_cross_smoke</code></td><td>attach、快照、清单、替换、Watch</td></tr><tr><td><code>ahk_live_test</code></td><td>完整 Trace/替换路径</td></tr><tr><td><code>ahk_live_product_test</code></td><td>会话与补丁回滚</td></tr><tr><td><code>ahk_live_six_test</code></td><td>观测、故障、桌面、取证、代理、CSV</td></tr><tr><td><code>ahk_live_benchmark</code></td><td>eval/快照/清单耗时</td></tr><tr><td><code>remote_hook_test</code></td><td>远程求值、脚本、class、函数替换</td></tr><tr><td><code>evalscript_inproc</code></td><td>进程内脚本加载</td></tr><tr><td><code>evalscript_repeat</code></td><td>重复函数/class 加载</td></tr><tr><td><code>evalscript_class</code></td><td>class 定义</td></tr><tr><td><code>eval_object_syntax_test</code></td><td>进程内对象返回值与语法错误存活</td></tr><tr><td><code>remote_empty_object_test</code></td><td>远程对象返回值与语法错误存活</td></tr><tr><td><code>remote_empty_target_test</code></td><td>无用户函数目标的探针注入重试</td></tr><tr><td><code>remote_deep_redirect_test</code></td><td>直接与动态调用链上的深重定向</td></tr></tbody></table>
 <p>当前结果：</p>
-<table><thead><tr><th>运行时家族</th><th>构建</th><th>结果</th></tr></thead><tbody><tr><td>2.0 beta</td><td>beta.9、beta.10、beta.12、beta.13、beta.15</td><td>各 9/9</td></tr><tr><td>2.0 rc</td><td>rc.1、rc.3</td><td>各 9/9</td></tr><tr><td>2.0 stable</td><td>0.0、0.2、0.3、0.4、0.26</td><td>各 9/9</td></tr><tr><td>2.1 alpha</td><td>alpha.1、alpha.4、alpha.13、alpha.16、alpha.30</td><td>各 9/9</td></tr><tr><td>本机开发副本</td><td>两个 <code>2.0-beta</code> 二进制</td><td>各 9/9</td></tr></tbody></table>
-<p>总计：19 个运行时，全部 9/9。</p>
+<table><thead><tr><th>运行时家族</th><th>构建</th><th>结果</th></tr></thead><tbody><tr><td>2.0 beta</td><td>beta.9、beta.10、beta.12、beta.13、beta.15</td><td>各 13/13</td></tr><tr><td>2.0 rc</td><td>rc.1、rc.3</td><td>各 13/13</td></tr><tr><td>2.0 stable</td><td>0.0、0.2、0.3、0.4、0.26</td><td>各 13/13</td></tr><tr><td>2.1 alpha</td><td>alpha.1、alpha.4、alpha.13、alpha.16、alpha.30</td><td>各 13/13</td></tr><tr><td>本机开发副本</td><td>两个 <code>2.0-beta</code> 二进制</td><td>各 13/13</td></tr></tbody></table>
+<p>总计：19 个运行时，全部 13/13。</p>
 <h3>11.1 回归覆盖：错误捕获</h3>
 <p>GUI 会把每个 <code>AhkLiveResult</code> 转成可见的日志行。<code>OnError()</code> 同时把异常字段写入 GUI 日志和 <code>%TEMP%\ahk_live_gui_error.log</code>；<code>SafeStr()</code> 序列化 Map/Array 值，避免第二个错误再次弄崩日志器。Watch 与观测错误会作为 <code>Error</code> 对象转发给回调。<code>--shot <pid> <tab></code> 会选中指定页签并写就绪标记，供完整窗口截图自动化使用。</p>
 <pre class="lang-autohotkey"><code>AhkLive_OnError(e, exitCode := 0) {
@@ -273,7 +273,7 @@ OnError(AhkLive_OnError)</code></pre>
     if AhkMagic._RemoteFindUserFuncs(h, layout, name).Length
         throw Error(&quot;function name already exists in target: &quot; name, -1)
 }</code></pre>
-<p>新回归测试已在 <code>2.1-alpha.30</code> 与 <code>2.0.26</code> 通过。19 运行时九项矩阵仍然是完整兼容门槛。</p>
+<p>新回归测试已在 <code>2.1-alpha.30</code> 与 <code>2.0.26</code> 通过。19 运行时十三项矩阵（现已包含上述四个鲁棒性回归）仍然是完整兼容门槛，19 个运行时全部 13/13。</p>
 </section>
 <section id="sec-12"><h2>安全与边界</h2>
 <p>这个库会分配可执行内存、执行机器码，并写入当前或目标进程的解释器内存。它不具备沙箱隔离。</p>
@@ -4292,14 +4292,20 @@ class AhkMagic {
                 Sleep 20
             }
         } finally {
-            if FileExist(vFile)
-                FileDelete(vFile)
-            if FileExist(errFile)
-                FileDelete(errFile)
-            if FileExist(batFile)
-                FileDelete(batFile)
-            if FileExist(doneFile)
-                FileDelete(doneFile)
+            ; The validator tree may still be releasing its file handles
+            ; when this runs (taskkill returns before handles close), so
+            ; cleanup races must never mask the real validation error.
+            try {
+                if FileExist(vFile)
+                    FileDelete(vFile)
+                if FileExist(errFile)
+                    FileDelete(errFile)
+                if FileExist(batFile)
+                    FileDelete(batFile)
+                if FileExist(doneFile)
+                    FileDelete(doneFile)
+            } catch {
+            }
         }
     }
 
@@ -4339,10 +4345,13 @@ class AhkMagic {
                 throw Error(&quot;eval failed: &quot; m[1], -1)
             return result
         } finally {
-            if FileExist(scriptFile)
-                FileDelete(scriptFile)
-            if FileExist(resultFile)
-                FileDelete(resultFile)
+            try {
+                if FileExist(scriptFile)
+                    FileDelete(scriptFile)
+                if FileExist(resultFile)
+                    FileDelete(resultFile)
+            } catch {
+            }
         }
     }
 }

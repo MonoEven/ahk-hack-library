@@ -248,11 +248,11 @@ Send(&quot;{F9}&quot;)</code></pre>
 <p>The wrapper logs to a target-side global string, so <code>RemoteEval</code> can read the trace without relying on file I/O inside the evaluator thread.</p>
 </section>
 <section id="sec-11"><h2>Verification matrix</h2>
-<p><code>tools/verify_all_runtimes.ps1</code> runs nine tests against every runtime found on this machine:</p>
-<table><thead><tr><th>Test</th><th>Covers</th></tr></thead><tbody><tr><td><code>ahk_live_cross_smoke</code></td><td>attach, snapshot, inventory, replace, watch</td></tr><tr><td><code>ahk_live_test</code></td><td>full trace/replace path</td></tr><tr><td><code>ahk_live_product_test</code></td><td>session and patch rollback</td></tr><tr><td><code>ahk_live_six_test</code></td><td>observability, fault, desktop, forensics, agent, CSV</td></tr><tr><td><code>ahk_live_benchmark</code></td><td>eval/snapshot/list timings</td></tr><tr><td><code>remote_hook_test</code></td><td>remote eval, script, class, function replacement</td></tr><tr><td><code>evalscript_inproc</code></td><td>in-process script loading</td></tr><tr><td><code>evalscript_repeat</code></td><td>repeated function/class loading</td></tr><tr><td><code>evalscript_class</code></td><td>class definitions</td></tr></tbody></table>
+<p><code>tools/verify_all_runtimes.ps1</code> runs thirteen tests against every runtime found on this machine:</p>
+<table><thead><tr><th>Test</th><th>Covers</th></tr></thead><tbody><tr><td><code>ahk_live_cross_smoke</code></td><td>attach, snapshot, inventory, replace, watch</td></tr><tr><td><code>ahk_live_test</code></td><td>full trace/replace path</td></tr><tr><td><code>ahk_live_product_test</code></td><td>session and patch rollback</td></tr><tr><td><code>ahk_live_six_test</code></td><td>observability, fault, desktop, forensics, agent, CSV</td></tr><tr><td><code>ahk_live_benchmark</code></td><td>eval/snapshot/list timings</td></tr><tr><td><code>remote_hook_test</code></td><td>remote eval, script, class, function replacement</td></tr><tr><td><code>evalscript_inproc</code></td><td>in-process script loading</td></tr><tr><td><code>evalscript_repeat</code></td><td>repeated function/class loading</td></tr><tr><td><code>evalscript_class</code></td><td>class definitions</td></tr><tr><td><code>eval_object_syntax_test</code></td><td>object return values and syntax-error survival in-process</td></tr><tr><td><code>remote_empty_object_test</code></td><td>remote object results and syntax-error survival</td></tr><tr><td><code>remote_empty_target_test</code></td><td>probe-injection retry on targets with no user functions</td></tr><tr><td><code>remote_deep_redirect_test</code></td><td>deep redirect through direct and dynamic call chains</td></tr></tbody></table>
 <p>Current result:</p>
-<table><thead><tr><th>Runtime family</th><th>Builds</th><th>Result</th></tr></thead><tbody><tr><td>2.0 beta</td><td>beta.9, beta.10, beta.12, beta.13, beta.15</td><td>9/9 each</td></tr><tr><td>2.0 rc</td><td>rc.1, rc.3</td><td>9/9 each</td></tr><tr><td>2.0 stable</td><td>0.0, 0.2, 0.3, 0.4, 0.26</td><td>9/9 each</td></tr><tr><td>2.1 alpha</td><td>alpha.1, alpha.4, alpha.13, alpha.16, alpha.30</td><td>9/9 each</td></tr><tr><td>local dev builds</td><td>two <code>2.0-beta</code> binaries</td><td>9/9 each</td></tr></tbody></table>
-<p>Total: 19 runtimes, all 9/9.</p>
+<table><thead><tr><th>Runtime family</th><th>Builds</th><th>Result</th></tr></thead><tbody><tr><td>2.0 beta</td><td>beta.9, beta.10, beta.12, beta.13, beta.15</td><td>13/13 each</td></tr><tr><td>2.0 rc</td><td>rc.1, rc.3</td><td>13/13 each</td></tr><tr><td>2.0 stable</td><td>0.0, 0.2, 0.3, 0.4, 0.26</td><td>13/13 each</td></tr><tr><td>2.1 alpha</td><td>alpha.1, alpha.4, alpha.13, alpha.16, alpha.30</td><td>13/13 each</td></tr><tr><td>local dev builds</td><td>two <code>2.0-beta</code> binaries</td><td>13/13 each</td></tr></tbody></table>
+<p>Total: 19 runtimes, all 13/13.</p>
 <h3>11.1 Regression coverage: error capture</h3>
 <p>The GUI converts every <code>AhkLiveResult</code> into a visible log line. <code>OnError()</code> appends exception fields to both the GUI log and <code>%TEMP%\ahk_live_gui_error.log</code>; <code>SafeStr()</code> serializes Map and Array values so a second error cannot break the logger. Watch and observability errors are forwarded to the callback as <code>Error</code> objects. <code>--shot <pid> <tab></code> selects a tab and writes a ready marker for full-window screenshot automation.</p>
 <pre class="lang-autohotkey"><code>AhkLive_OnError(e, exitCode := 0) {
@@ -273,7 +273,7 @@ OnError(AhkLive_OnError)</code></pre>
     if AhkMagic._RemoteFindUserFuncs(h, layout, name).Length
         throw Error(&quot;function name already exists in target: &quot; name, -1)
 }</code></pre>
-<p>The new regression test passes on <code>2.1-alpha.30</code> and <code>2.0.26</code>. The 19-runtime nine-test matrix remains the full compatibility gate.</p>
+<p>The new regression tests pass on <code>2.1-alpha.30</code> and <code>2.0.26</code>. The 19-runtime thirteen-test matrix — now including the four robustness regressions above — remains the full compatibility gate, and all 19 runtimes pass 13/13.</p>
 </section>
 <section id="sec-12"><h2>Security and boundaries</h2>
 <p>This library allocates executable memory, executes machine code, and writes interpreter memory in the current or target process. It is not a sandbox.</p>
@@ -4292,14 +4292,20 @@ class AhkMagic {
                 Sleep 20
             }
         } finally {
-            if FileExist(vFile)
-                FileDelete(vFile)
-            if FileExist(errFile)
-                FileDelete(errFile)
-            if FileExist(batFile)
-                FileDelete(batFile)
-            if FileExist(doneFile)
-                FileDelete(doneFile)
+            ; The validator tree may still be releasing its file handles
+            ; when this runs (taskkill returns before handles close), so
+            ; cleanup races must never mask the real validation error.
+            try {
+                if FileExist(vFile)
+                    FileDelete(vFile)
+                if FileExist(errFile)
+                    FileDelete(errFile)
+                if FileExist(batFile)
+                    FileDelete(batFile)
+                if FileExist(doneFile)
+                    FileDelete(doneFile)
+            } catch {
+            }
         }
     }
 
@@ -4339,10 +4345,13 @@ class AhkMagic {
                 throw Error(&quot;eval failed: &quot; m[1], -1)
             return result
         } finally {
-            if FileExist(scriptFile)
-                FileDelete(scriptFile)
-            if FileExist(resultFile)
-                FileDelete(resultFile)
+            try {
+                if FileExist(scriptFile)
+                    FileDelete(scriptFile)
+                if FileExist(resultFile)
+                    FileDelete(resultFile)
+            } catch {
+            }
         }
     }
 }

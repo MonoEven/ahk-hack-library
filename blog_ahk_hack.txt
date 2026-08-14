@@ -17,7 +17,7 @@ AutoHotkey 2 解释器在[c].data[/c]段维护几张关键表：
 
 定位分两步。先解析 DOS 头、NT 头、节表，拿到各段内存范围；再检查[c].data[/c]和[c].rdata[/c]里的指针槽，看是否满足三个条件：名字指针指向 UTF-16 字符串、函数指针落在[c].text[/c]、表内记录按字典序排列。满足条件的连续记录区就是目标表，随后读出每条记录的 RVA、参数个数和 ID。
 
-这套逻辑写进机器码后，同一段代码可以跑在 2.0-beta、2.0.0、2.0.26、2.1-alpha 上。通用化之后还能扫任意 DLL/EXE 的导出表，枚举具名导出、RVA 和序号。
+这套逻辑写进机器码后，同一段代码在全部 19 个已验证运行时构建（2.0-beta.9 到 2.1-alpha.30）上不加改动地运行。通用化之后还能扫任意 DLL/EXE 的导出表，枚举具名导出、RVA 和序号。
 
 
 [b]2. 机器码生成[/b]
@@ -124,7 +124,7 @@ MsgBox AhkMagic.EvalNative("2 * 3.5")       ; 7.0，同进程
 MsgBox AhkMagic.EvalNative("Abs(-5)")       ; 5，同进程
 [/codebox]
 
-[c]EvalNative[/c]构造临时[c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的[c]ExpressionToPostfix[/c]和[c]ExpandExpression[/c]。已验证的四个版本上都支持字面量、运算符、全局变量与函数调用；不支持的语法会直接报错。[c]Eval[/c]先走同进程管线，需要时再使用[c]EvalSubprocess[/c]。对象也能求值：裸函数名返回活着的[c]Func[/c]对象、类名返回[c]Class[/c]对象，因此[c]EvalNative("Abs")[/c]可以直接拿来用。
+[c]EvalNative[/c]构造临时[c]Line[/c]/[c]ArgStruct[/c]，直接调用当前进程里解释器自己的[c]ExpressionToPostfix[/c]和[c]ExpandExpression[/c]。全部 19 个已验证构建上都支持字面量、运算符、全局变量与函数调用；不支持的语法会直接报错。[c]Eval[/c]先走同进程管线，需要时再使用[c]EvalSubprocess[/c]。对象也能求值：裸函数名返回活着的[c]Func[/c]对象、类名返回[c]Class[/c]对象，因此[c]EvalNative("Abs")[/c]可以直接拿来用。
 
 [color=#BF4000][b]5.2 函数定义[/b][/color]
 
@@ -170,7 +170,7 @@ MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2，类已加载并在进程内使
 
 [c]动态获取原理：[/c]稳定错误字符串在每次构建里都由 RIP 相对的[c]lea[/c]指令引用，扫描这些交叉引用并回退到函数开头就能得到函数地址；全局变量也用同样方式物化。布局偏移则让运行中的解释器自己暴露：一次性探针加载一个临时函数，diff 存活[c]Script[/c]对象得到[c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c]，沿新函数的行链找到[c]mJumpLine[/c]，再从[c]LoadIncludedFile[/c]的[c]cmp[/c] prologue 读取解析器状态锚点。[c]TextStream[/c]对象同时填充两个[c]mData[/c]区域，不需要选择布局；每次加载再以结果验证（[c]rc == 1[/c]，探针加载还要函数计数增加），布局不同的构建会在探针阶段显式报错而不是错解析文本。
 
-[c]多版本兼容：[/c]四版本矩阵用同一份 blob 跑 2.0-beta.10、2.0.0、2.0.26、2.1-alpha.30。稳定偏移在这些构建中没有变化；变化的都改为运行时发现。无法识别的布局会让探针抛错，不猜测偏移，失败因此是显式且隔离的。
+[c]多版本兼容：[/c]完整矩阵用同一份 blob 跑本机全部 19 个运行时构建——[c]2.0-beta.9[/c] 到 [c]2.1-alpha.30[/c] 加两个本机开发副本——每个运行时都通过全部十三项测试。不再信任任何解释器布局：eval blob 的每项 [c]Line[/c]/[c]ArgStruct[/c]/token/[c]DerefType[/c] 偏移与 token stride 都来自调用方传入的 21 槽布局数组，进程内由探针函数推导、远程从目标存活内存中发现；其余字段按已知探针文本内容匹配；解析器状态保存/恢复集合来自自动校验的候选区域，而不是按版本查表。内存 [c]TextStream[/c] 同时填充两个已知 [c]mData[/c] 槽，且每次加载都以结果验证。无法识别的布局会让探针抛错，不猜测偏移，失败因此是显式且隔离的。
 
 [codebox=text file=source-snippets]
 // source/script.h (AutoHotkey v2.1-alpha.30)
@@ -362,7 +362,7 @@ after class eval=2
 
 [color=#BF4000][b]6.7 远程兼容矩阵[/b][/color]
 
-远程 Hook 现在由完整运行时矩阵覆盖。[c]tools/verify_all_runtimes.ps1[/c] 对本机所有 AutoHotkey 运行时执行九项测试，当前共 19 个构建，从 [c]2.0-beta.9[/c] 到 [c]2.1-alpha.30[/c]。19 个全部 9/9。远程 Hook 也在 Ahk2Exe 编译并用 UPX 压缩的目标上验证过：远程 eval 返回[c]7[/c]，远程赋值让[c]F8[/c]写出[c]7[/c]，深补丁让[c]F7[/c]从[c]1[/c]变成[c]0.8414709848078965[/c]。
+远程 Hook 现在由完整运行时矩阵覆盖。[c]tools/verify_all_runtimes.ps1[/c] 对本机所有 AutoHotkey 运行时执行十三项测试，当前共 19 个构建，从 [c]2.0-beta.9[/c] 到 [c]2.1-alpha.30[/c]。19 个全部 13/13。远程 Hook 也在 Ahk2Exe 编译并用 UPX 压缩的目标上验证过：远程 eval 返回[c]7[/c]，远程赋值让[c]F8[/c]写出[c]7[/c]，深补丁让[c]F7[/c]从[c]1[/c]变成[c]0.8414709848078965[/c]。
 
 [codebox=text file=compat]
 powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1
@@ -374,17 +374,20 @@ powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1
 [color=#BF4000][b]7.1 测试命令[/b][/color]
 
 [codebox=text file=tests]
-python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
 & D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
+& D:\...\AutoHotkey64.exe tests\eval_object_syntax_test.ahk
+& D:\...\AutoHotkey64.exe tests\remote_empty_object_test.ahk <目标PID>
+& D:\...\AutoHotkey64.exe tests\remote_empty_target_test.ahk <目标PID>
+& D:\...\AutoHotkey64.exe tests\remote_deep_redirect_test.ahk <目标PID>
 & D:\...\AutoHotkey64.exe tests\ahk_live_regression.ahk
 [/codebox]
 
-当前矩阵验证 19 个运行时：[c]2.0-beta.9/10/12/13/15[/c]、[c]2.0-rc.1/3[/c]、[c]2.0.0/2/3/4/26[/c]、[c]2.1-alpha.1/4/13/16/30[/c]，以及两个本机 [c]2.0-beta[/c] 开发副本。每个运行时都通过全部九项测试。
+当前矩阵验证 19 个运行时：[c]2.0-beta.9/10/12/13/15[/c]、[c]2.0-rc.1/3[/c]、[c]2.0.0/2/3/4/26[/c]、[c]2.1-alpha.1/4/13/16/30[/c]，以及两个本机 [c]2.0-beta[/c] 开发副本。每个运行时都通过全部十三项测试。
 
 [color=#BF4000][b]7.2 Ahk2Exe 与压缩[/b][/color]
 
@@ -504,7 +507,7 @@ demo ready
 
 [color=#BF4000][b]8.2 语法预检[/b][/color]
 
-解释器自己的加载器遇到语法错误会中止整个进程，库无法捕获。因此[c]EvalScript()[/c]与[c]RemoteEvalScript()[/c]在注入前先用解释器自己的[c]/validate[/c]开关预检文本——远程路径使用目标自己的可执行文件。语法错误现在会在触碰任何解释器状态之前变成携带真实解析信息的干净库错误，宿主或目标进程保持存活。验证子进程以[c]/ErrorStdOut[/c]静默运行并把全部输出捕获到文件；个别构建若仍因对话框挂起，库会在六秒内杀掉验证器的整个进程树并退回加载器自身的失败检查。个别版本才有的语义加载警告会被容忍，因此引用宿主/目标中已有名字的合法脚本照常加载。
+解释器自己的加载器遇到语法错误会中止整个进程，库无法捕获。因此[c]EvalScript()[/c]与[c]RemoteEvalScript()[/c]在注入前先用解释器自己的[c]/validate[/c]开关预检文本——远程路径使用目标自己的可执行文件。语法错误现在会在触碰任何解释器状态之前变成携带真实解析信息的干净库错误，宿主或目标进程保持存活。验证命令经由无 BOM 的批处理文件传递（AHK 的[c]Run[/c]会重新解析嵌套引号、可能悄悄丢掉开关），库以捕获输出加完成标记文件来驱动验证器，而不是依赖进程退出码：错误文本一落盘就杀掉整个验证器进程树并抛出真实解析信息，任何构建都不会在屏幕上留下对话框；清理竞态被吞掉，被锁的临时文件不会掩盖真实错误。个别版本才有的语义加载警告会被容忍，因此引用宿主/目标中已有名字的合法脚本照常加载。
 
 [color=#BF4000][b]8.3 远程超时[/b][/color]
 
@@ -590,7 +593,7 @@ demo ready
 - 为[c]RemoteEvalScript[/c]增加重复函数预检，重定义已有函数名会在目标进程不稳定之前明确报错；
 - 新增[c]tests\ahk_live_regression.ahk[/c]，覆盖 EvalScript 到 Trace 的顺序、快照中的逗号表达式与重复函数拒绝；
 - 加固[c]Init[/c]/[c]ScanExports[/c]：记录数封顶、步长校验、每个名字指针的内存映射检查；
-- 为[c]EvalScript[/c]与[c]RemoteEvalScript[/c]加入[c]/validate[/c]语法预检，语法错误干净抛出而不是中止宿主或目标进程；验证器自行捕获输出（无弹窗），超时即杀进程树；
+- 为[c]EvalScript[/c]与[c]RemoteEvalScript[/c]加入[c]/validate[/c]语法预检，语法错误干净抛出而不是中止宿主或目标进程；验证器自行捕获输出（无弹窗），错误文本一落盘即杀进程树；
 - 加入远程超时处理：挂起的求值 10 秒后抛错，并泄漏注入块以保护目标免于 use-after-free；
 - 加入对象返回值：[c]EvalNative[/c]返回活的[c]Func[/c]/[c]Class[/c]对象，[c]RemoteEval[/c]返回目标侧对象地址；
 - 加入探针注入重试，[c]RemoteEvalScript[/c]可挂接没有任何用户函数的目标；
@@ -598,11 +601,21 @@ demo ready
 - 加固机器码扫描器：导出表边界校验、token 遍历封顶、字符串按节尾截断；
 - 新增对象返回、语法错误存活、空目标与深重定向的回归测试。
 
+2026-08-14:
+
+- 消除全部硬编码解释器布局：eval blob 的 [c]Line[/c]/[c]ArgStruct[/c]/token/[c]DerefType[/c] 偏移与 token stride 全部经调用方传入的 21 槽布局数组（进程内由探针函数推导，远程用 hook 缓存的 script_layout），其余字段按已知探针文本内容匹配发现，首次写入前做符号哨兵校验；
+- 解析器状态字段的盲 diff 方案因探针前重置导致 beta 构建 AV 而回退，改为哨兵锚与 qCmp 锚两套候选区域 + 运行时严格校验（进程内与远程统一）；
+- 内存 [c]TextStream[/c] 保留双 [c]mData[/c] 槽写入作为跨版本机制，每次加载以结果自校验（[c]rc == 1[/c] + 探针函数计数增量），不支持的布局在探针阶段显式报错；
+- AhkLive 的 [c]Var[/c] 值/符号/标志字节改为 int→object 赋值差分发现，不再用固定偏移；
+- 重写[c]_ValidateScript[/c]：验证命令经无 BOM 批处理文件传递，由捕获输出加完成标记文件驱动，错误文本一落盘立即杀树——语法错误永远以解释器的真实解析信息抛出，绝不弹窗；
+- [c]FileDelete[/c] 统一加 [c]FileExist[/c] 守卫并吞掉清理竞态（不存在或被锁的临时文件不再挂起或掩盖错误）；
+- 矩阵扩展到十三项测试（对象返回、语法错误存活、空目标探针注入、深重定向），19 个运行时全部 13/13。
+
 
 [b]11. 已知限制[/b]
 
 - 机器码块只支持 x64，32 位会显式报错；
-- [c]EvalNative()[/c]通过解释器内部的同进程表达式管线执行，已验证的四个版本上支持字面量、运算符、全局变量与函数调用。[c]Eval()[/c]在脚本模式和普通运行时编译出的 exe 里都能回退到[c]EvalSubprocess()[/c]；如果用[c]AUTOHOTKEYSC[/c]独立运行时作 base，则不支持[c]/script[/c]，需要单独验证；
+- [c]EvalNative()[/c]通过解释器内部的同进程表达式管线执行，全部 19 个已验证构建上支持字面量、运算符、全局变量与函数调用。[c]Eval()[/c]在脚本模式和普通运行时编译出的 exe 里都能回退到[c]EvalSubprocess()[/c]；如果用[c]AUTOHOTKEYSC[/c]独立运行时作 base，则不支持[c]/script[/c]，需要单独验证；
 - UPX/MPRESS 压缩已验证；第三方壳、VM 保护或真正的脚本加密仍需逐个目标验证；
 - [c]PatchBif()[/c]和[c]RemoteRedirect()[/c]对已经缓存的函数对象不追溯生效，需要[c]PatchBifObject()[/c]/[c]RemoteDeepRedirect()[/c]；
 - [c]RemoteReplaceFuncBody()[/c]要求源函数和目标函数都已加载进目标进程；
@@ -4608,14 +4621,20 @@ class AhkMagic {
                 Sleep 20
             }
         } finally {
-            if FileExist(vFile)
-                FileDelete(vFile)
-            if FileExist(errFile)
-                FileDelete(errFile)
-            if FileExist(batFile)
-                FileDelete(batFile)
-            if FileExist(doneFile)
-                FileDelete(doneFile)
+            ; The validator tree may still be releasing its file handles
+            ; when this runs (taskkill returns before handles close), so
+            ; cleanup races must never mask the real validation error.
+            try {
+                if FileExist(vFile)
+                    FileDelete(vFile)
+                if FileExist(errFile)
+                    FileDelete(errFile)
+                if FileExist(batFile)
+                    FileDelete(batFile)
+                if FileExist(doneFile)
+                    FileDelete(doneFile)
+            } catch {
+            }
         }
     }
 
@@ -4655,10 +4674,13 @@ class AhkMagic {
                 throw Error("eval failed: " m[1], -1)
             return result
         } finally {
-            if FileExist(scriptFile)
-                FileDelete(scriptFile)
-            if FileExist(resultFile)
-                FileDelete(resultFile)
+            try {
+                if FileExist(scriptFile)
+                    FileDelete(scriptFile)
+                if FileExist(resultFile)
+                    FileDelete(resultFile)
+            } catch {
+            }
         }
     }
 }

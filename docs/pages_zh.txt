@@ -281,7 +281,7 @@ Wrapper 写入目标端全局字符串，因此 [c]RemoteEval[/c] 可以读取 T
 
 [b]11. 验证矩阵[/b]
 
-[c]tools/verify_all_runtimes.ps1[/c] 对本机每个运行时执行九项测试：
+[c]tools/verify_all_runtimes.ps1[/c] 对本机每个运行时执行十三项测试：
 
 | 测试 | 覆盖 |
 | --- | --- |
@@ -294,18 +294,22 @@ Wrapper 写入目标端全局字符串，因此 [c]RemoteEval[/c] 可以读取 T
 | [c]evalscript_inproc[/c] | 进程内脚本加载 |
 | [c]evalscript_repeat[/c] | 重复函数/class 加载 |
 | [c]evalscript_class[/c] | class 定义 |
+| [c]eval_object_syntax_test[/c] | 进程内对象返回值与语法错误存活 |
+| [c]remote_empty_object_test[/c] | 远程对象返回值与语法错误存活 |
+| [c]remote_empty_target_test[/c] | 无用户函数目标的探针注入重试 |
+| [c]remote_deep_redirect_test[/c] | 直接与动态调用链上的深重定向 |
 
 当前结果：
 
 | 运行时家族 | 构建 | 结果 |
 | --- | --- | --- |
-| 2.0 beta | beta.9、beta.10、beta.12、beta.13、beta.15 | 各 9/9 |
-| 2.0 rc | rc.1、rc.3 | 各 9/9 |
-| 2.0 stable | 0.0、0.2、0.3、0.4、0.26 | 各 9/9 |
-| 2.1 alpha | alpha.1、alpha.4、alpha.13、alpha.16、alpha.30 | 各 9/9 |
-| 本机开发副本 | 两个 [c]2.0-beta[/c] 二进制 | 各 9/9 |
+| 2.0 beta | beta.9、beta.10、beta.12、beta.13、beta.15 | 各 13/13 |
+| 2.0 rc | rc.1、rc.3 | 各 13/13 |
+| 2.0 stable | 0.0、0.2、0.3、0.4、0.26 | 各 13/13 |
+| 2.1 alpha | alpha.1、alpha.4、alpha.13、alpha.16、alpha.30 | 各 13/13 |
+| 本机开发副本 | 两个 [c]2.0-beta[/c] 二进制 | 各 13/13 |
 
-总计：19 个运行时，全部 9/9。
+总计：19 个运行时，全部 13/13。
 
 [color=#BF4000][b]11.1 回归覆盖：错误捕获[/b][/color]
 
@@ -335,7 +339,7 @@ for name in AhkMagic._DeclaredFunctionNames(text) {
 }
 [/codebox]
 
-新回归测试已在 [c]2.1-alpha.30[/c] 与 [c]2.0.26[/c] 通过。19 运行时九项矩阵仍然是完整兼容门槛。
+新回归测试已在 [c]2.1-alpha.30[/c] 与 [c]2.0.26[/c] 通过。19 运行时十三项矩阵（现已包含上述四个鲁棒性回归）仍然是完整兼容门槛，19 个运行时全部 13/13。
 
 [b]12. 安全与边界[/b]
 

@@ -17,7 +17,7 @@ The AutoHotkey 2 interpreter keeps several important tables in the [c].data[/c] 
 
 Locating a table takes two steps. First the scanner parses the DOS header, NT headers, and section table to get the memory range of each section. Then it checks pointer slots in [c].data[/c] and [c].rdata[/c] against three conditions: the name pointer resolves to a UTF-16 string, the function pointer lands in [c].text[/c], and the records are sorted alphabetically. The contiguous region that satisfies all three is the target table. After that, every entry's RVA, parameter counts, and ID are read out.
 
-Once this logic is in machine code, the same blob runs on 2.0-beta, 2.0.0, 2.0.26, and 2.1-alpha. The same approach was generalized to scan the export tables of arbitrary DLL/EXE modules, enumerating named exports, RVAs, and ordinals.
+Once this logic is in machine code, the same blob runs unchanged across all 19 verified runtime builds, from 2.0-beta.9 to 2.1-alpha.30. The same approach was generalized to scan the export tables of arbitrary DLL/EXE modules, enumerating named exports, RVAs, and ordinals.
 
 
 [b]2. How the machine code is made[/b]
@@ -170,7 +170,7 @@ MsgBox AhkMagic.EvalNative("Point(1, 2).y") ; 2, class loaded and used in-proces
 
 [c]Why dynamic discovery works:[/c] stable error strings are referenced with RIP-relative [c]lea[/c] instructions in every build, so scanning those cross-references and walking back to the prologue yields function addresses. Globals are materialized the same way. Layout offsets are revealed by the running interpreter itself: a one-time probe loads a throwaway function, diffs the live [c]Script[/c] object for [c]mFuncs[/c]/[c]mFuncsCount[/c]/[c]mLastLine[/c], walks the new function's line chain for [c]mJumpLine[/c], and reads parser-state anchors from [c]LoadIncludedFile[/c]'s [c]cmp[/c] prologue. The [c]TextStream[/c] object is built with both [c]mData[/c] regions populated, so no layout choice is needed; every load is then validated by its result ([c]rc == 1[/c] plus, for the discovery probe, a function-count increase), so a build with a different TextStream layout fails loudly at probe time instead of misparsing text.
 
-[c]Multi-version compatibility:[/c] the four-version matrix runs the same blob on 2.0-beta.10, 2.0.0, 2.0.26, and 2.1-alpha.30. Stable [c]Line[/c]/[c]ArgStruct[/c]/token offsets have not changed in those builds; everything that changed is discovered at runtime. An unrecognized layout makes the probe throw without guessing, which keeps failures explicit and isolated.
+[c]Multi-version compatibility:[/c] the full matrix runs the same blob against all 19 runtime builds found on this machine — [c]2.0-beta.9[/c] through [c]2.1-alpha.30[/c] plus two local dev builds — and every runtime passes all thirteen tests. No interpreter layout is trusted anymore: the eval blob takes every [c]Line[/c]/[c]ArgStruct[/c]/token/[c]DerefType[/c] offset and the token stride from a caller-provided 21-slot layout array, which in-process discovery derives from a probe function and remote discovery from the target's live memory; the remaining fields are found by content matching against known probe text, and the parser-state save/restore set comes from auto-validated candidate regions, not a per-version table. The in-memory [c]TextStream[/c] fills both known [c]mData[/c] slots and every load is validated by its result. An unrecognized layout makes the probe throw without guessing, which keeps failures explicit and isolated.
 
 [codebox=text file=source-snippets]
 // source/script.h (AutoHotkey v2.1-alpha.30)
@@ -362,7 +362,7 @@ after class eval=2
 
 [color=#BF4000][b]6.7 Remote compatibility matrix[/b][/color]
 
-Remote hooking is now covered by the full runtime matrix. [c]tools/verify_all_runtimes.ps1[/c] runs nine tests against every AutoHotkey runtime found on this machine, currently 19 builds from [c]2.0-beta.9[/c] through [c]2.1-alpha.30[/c]. All 19 pass 9/9. Remote hooking is also verified against Ahk2Exe-compiled UPX targets: [c]RemoteEval("1 + 2 * 3")[/c] returns [c]7[/c], remote assignment makes [c]F8[/c] write [c]7[/c], and [c]RemoteDeepRedirect[/c] changes [c]F7[/c] from [c]1[/c] to [c]0.8414709848078965[/c].
+Remote hooking is now covered by the full runtime matrix. [c]tools/verify_all_runtimes.ps1[/c] runs thirteen tests against every AutoHotkey runtime found on this machine, currently 19 builds from [c]2.0-beta.9[/c] through [c]2.1-alpha.30[/c]. All 19 pass 13/13. Remote hooking is also verified against Ahk2Exe-compiled UPX targets: [c]RemoteEval("1 + 2 * 3")[/c] returns [c]7[/c], remote assignment makes [c]F8[/c] write [c]7[/c], and [c]RemoteDeepRedirect[/c] changes [c]F7[/c] from [c]1[/c] to [c]0.8414709848078965[/c].
 
 [codebox=text file=compat]
 powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1
@@ -374,17 +374,20 @@ powershell -ExecutionPolicy Bypass -File tools\verify_remote_compat.ps1
 [color=#BF4000][b]7.1 Test commands[/b][/color]
 
 [codebox=text file=tests]
-python -m unittest discover -s tests -p 'test_*.py' -v
 & D:\...\AutoHotkey64.exe ahk_hack_demo.ahk
 & D:\...\AutoHotkey64.exe tests\export_scan_test.ahk
 & D:\...\AutoHotkey64.exe tests\evalnative_probe.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_inproc.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_class.ahk
 & D:\...\AutoHotkey64.exe tests\evalscript_repeat.ahk
+& D:\...\AutoHotkey64.exe tests\eval_object_syntax_test.ahk
+& D:\...\AutoHotkey64.exe tests\remote_empty_object_test.ahk <target-pid>
+& D:\...\AutoHotkey64.exe tests\remote_empty_target_test.ahk <target-pid>
+& D:\...\AutoHotkey64.exe tests\remote_deep_redirect_test.ahk <target-pid>
 & D:\...\AutoHotkey64.exe tests\ahk_live_regression.ahk
 [/codebox]
 
-The current matrix verifies 19 runtimes: [c]2.0-beta.9/10/12/13/15[/c], [c]2.0-rc.1/3[/c], [c]2.0.0/2/3/4/26[/c], [c]2.1-alpha.1/4/13/16/30[/c], and two local [c]2.0-beta[/c] dev builds. Every runtime passes all nine tests.
+The current matrix verifies 19 runtimes: [c]2.0-beta.9/10/12/13/15[/c], [c]2.0-rc.1/3[/c], [c]2.0.0/2/3/4/26[/c], [c]2.1-alpha.1/4/13/16/30[/c], and two local [c]2.0-beta[/c] dev builds. Every runtime passes all thirteen tests.
 
 [color=#BF4000][b]7.2 Ahk2Exe and packed executables[/b][/color]
 
@@ -504,7 +507,7 @@ The library treats its own inputs and the target's memory as untrusted, and ever
 
 [color=#BF4000][b]8.2 Syntax pre-check[/b][/color]
 
-A syntax error inside the interpreter's own loader aborts the whole process and cannot be caught by the library. [c]EvalScript()[/c] and [c]RemoteEvalScript()[/c] therefore run the text through the interpreter's own [c]/validate[/c] switch first — using the target's own executable for the remote path. A syntax error now surfaces as a clean library error carrying the real parse message, before any interpreter state is touched, and the host or target stays alive. The validator runs hidden with [c]/ErrorStdOut[/c] and captures all output to a file; if any build still hangs on a dialog, the library kills the validator's whole process tree within six seconds and falls back to the loader's own failure check. Only semantic load warnings that are version-specific are tolerated, so valid scripts that reference names which exist only in the host or target keep loading.
+A syntax error inside the interpreter's own loader aborts the whole process and cannot be caught by the library. [c]EvalScript()[/c] and [c]RemoteEvalScript()[/c] therefore run the text through the interpreter's own [c]/validate[/c] switch first — using the target's own executable for the remote path. A syntax error now surfaces as a clean library error carrying the real parse message, before any interpreter state is touched, and the host or target stays alive. The validator command travels through a BOM-free batch file (AHK's [c]Run[/c] re-parses nested quotes and can silently drop switches), and the library drives it by captured output plus a completion marker file instead of process exit codes: the moment the error text lands, the whole validator tree is killed and the real parse message is thrown, so no build can leave a dialog on screen. Cleanup races are swallowed so a locked temp file can never mask the real error. Only semantic load warnings that are version-specific are tolerated, so valid scripts that reference names which exist only in the host or target keep loading.
 
 [color=#BF4000][b]8.3 Remote timeouts[/b][/color]
 
@@ -590,13 +593,23 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - Added duplicate-function preflight to [c]RemoteEvalScript[/c] so redefining an existing name fails before the target becomes unstable;
 - Added [c]tests\ahk_live_regression.ahk[/c] covering EvalScript-to-Trace ordering, comma expressions in snapshots, and duplicate-function rejection;
 - Hardened [c]Init[/c]/[c]ScanExports[/c] with record-count caps, stride validation, and memory-map checks on every name pointer;
-- Added [c]/validate[/c] pre-checks to [c]EvalScript[/c] and [c]RemoteEvalScript[/c] so syntax errors throw cleanly instead of aborting the host or target; the validator captures its output (no dialogs) and its process tree is killed on timeout;
+- Added [c]/validate[/c] pre-checks to [c]EvalScript[/c] and [c]RemoteEvalScript[/c] so syntax errors throw cleanly instead of aborting the host or target; the validator captures its output (no dialogs) and its process tree is killed the moment the error text lands;
 - Added remote timeout handling: a hung evaluation throws after 10 s and leaks its injected block to protect the target from use-after-free;
 - Added object return values: [c]EvalNative[/c] returns live [c]Func[/c]/[c]Class[/c] objects, [c]RemoteEval[/c] returns the target-side object address;
 - Added probe-injection retry so [c]RemoteEvalScript[/c] works against targets with no user functions;
 - Made [c]PatchBifObject[/c] and [c]RemoteDeepRedirect[/c] atomic with rollback, and narrowed the deep-redirect heap scan with a layout check;
 - Hardened the machine-code scanners: export-table bounds checks, capped token walks, section-end string reads;
 - Added regression tests for object returns, syntax-error survival, empty targets, and deep redirect.
+
+2026-08-14:
+
+- Eliminated every hardcoded interpreter layout: the eval blob now takes all [c]Line[/c]/[c]ArgStruct[/c]/token/[c]DerefType[/c] offsets and the token stride through a caller-provided 21-slot layout array (probe-derived in-process, hook-cached remote), with content-matched discovery for the remaining fields and a symbol-sanity check before the first write;
+- Replaced the parser-state blind diff with auto-validated candidate regions (sentinel-anchored and qCmp-anchored) for both in-process and remote paths — the blind variant AV'd on 2.0-beta builds;
+- Kept the in-memory [c]TextStream[/c] dual-[c]mData[/c]-slot write as the cross-version mechanism and made every load validate itself by its result ([c]rc == 1[/c] plus a function-count increase for the probe); unsupported layouts now fail loudly at probe time;
+- Discovered the AhkLive [c]Var[/c] value/symbol/flag bytes by int-to-object assignment diffing instead of fixed offsets;
+- Rewrote [c]_ValidateScript[/c]: the validator runs through a BOM-free batch file, is driven by captured output plus a completion marker file, and its process tree is killed the moment the error text lands — syntax errors always surface as the interpreter's real parse message and never as dialogs;
+- Hardened [c]FileDelete[/c] calls with [c]FileExist[/c] guards and swallowed cleanup races (absent or locked temp files can no longer hang or mask errors);
+- Expanded the matrix to thirteen tests, including object returns, syntax-error survival, empty-target probe injection, and deep redirect; all 19 runtimes pass 13/13.
 
 
 [b]11. Known limitations[/b]

@@ -281,7 +281,7 @@ The wrapper logs to a target-side global string, so [c]RemoteEval[/c] can read t
 
 [b]11. Verification matrix[/b]
 
-[c]tools/verify_all_runtimes.ps1[/c] runs nine tests against every runtime found on this machine:
+[c]tools/verify_all_runtimes.ps1[/c] runs thirteen tests against every runtime found on this machine:
 
 | Test | Covers |
 | --- | --- |
@@ -294,18 +294,22 @@ The wrapper logs to a target-side global string, so [c]RemoteEval[/c] can read t
 | [c]evalscript_inproc[/c] | in-process script loading |
 | [c]evalscript_repeat[/c] | repeated function/class loading |
 | [c]evalscript_class[/c] | class definitions |
+| [c]eval_object_syntax_test[/c] | object return values and syntax-error survival in-process |
+| [c]remote_empty_object_test[/c] | remote object results and syntax-error survival |
+| [c]remote_empty_target_test[/c] | probe-injection retry on targets with no user functions |
+| [c]remote_deep_redirect_test[/c] | deep redirect through direct and dynamic call chains |
 
 Current result:
 
 | Runtime family | Builds | Result |
 | --- | --- | --- |
-| 2.0 beta | beta.9, beta.10, beta.12, beta.13, beta.15 | 9/9 each |
-| 2.0 rc | rc.1, rc.3 | 9/9 each |
-| 2.0 stable | 0.0, 0.2, 0.3, 0.4, 0.26 | 9/9 each |
-| 2.1 alpha | alpha.1, alpha.4, alpha.13, alpha.16, alpha.30 | 9/9 each |
-| local dev builds | two [c]2.0-beta[/c] binaries | 9/9 each |
+| 2.0 beta | beta.9, beta.10, beta.12, beta.13, beta.15 | 13/13 each |
+| 2.0 rc | rc.1, rc.3 | 13/13 each |
+| 2.0 stable | 0.0, 0.2, 0.3, 0.4, 0.26 | 13/13 each |
+| 2.1 alpha | alpha.1, alpha.4, alpha.13, alpha.16, alpha.30 | 13/13 each |
+| local dev builds | two [c]2.0-beta[/c] binaries | 13/13 each |
 
-Total: 19 runtimes, all 9/9.
+Total: 19 runtimes, all 13/13.
 
 [color=#BF4000][b]11.1 Regression coverage: error capture[/b][/color]
 
@@ -335,7 +339,7 @@ for name in AhkMagic._DeclaredFunctionNames(text) {
 }
 [/codebox]
 
-The new regression test passes on [c]2.1-alpha.30[/c] and [c]2.0.26[/c]. The 19-runtime nine-test matrix remains the full compatibility gate.
+The new regression tests pass on [c]2.1-alpha.30[/c] and [c]2.0.26[/c]. The 19-runtime thirteen-test matrix — now including the four robustness regressions above — remains the full compatibility gate, and all 19 runtimes pass 13/13.
 
 [b]12. Security and boundaries[/b]
 
