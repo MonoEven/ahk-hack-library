@@ -204,7 +204,7 @@ def page(lang: str, title: str, lede: str, body: str, toc: list[tuple[str, str]]
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
   <meta name="description" content="{html.escape(lede[:160])}">
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body>
   <div class="progress" aria-hidden="true"></div>

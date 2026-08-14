@@ -148,7 +148,11 @@ body {
 }
 
 .sidebar-collapsed .layout {
-  grid-template-columns: 0 minmax(0, 1fr);
+  /* Single-column: the hidden sidebar no longer participates in grid
+     auto-placement, so keeping a 0-wide first column would make the
+     remaining item (the content) auto-place into that 0-width column
+     and crush the whole page. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 0;
 }
 
