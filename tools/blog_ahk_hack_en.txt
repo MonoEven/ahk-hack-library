@@ -609,7 +609,8 @@ Recommended workflow: test in a VM or isolated environment, back up the exe, rec
 - Discovered the AhkLive [c]Var[/c] value/symbol/flag bytes by int-to-object assignment diffing instead of fixed offsets;
 - Rewrote [c]_ValidateScript[/c]: the validator runs through a BOM-free batch file, is driven by captured output plus a completion marker file, and its process tree is killed the moment the error text lands — syntax errors always surface as the interpreter's real parse message and never as dialogs;
 - Hardened [c]FileDelete[/c] calls with [c]FileExist[/c] guards and swallowed cleanup races (absent or locked temp files can no longer hang or mask errors);
-- Expanded the matrix to thirteen tests, including object returns, syntax-error survival, empty-target probe injection, and deep redirect; all 19 runtimes pass 13/13.
+- Expanded the matrix to thirteen tests, including object returns, syntax-error survival, empty-target probe injection, and deep redirect; all 19 runtimes pass 13/13;
+- Dropped the embedded single-file appendix from this post (article plus source exceeded the forum post length limit); the appendix now links to the repository raw file and the Pages appendix.
 
 
 [b]11. Known limitations[/b]
@@ -630,10 +631,12 @@ The project ended up settling on scanning: treat the exe as a structured documen
 
 [b]13. Appendix: single-file source[/b]
 
-The complete core is embedded below. The repository keeps the same file at
-[c]ahk_hack_single.ahk[/c] and regenerates this section with
-[c]tools/build_blog.py[/c].
+The complete core is no longer embedded here: the article plus the full
+source exceeds the post length limit of forum platforms. The canonical
+copy is [c]ahk_hack_single.ahk[/c] in the repository; grab the raw file
+or read the syntax-highlighted copy in the Pages appendix:
 
-[codebox=autohotkey file=ahk_hack_single]
-<!--AHK_SINGLE_FILE-->
-[/codebox]
+[url=https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk]ahk_hack_single.ahk (raw)[/url] ·
+[url=https://monoeven.github.io/ahk-hack-library/#appendix]full source in the Pages appendix[/url] ·
+[url=https://github.com/MonoEven/ahk-hack-library]GitHub repository[/url] ·
+[url=https://github.com/MonoEven/ahk-hack-library/tree/master/lib/mcode]machine-code sources (lib/mcode)[/url]

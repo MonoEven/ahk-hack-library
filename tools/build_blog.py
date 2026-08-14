@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Build root blog files by embedding the single-file core."""
+"""Generate the root blog files from the templates in tools/.
+
+The blog no longer embeds the single-file core: the article plus the full
+source exceeds forum post length limits, so the appendix links to the
+repository raw file and the Pages appendix instead.  This script is kept
+as the single entry point that publishes the templates to the repo root.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +13,6 @@ import pathlib
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SINGLE = ROOT / "ahk_hack_single.ahk"
 TEMPLATES = {
     "en": ROOT / "tools" / "blog_ahk_hack_en.txt",
     "zh": ROOT / "tools" / "blog_ahk_hack_zh.txt",
@@ -16,16 +21,12 @@ OUTPUTS = {
     "en": ROOT / "blog_ahk_hack_en.txt",
     "zh": ROOT / "blog_ahk_hack.txt",
 }
-MARKER = "<!--AHK_SINGLE_FILE-->"
 
 
 def build() -> None:
-    source = SINGLE.read_text(encoding="utf-8")
     for lang, template in TEMPLATES.items():
         text = template.read_text(encoding="utf-8")
-        if MARKER not in text:
-            raise RuntimeError(f"{template}: missing {MARKER}")
-        OUTPUTS[lang].write_text(text.replace(MARKER, source), encoding="utf-8")
+        OUTPUTS[lang].write_text(text, encoding="utf-8")
         print(f"wrote {OUTPUTS[lang]}")
 
 

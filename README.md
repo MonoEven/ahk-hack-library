@@ -294,7 +294,9 @@ watch values, and export runtime reports.
 
 The repository separates the blog from the technical Pages site.
 
-- Blog: practical examples with the full single-file source embedded.
+- Blog: practical examples; the appendix links to the repository raw file
+  and the Pages appendix (the full source is no longer embedded so the
+  post stays under forum length limits).
   - `blog_ahk_hack_en.txt`
   - `blog_ahk_hack.txt`
   - Built by `tools/build_blog.py`.
