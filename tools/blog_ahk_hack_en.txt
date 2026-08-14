@@ -631,10 +631,7 @@ The project ended up settling on scanning: treat the exe as a structured documen
 
 [b]13. Appendix: single-file source[/b]
 
-The complete core is no longer embedded here: the article plus the full
-source exceeds the post length limit of forum platforms. The canonical
-copy is [c]ahk_hack_single.ahk[/c] in the repository; grab the raw file
-or read the syntax-highlighted copy in the Pages appendix:
+The complete core is no longer embedded here: the article plus the full source exceeds the post length limit of forum platforms. The canonical copy is [c]ahk_hack_single.ahk[/c] in the repository; grab the raw file or read the syntax-highlighted copy in the Pages appendix:
 
 [url=https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk]ahk_hack_single.ahk (raw)[/url] ·
 [url=https://monoeven.github.io/ahk-hack-library/#appendix]full source in the Pages appendix[/url] ·

@@ -631,9 +631,7 @@ demo ready
 
 [b]13. 附录：单文件源码[/b]
 
-完整核心源码不再随正文嵌入：文章加上完整源码会超过论坛帖子的长度上限。
-仓库中的 [c]ahk_hack_single.ahk[/c] 是唯一权威副本，可取原始文件，或在
-Pages 附录里浏览带语法高亮的完整源码：
+完整核心源码不再随正文嵌入：文章加上完整源码会超过论坛帖子的长度上限。仓库中的 [c]ahk_hack_single.ahk[/c] 是唯一权威副本，可取原始文件，或在 Pages 附录里浏览带语法高亮的完整源码：
 
 [url=https://raw.githubusercontent.com/MonoEven/ahk-hack-library/master/ahk_hack_single.ahk]ahk_hack_single.ahk（原始文件）[/url] ·
 [url=https://monoeven.github.io/ahk-hack-library/#appendix]Pages 附录里的完整源码[/url] ·
